@@ -1,0 +1,4 @@
+vids/taged/*
+vids/untaged/*
+tmp.txt
+scripts/__pycache__
