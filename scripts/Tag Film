@@ -1,7 +1,16 @@
 #! /usr/bin/env python
-########################################################################
+################################################################################################################################################
 # Select a video to interactively tag by adding chapters
-########################################################################
+# A chapter will consist of continuous action (hereby referred to as a sequence) and will end when the action stops
+################################################################################################################################################
+# Chapters are made up of 5 main pieces of data:
+# - Time: The timestamps (from the video not the match) of the start and end of a sequence
+# - Attacker: Was your wrestler the one who made the first committed attack
+# - Tie-up/Position: What was the position or tie-up that the sequence began in
+# - Moves: What moves did each wrestler use
+# - Scoring: How many points did each wrestler score and how
+################################################################################################################################################
+
 import subprocess
 from helpers import *
 
@@ -16,7 +25,7 @@ def VideoSelect() -> str:
         check=True  # Raises a CalledProcessError if the command returns a non-zero exit code
     ).stdout
 
-def AskForMore() -> str:
+def AskToContinue() -> bool:
     return subprocess.run(
         "echo 'New Sequence\nDone' | fzf --header='Do you have new sequences to add?' "
             "--header-border=bold --header-label-pos=top --no-multi",
@@ -24,14 +33,14 @@ def AskForMore() -> str:
         capture_output=True,
         text=True,
         check=True  # Raises a CalledProcessError if the command returns a non-zero exit code
-    ).stdout
+    ).stdout.removesuffix("\n") == 'New Sequence'
 
     
 
-vid_in_path : str = f"./vids/untaged/{VideoSelect()}"
+vid_file_name : str = VideoSelect()
 
 wrestler_name : str = SelectFromConfig("Wrestlers.config",
-                                  "Select the wrestler from your team.")
+                                       "Select the wrestler from your team.")
 
 chap_list : [Chapter] = list()
 
@@ -40,13 +49,16 @@ while(new_chap):
     start : int = GetTime("Enter the START time in this format mins:secs\t")
 
     attacking : bool = "Attacking" == subprocess.run(
-        "echo 'Attacking\nDefending' | fzf --header='Was YOUR wresler initially attacking or defending?' "
+        "echo 'Attacking\nDefending' | fzf --header='Was YOUR wrestler initially attacking or defending?' "
             "--header-border=bold --header-label-pos=top --no-multi",
         shell=True,
         capture_output=True,
         text=True,
         check=True  # Raises a CalledProcessError if the command returns a non-zero exit code
     ).stdout
+
+    tie : str = SelectFromConfig("Ties.config", 
+                                 "What was the inital position/tie-up?\nFrom The Perspective of YOUR wrestler.").removesuffix("\n")
 
     our_moves : [str] = SelectMultiFromConfig(
         "Moves.config",
@@ -56,15 +68,17 @@ while(new_chap):
 
     other_moves : [str]   = SelectMultiFromConfig(
         "Moves.config",
-        "Select the moves the OPPOSING wrestler used in the sequence.\n"
+        "Select the moves the OPPONENT used in the sequence.\n"
             "Use tab to select multiple moves."
     ).removesuffix("\n").split(sep="\n")
 
-    our_seq : [str] = SelectMultiFromConfig("Outcomes.config", "What points did YOUR wrestler score?").removesuffix("\n").split(sep="\n")
+    our_seq : [str] = SelectMultiFromConfig(
+        "Outcomes.config", 
+        "What points did YOUR wrestler score?").removesuffix("\n").split(sep="\n")
 
-    other_seq : [str] = SelectMultiFromConfig("Outcomes.config", "What points did YOUR wrestler score?").removesuffix("\n").split(sep="\n")
-
-    tie : str = SelectFromConfig("Ties.config", "What was the inital tie-up?").removesuffix("\n")
+    other_seq : [str] = SelectMultiFromConfig(
+        "Outcomes.config", 
+        "What points did the OPPONENT score?").removesuffix("\n").split(sep="\n")
 
     end : int = GetTime("Enter the END time in this format mins:secs\t")
 
@@ -77,15 +91,13 @@ while(new_chap):
                              team_scores=our_seq, 
                              op_scores=other_seq))
 
-    new_chap = "New Sequence" == AskForMore()
+    new_chap = AskToContinue()
 
 
 
 for chap in chap_list:
     print(chap)
+    print(chap.ToMetadata())
 
- #print(vid_path, wrestler, "\n\n")
- #print(team_moves, "\n\n")
- #print(op_moves)
 
 

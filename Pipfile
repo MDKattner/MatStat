@@ -4,13 +4,11 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-ffmpeg-python=0.2.0
-
-[utils]
-fzf-bin="*"
-ffmpeg="*"
 
 [dev-packages]
+ffmpeg = "*"
+av = "*"
+fzf-bin = "*"
 
 [requires]
 python_version = "3.13"
