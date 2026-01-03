@@ -1,4 +1,13 @@
+# Protect PID
 vids/taged/*
 vids/untaged/*
-tmp.txt
+stats/compiled/*
+stats/quick_evals/*
+stats/wrestler_data/*
+cfg/Wrestlers.config
+
+# Misc data
 scripts/__pycache__
+tmp/.*
+tmp/*
+*.ipynb

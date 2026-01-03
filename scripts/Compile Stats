@@ -1,3 +1,38 @@
 #! /usr/bin/env python
-# Description Goes Here
+###############################################################################################################################################################################################################################################################
+# Updates the files that contain data extracted from the film
+# Each wrestler has their own file
+# The excel sheets that contain wrestler data can be found in the stats/wrestler_data folder where the file is named after the wrestler
+###############################################################################################################################################################################################################################################################
 
+from helpers import *
+import os
+import pandas as pd
+from pathlib import Path
+
+
+def Main() -> None:
+    # Create a dictionary of wrestlers to csv formatted strings; this is done to buffer file IO
+    # A list of strings will be created first in order to avoid repeated copying
+    with open(cfg_dir / "Wrestlers.config", "r") as wrestlers:
+        lines: list[str] = filter(lambda string: not (
+            len(string) == 0 or string[0] == '#'), wrestlers.read().splitlines())
+        wrestler_to_csv_list: dict[str, list[str]] = dict(
+            [(line.split('#')[0], []) for line in lines])
+
+    # Create CSV files from video for each wrestler
+    for vid in os.listdir(taged_dir):
+        (name, data) = MakeNameAndCSV(taged_dir / vid)
+        wrestler_to_csv_list[name].append(data)
+
+    wrestler_to_csv: dict[str, str] = {wrestler: "\n".join(
+        data) for (wrestler, data) in wrestler_to_csv_list.items()}
+
+    # Write data to the csvs in the dictionary
+    for (name, data) in wrestler_to_csv.items():
+        with open((csv_dir / name).with_suffix(".csv"), "w") as csv_file:
+            csv_file.write(wrestler_to_csv[name])
+
+
+if __name__ == '__main__':
+    Main()
