@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "6883bbb3ccb8ded21360fbe023ab9111a73cb3c532d874acc6ff281e7a32031f"
+            "sha256": "9b3e05523e68f56659ab09dfb6d9802a8ece650b466c967d26f84f3faf065a56"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -15,7 +15,17 @@
             }
         ]
     },
-    "default": {},
+    "default": {
+        "pyfiglet": {
+            "hashes": [
+                "sha256:65b57b7a8e1dff8a67dc8e940a117238661d5e14c3e49121032bd404d9b2b39f",
+                "sha256:db9c9940ed1bf3048deff534ed52ff2dafbbc2cd7610b17bb5eca1df6d4278ef"
+            ],
+            "index": "pypi",
+            "markers": "python_version >= '3.9'",
+            "version": "==1.0.4"
+        }
+    },
     "develop": {
         "av": {
             "hashes": [
@@ -98,6 +108,14 @@
             "index": "pypi",
             "markers": "python_version >= '3.7'",
             "version": "==0.67.0"
+        },
+        "fzf-py": {
+            "hashes": [
+                "sha256:71bbe6174b46a44ec107b9b8cae6bb2c310e62291f4d3633245f0b6f5f66b033"
+            ],
+            "index": "pypi",
+            "markers": "python_version >= '3.9'",
+            "version": "==0.0.1"
         }
     }
 }

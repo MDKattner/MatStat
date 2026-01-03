@@ -1,51 +1,117 @@
 #! /usr/bin/env python
-################################################################################################################################################
+###############################################################################################################################################################################################################################################################
 # Select a video to interactively tag by adding chapters
 # A chapter will consist of continuous action (hereby referred to as a sequence) and will end when the action stops
-################################################################################################################################################
-# Chapters are made up of 5 main pieces of data:
+###############################################################################################################################################################################################################################################################
+# ChapterSequences are made up of 5 main pieces of data:
 # - Time: The timestamps (from the video not the match) of the start and end of a sequence
 # - Attacker: Was your wrestler the one who made the first committed attack
 # - Tie-up/Position: What was the position or tie-up that the sequence began in
 # - Moves: What moves did each wrestler use
 # - Scoring: How many points did each wrestler score and how
-################################################################################################################################################
+###############################################################################################################################################################################################################################################################
 
 import subprocess
+import os
+import sys
+from pathlib import Path
 from helpers import *
+
+
+def TagVideo(vid_file_name: str, wrestler_name: str, chap_list: list[ChapterSequence]):
+    """
+    Creates a new video with title and chapter metadata using ffmpeg, then hides the original.
+    """
+    input_path    : Path = Path(f"./vids/untaged/{vid_file_name.strip()}")
+    output_path   : Path = Path("./vids/taged/") / input_path.with_suffix(".mkv").name  # Use mkv format because it is more fit for video concatenation
+    metadata_path : Path = Path("./tmp/metadata.txt")
+
+    print(f"\nGenerating metadata for: {vid_file_name}")
+
+    # 1. Create the ffmpeg metadata file content
+    metadata_content = f";FFMETADATA1\ntitle={wrestler_name.strip()}\n\n"
+    for chap in chap_list:
+        metadata_content += chap.ToMetadata()
+
+    # Write metadata to a temporary file
+    with open(metadata_path, "w") as f:
+        f.write(metadata_content)
+
+    print("Applying metadata with ffmpeg...")
+
+    # 2. Construct and run the ffmpeg command
+    command = [
+        "ffmpeg",
+        "-i", input_path,
+        "-i", metadata_path,
+        "-map_metadata", "1",
+        "-codec", "copy",
+        "-y",  # Overwrite output file if it exists
+        output_path,
+    ]
+
+    try:
+        # Hide ffmpeg's default verbose output, show it only on error
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True
+        )
+
+        # 3. Cleanup successful run
+        os.remove(metadata_path)
+        os.rename(input_path, f"{input_path.parent}/.{vid_file_name}")
+        print("\nSuccessfully tagged video and hid original.")
+
+    except subprocess.CalledProcessError as e:
+        print("\nAn error occurred during ffmpeg processing:", file=sys.stderr)
+        print(f"Command: {' '.join(command)}", file=sys.stderr)
+        print(f"ffmpeg stderr:\n{e.stderr}", file=sys.stderr)
+        # Clean up the failed output file but keep metadata for debugging
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nAn unexpected error occurred: {e}", file=sys.stderr)
+        sys.exit(1)
+
 
 def VideoSelect() -> str:
     return subprocess.run(
         "ls ./vids/untaged/ | fzf --header='Select the Video You Want to Tag\n"
-            "WARNING: This file will be deleted and a new one will be created in the taged folder' "
+            "WARNING: This file will be hidden and a new one will be created in the `taged` folder' "
             "--header-border=bold --header-label-pos=top --no-multi",
         shell=True,
         capture_output=True,
         text=True,
         check=True  # Raises a CalledProcessError if the command returns a non-zero exit code
-    ).stdout
+    ).stdout.strip()
 
-def AskToContinue() -> bool:
+def AskToContinue(chap_in : ChapterSequence) -> str:
+    with open("tmp/tmp_chap.txt", "w") as file:
+        file.write(chap_in.PretyChapter())
     return subprocess.run(
-        "echo 'New Sequence\nDone' | fzf --header='Do you have new sequences to add?' "
-            "--header-border=bold --header-label-pos=top --no-multi",
+        "echo 'Re-do Sequence\nNew Sequence\nDone' | fzf --header='Do you have new sequences to add?' "
+            f"--header-border=bold --header-label-pos=top --no-multi --preview='cat tmp/tmp_chap.txt'",
         shell=True,
         capture_output=True,
         text=True,
         check=True  # Raises a CalledProcessError if the command returns a non-zero exit code
-    ).stdout.removesuffix("\n") == 'New Sequence'
+    ).stdout.strip()
 
-    
+
 
 vid_file_name : str = VideoSelect()
 
 wrestler_name : str = SelectFromConfig("Wrestlers.config",
                                        "Select the wrestler from your team.")
 
-chap_list : [Chapter] = list()
+chap_list : list[ChapterSequence] = list()
 
-new_chap : bool = True
-while(new_chap):
+what_to_do : str = "New Sequence"
+old_end : int = 0 # this variable is used to make the filler chapters
+while(what_to_do  != "Done"):
     start : int = GetTime("Enter the START time in this format mins:secs\t")
 
     attacking : bool = "Attacking" == subprocess.run(
@@ -58,46 +124,63 @@ while(new_chap):
     ).stdout
 
     tie : str = SelectFromConfig("Ties.config", 
-                                 "What was the inital position/tie-up?\nFrom The Perspective of YOUR wrestler.").removesuffix("\n")
+                                 "What was the inital position/tie-up?\n"
+                                 "From The Perspective of YOUR wrestler.").removesuffix("\n")
 
-    our_moves : [str] = SelectMultiFromConfig(
+    our_moves : list[str] = SelectMultiFromConfig(
         "Moves.config",
         "Select the moves YOUR wrestler used in the sequence.\n"
             "Use tab to select multiple moves."
     ).removesuffix("\n").split(sep="\n") # Allows for move names to be multiple words
 
-    other_moves : [str]   = SelectMultiFromConfig(
+    other_moves : list[str]   = SelectMultiFromConfig(
         "Moves.config",
         "Select the moves the OPPONENT used in the sequence.\n"
             "Use tab to select multiple moves."
     ).removesuffix("\n").split(sep="\n")
 
-    our_seq : [str] = SelectMultiFromConfig(
+    our_seq : list[str] = SelectMultiFromConfig(
         "Outcomes.config", 
         "What points did YOUR wrestler score?").removesuffix("\n").split(sep="\n")
 
-    other_seq : [str] = SelectMultiFromConfig(
+    other_seq : list[str] = SelectMultiFromConfig(
         "Outcomes.config", 
         "What points did the OPPONENT score?").removesuffix("\n").split(sep="\n")
 
     end : int = GetTime("Enter the END time in this format mins:secs\t")
 
-    chap_list.append(Chapter(start_time=start,
-                             end_time=end, 
-                             attack_defend=attacking, 
-                             tie_up=tie, 
-                             team_moves=our_moves, 
-                             op_moves=other_moves, 
-                             team_scores=our_seq, 
-                             op_scores=other_seq))
+    temp_chap : ChapterSequence = ChapterSequence(start_time=start,
+                                                  end_time=end, 
+                                                  attack_defend=attacking, 
+                                                  tie_up=tie, 
+                                                  team_moves=our_moves, 
+                                                  op_moves=other_moves, 
+                                                  team_scores=our_seq, 
+                                                  op_scores=other_seq)
 
-    new_chap = AskToContinue()
+    what_to_do = AskToContinue(temp_chap)
+
+    if what_to_do != "Re-do Sequence":
+        chap_list.append(ChapterSequence.MakeEmptyChap(old_end, start))
+        chap_list.append(temp_chap)
+        old_end = end
 
 
+# Cap off the list with an empty Chapter to finish the list
+chap_list.append(
+    ChapterSequence.MakeEmptyChap(
+        old_end,
+        GetVidDuration(
+            Path(f"./vids/taged/{vid_file_name}")
+        )
+    )
+)
 
-for chap in chap_list:
-    print(chap)
-    print(chap.ToMetadata())
+ # After collecting all chapters, process the video
+if chap_list:
+    TagVideo(vid_file_name, wrestler_name, chap_list)
+else:
+    print("No chapters were added. No new video file created.")
 
 
 
