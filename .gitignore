@@ -5,9 +5,11 @@ stats/compiled/*
 stats/quick_evals/*
 stats/wrestler_data/*
 cfg/Wrestlers.config
+stats/reports/*
 
 # Misc data
 scripts/__pycache__
 tmp/.*
 tmp/*
 *.ipynb
+MatStat.log

@@ -1,2 +1,43 @@
 #! /usr/bin/env python
-# Description Goes Here
+###############################################################################################################################################################################################################################################################
+# Creates excel spreadsheet and advanced stats from the complied CSV files
+# It compiles everything into a single excel file with multiple sheets
+###############################################################################################################################################################################################################################################################
+
+import os
+import pandas as pd
+from helpers import *
+from pathlib import Path
+
+
+def Main() -> None:
+    excel_file: Path = eval_dir / "Team_Stats.xlsx"
+
+    # Remove and create a new file to allow for layering
+    if excel_file.exists():
+        os.remove(excel_file)
+    with pd.ExcelWriter(excel_file) as tmp:
+        pd.DataFrame([[]]).to_excel(tmp)
+
+    with pd.ExcelWriter(
+        excel_file,
+        engine="openpyxl",
+        # This config allows for all of a wrestlers stats to be on a single sheet
+        if_sheet_exists="overlay",
+        mode="a"
+    ) as writer:
+        # Remove the UNKNOWN wrestler in order to avoid a divide by zero
+        for csv_file in filter(lambda x: x != "UNKNOWN.csv", os.listdir(csv_dir)):
+            tmp_df: pd.DataFrame = MakeFormatedDataFrame(csv_dir / csv_file)
+            GenerateInitiationDF(tmp_df).to_excel(
+                writer, sheet_name=Path(csv_file).stem)
+            GenerateDefenseDF(tmp_df).to_excel(
+                writer, sheet_name=Path(csv_file).stem, startrow=4)
+            GenerateOffenseDF(tmp_df).to_excel(
+                writer, sheet_name=Path(csv_file).stem, startrow=4, startcol=8)
+            tmp_df.to_excel(
+                writer, sheet_name=Path(csv_file).stem, startrow=4, startcol=16)
+
+
+if __name__ == '__main__':
+    Main()
