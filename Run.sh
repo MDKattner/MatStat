@@ -23,5 +23,10 @@ function ScriptSelect
     pipenv run ls ./scripts/ | grep -Gv "[\_\.]py" | fzf --header="Select What You Want to Do" --header-border=bold --header-label-pos=top --no-multi --preview='pyfiglet -w$FZF_PREVIEW_COLUMNS -fansi_regular -jcenter MatStat && grep -G ^#[^!] ./scripts/{}' --preview-window=80%
 }
 
-pipenv run python "./scripts/$(ScriptSelect)"
+selected=$(ScriptSelect)
+while [ "$selected" ]; do
+    pipenv run python "./scripts/$selected"
+    selected=$(ScriptSelect)
+done
 
+echo "Done with utility"

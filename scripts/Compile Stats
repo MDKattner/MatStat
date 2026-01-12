@@ -9,29 +9,63 @@ from helpers import *
 import os
 import pandas as pd
 from pathlib import Path
+import logging  # Explicitly import logging for clarity
 
 
 def Main() -> None:
-    # Create a dictionary of wrestlers to csv formatted strings; this is done to buffer file IO
-    # A list of strings will be created first in order to avoid repeated copying
+    """Compile stats from all tagged videos and update wrestler CSV files.
+
+    This function processes all videos in the `taged_dir`, extracts chapter
+    data for each wrestler using `MakeNameAndCSV`, and then writes this
+    compiled data into wrestler-specific CSV files in `csv_dir`.
+    """
+    logging.info("Starting Compile Stats script.")
+
+    logging.debug(
+        "Reading Wrestlers.config to initialize wrestler_to_csv_list.")
+    # This uses a dict from wrestlers to lists to buffer file IO and avoid repeated concatenation
     with open(cfg_dir / "Wrestlers.config", "r") as wrestlers:
-        lines: list[str] = filter(lambda string: not (
-            len(string) == 0 or string[0] == '#'), wrestlers.read().splitlines())
+        lines: list[str] = list(filter(lambda string: not (
+            len(string) == 0 or string[0] == '#'), wrestlers.read().splitlines()))
+
         wrestler_to_csv_list: dict[str, list[str]] = dict(
-            [(line.split('#')[0], []) for line in lines])
+            [(line.split('#')[0].strip(), []) for line in lines])
+    logging.info(
+        f"Initialized wrestler_to_csv_list with {len(wrestler_to_csv_list)} wrestlers.")
 
-    # Create CSV files from video for each wrestler
-    for vid in os.listdir(taged_dir):
-        (name, data) = MakeNameAndCSV(taged_dir / vid)
-        wrestler_to_csv_list[name].append(data)
+    logging.info(f"Processing videos in {taged_dir}.")
+    for vid_file in os.listdir(taged_dir):
+        vid_path = taged_dir / vid_file
+        logging.debug(f"Extracting chapter data from video: {vid_path}")
+        try:
+            (name, data) = MakeNameAndCSV(vid_path)
+            if name in wrestler_to_csv_list:
+                wrestler_to_csv_list[name].append(data)
+                logging.debug(
+                    f"Appended data for wrestler '{name}' from video '{vid_file}'.")
+            else:
+                logging.warning(
+                    f"Wrestler '{name}' from video '{vid_file}' not found in Wrestlers.config. Skipping data.")
+        except Exception as e:
+            logging.error(f"Error processing video {vid_path}: {e}")
 
-    wrestler_to_csv: dict[str, str] = {wrestler: "\n".join(
-        data) for (wrestler, data) in wrestler_to_csv_list.items()}
+    wrestler_to_csv: dict[str, str] = {wrestler: 
+        "\n".join(data) for (wrestler, data) in wrestler_to_csv_list.items()}
+    logging.info("Finished processing all videos. Compiling CSV strings.")
 
-    # Write data to the csvs in the dictionary
-    for (name, data) in wrestler_to_csv.items():
-        with open((csv_dir / name).with_suffix(".csv"), "w") as csv_file:
-            csv_file.write(wrestler_to_csv[name])
+    logging.info(f"Writing compiled data to CSV files in {csv_dir}.")
+    for name, data in wrestler_to_csv.items():
+        output_csv_path = (csv_dir / name).with_suffix(".csv")
+        try:
+            with open(output_csv_path, "w") as csv_file:
+                csv_file.write(data)
+            logging.info(
+                f"Successfully wrote data for '{name}' to '{output_csv_path}'.")
+        except IOError as e:
+            logging.error(
+                f"Failed to write CSV for '{name}' to '{output_csv_path}': {e}")
+
+    logging.info("Compile Stats script finished.")
 
 
 if __name__ == '__main__':
