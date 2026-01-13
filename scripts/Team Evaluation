@@ -8,35 +8,67 @@ import os
 import pandas as pd
 from helpers import *
 from pathlib import Path
+import logging
 
 
 def Main() -> None:
     excel_file: Path = eval_dir / "Team_Stats.xlsx"
+    logging.info(
+        "Starting Team Evaluation script with Excel file at: {excel_file}")
 
-    # Remove and create a new file to allow for layering
-    if excel_file.exists():
-        os.remove(excel_file)
-    with pd.ExcelWriter(excel_file) as tmp:
-        pd.DataFrame([[]]).to_excel(tmp)
+    try:
+        with pd.ExcelWriter(
+            excel_file,
+            engine="openpyxl",
+            mode="w"
+        ) as writer:
+            csv_files = [f for f in os.listdir(
+                csv_dir) if f.endswith('.csv') and f != "UNKNOWN.csv"]
+            logging.info(
+                f"Found {len(csv_files)} wrestler CSV files to process.")
 
-    with pd.ExcelWriter(
-        excel_file,
-        engine="openpyxl",
-        # This config allows for all of a wrestlers stats to be on a single sheet
-        if_sheet_exists="overlay",
-        mode="a"
-    ) as writer:
-        # Remove the UNKNOWN wrestler in order to avoid a divide by zero
-        for csv_file in filter(lambda x: x != "UNKNOWN.csv", os.listdir(csv_dir)):
-            tmp_df: pd.DataFrame = MakeFormatedDataFrame(csv_dir / csv_file)
-            GenerateInitiationDF(tmp_df).to_excel(
-                writer, sheet_name=Path(csv_file).stem)
-            GenerateDefenseDF(tmp_df).to_excel(
-                writer, sheet_name=Path(csv_file).stem, startrow=4)
-            GenerateOffenseDF(tmp_df).to_excel(
-                writer, sheet_name=Path(csv_file).stem, startrow=4, startcol=8)
-            tmp_df.to_excel(
-                writer, sheet_name=Path(csv_file).stem, startrow=4, startcol=16)
+            for csv_file in csv_files:
+                sheet_name: str = Path(csv_file).stem
+                logging.debug(
+                    f"Processing '{csv_file}' for sheet '{sheet_name}'.")
+
+                try:
+                    full_csv_path: Path = csv_dir / csv_file
+                    tmp_df: pd.DataFrame = MakeFormatedDataFrame(full_csv_path)
+
+                    logging.debug(
+                        f"Generating and writing Initiation DF for '{sheet_name}'.")
+                    GenerateInitiationDF(tmp_df).to_excel(
+                        writer, sheet_name=sheet_name)
+
+                    logging.debug(
+                        f"Generating and writing Defense DF for '{sheet_name}'.")
+                    GenerateDefenseDF(tmp_df).to_excel(
+                        writer, sheet_name=sheet_name, startrow=4)
+
+                    logging.debug(
+                        f"Generating and writing Offense DF for '{sheet_name}'.")
+                    GenerateOffenseDF(tmp_df).to_excel(
+                        writer, sheet_name=sheet_name, startrow=4, startcol=8)
+
+                    logging.debug(f"Writing raw data DF for '{sheet_name}'.")
+                    tmp_df.to_excel(
+                        writer, sheet_name=sheet_name, startrow=4, startcol=16)
+
+                    logging.info(
+                        f"Successfully wrote all data for sheet '{sheet_name}'.")
+
+                except Exception as e:
+                    logging.error(
+                        f"Failed to process file '{csv_file}' for sheet '{sheet_name}': {e}")
+
+        logging.info(f"Successfully generated Excel report: {excel_file}")
+
+    except Exception as e:
+        logging.error(
+            f"Failed to create or write to Excel file {excel_file}: {e}")
+
+    logging.info("Team Evaluation script finished.")
 
 
 if __name__ == '__main__':
