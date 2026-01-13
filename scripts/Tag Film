@@ -21,7 +21,7 @@ from helpers import *
 logging.info("Starting Tag Film script.")
 
 
-def TagVideo(vid_file_name: str, wrestler_name: str, chap_list: list[ChapterSequence]):
+def TagVideo(vid_file_name: str, wrestler_name: str, chap_list: list[ChapterSequence]) -> None:
     """Create a new video with embedded chapter metadata.
 
     This function uses ffmpeg to create a new .mkv video file that includes
@@ -43,18 +43,15 @@ def TagVideo(vid_file_name: str, wrestler_name: str, chap_list: list[ChapterSequ
     logging.debug(
         f"Input path: {input_path}, Output path: {output_path}, Metadata path: {metadata_path}")
 
-    # 1. Create the ffmpeg metadata file content
     metadata_content = f";FFMETADATA1\ntitle={wrestler_name.strip()}\n\n"
     for chap in chap_list:
         metadata_content += chap.ToMetadata()
     logging.debug("Generated ffmpeg metadata content.")
 
-    # Write metadata to a temporary file
     with open(metadata_path, "w") as f:
         f.write(metadata_content)
     logging.info(f"Wrote metadata to temporary file: {metadata_path}")
 
-    # 2. Construct and run the ffmpeg command
     command = [
         "ffmpeg",
         "-i", str(input_path),
@@ -75,12 +72,10 @@ def TagVideo(vid_file_name: str, wrestler_name: str, chap_list: list[ChapterSequ
         )
         logging.debug(f"ffmpeg stdout:\n{result.stdout}")
 
-        # 3. Cleanup successful run
         os.remove(metadata_path)
         os.rename(input_path, f"{input_path.parent}/.{vid_file_name}")
         logging.info(
             f"Successfully tagged video '{vid_file_name}' and hid original.")
-        # Keep print for immediate user feedback
         print("\nSuccessfully tagged video and hid original.")
 
     except subprocess.CalledProcessError as e:
@@ -100,7 +95,6 @@ def TagVideo(vid_file_name: str, wrestler_name: str, chap_list: list[ChapterSequ
     except Exception as e:
         logging.error(
             f"An unexpected error occurred during tagging '{vid_file_name}': {e}")
-        # User-facing error
         print(f"\nAn unexpected error occurred: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -113,9 +107,11 @@ def VideoSelect() -> str:
     Returns:
         The file name of the video selected by the user.
     """
-    fzf_cmd = ("ls ./vids/untaged/ | fzf --header='Select the Video You Want to Tag\n"
-               "WARNING: This file will be hidden and a new one will be created in the `taged` folder' "
-               "--header-border=bold --header-label-pos=top --no-multi")
+    fzf_cmd = (  # Does not work if split into a list
+        "ls ./vids/untaged/ | fzf --header='Select the Video You Want to Tag\n"
+        "WARNING: This file will be hidden and a new one will be created in the `taged` folder' "
+        "--header-border=bold --header-label-pos=top --no-multi"
+    )
 
     logging.debug(f"Executing fzf command for video selection: {fzf_cmd}")
     selected_video = subprocess.run(
@@ -161,7 +157,29 @@ def AskToContinue(chap_in: ChapterSequence) -> str:
     return user_choice
 
 
-def Main() -> None:  # used as entry point
+def AskIfAttacking() -> bool:
+    """Prompts the user to select if their wrestler was attacking then returns the answer as a bool
+
+    Returns:
+        `True` if attacking, otherwise `False`
+    """
+    attacking_fzf_cmd = (
+        "echo 'Attacking\nDefending' | fzf --header='Was YOUR wrestler initially attacking or defending?' "
+        f"--header-border=bold --header-label-pos=top --no-multi"
+    )
+    logging.debug(
+        f"Executing fzf command for attacking/defending: {attacking_fzf_cmd}")
+    attacking_str: str = subprocess.run(
+        attacking_fzf_cmd,
+        shell=True,
+        capture_output=True,
+        text=True,
+        check=True
+    ).stdout.strip()
+    return (attacking_str == "Attacking")
+
+
+def Main() -> None:
     """Run the main interactive video tagging process.
 
     This function guides the user through selecting a video, identifying wrestlers,
@@ -172,15 +190,20 @@ def Main() -> None:  # used as entry point
 
     vid_file_name: str = VideoSelect()
     if vid_file_name == "":
-        print("No video selected, exiting")
-        logging.info("No video selected, exiting")
-        sys.exit(1)
+        print("No video selected, restarting")
+        logging.info("No video selected, restarting")
+        sys.exit(0)  # Non-error exit code because this is normal usage
 
     logging.info(f"User selected video: {vid_file_name}")
-    print(f"Adding data to: {untaged_dir / vid_file_name}")  # User-facing info
+    print(f"Adding data to: {untaged_dir / vid_file_name}")
 
     wrestler_name: str = SelectFromConfig("Wrestlers.config",
                                           "Select the wrestler from your team.")
+    if wrestler_name == "":
+        print("No wrestler selected, restarting")
+        logging.info("No wrestler selected, restarting")
+        sys.exit(0)  # Non-error exit code because this is normal usage
+
     logging.info(f"User selected wrestler: {wrestler_name}")
 
     chap_list: list[ChapterSequence] = list()
@@ -193,20 +216,9 @@ def Main() -> None:  # used as entry point
             "Enter the START time in this format mins:secs\t")
         logging.debug(f"Sequence start time: {start}")
 
-        attacking_fzf_cmd = ("echo 'Attacking\nDefending' | fzf --header='Was YOUR wrestler initially attacking or defending?' "
-                             f"--header-border=bold --header-label-pos=top --no-multi")
-        logging.debug(
-            f"Executing fzf command for attacking/defending: {attacking_fzf_cmd}")
-        attacking_str: str = subprocess.run(
-            attacking_fzf_cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            check=True
-        ).stdout.strip()
-        attacking: bool = (attacking_str == "Attacking")
+        attacking: bool = AskIfAttacking()
         logging.info(
-            f"Wrestler was attacking: {attacking} (User selected: {attacking_str})")
+            f"Wrestler was attacking: {attacking}")
 
         # Loop to ensure valid input
         tie: str = ""
@@ -216,25 +228,24 @@ def Main() -> None:  # used as entry point
                                    "From The Perspective of YOUR wrestler.").removesuffix("\n")
             logging.info(f"Selected tie-up: {tie}")
 
-        our_moves: list[str] = SelectMultiFromConfig(
-            "Moves.config",
-            "Select the moves YOUR wrestler used in the sequence.\n"
-            "Use tab to select multiple moves."
-        ).removesuffix("\n").split(sep="\n")
+        our_moves: list[str] = list()
+        while our_moves == list():
+            logging.info(f"Loading moves list from {cfg_dir / "Moves.config"}")
+            our_moves = SelectMultiFromConfig(
+                "Moves.config",
+                "Select the moves YOUR wrestler used in the sequence.\n"
+                "Use tab to select multiple moves."
+            ).removesuffix("\n").split(sep="\n")
         logging.info(f"Your wrestler's moves: {our_moves}")
-        # Correct no input
-        if our_moves == "":
-            our_moves = "nothing"
 
-        other_moves: list[str] = SelectMultiFromConfig(
-            "Moves.config",
-            "Select the moves the OPPONENT used in the sequence.\n"
-            "Use tab to select multiple moves."
-        ).removesuffix("\n").split(sep="\n")
+        other_moves: list[str] = list()
+        while other_moves == list():
+            other_moves = SelectMultiFromConfig(
+                "Moves.config",
+                "Select the moves the OPPONENT used in the sequence.\n"
+                "Use tab to select multiple moves."
+            ).removesuffix("\n").split(sep="\n")
         logging.info(f"Opponent's moves: {other_moves}")
-        # Correct no input
-        if other_moves == "":
-            other_moves = "nothing"
 
         our_seq: list[str] = SelectMultiFromConfig(
             "Outcomes.config",

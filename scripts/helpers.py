@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import pandas as pd
 import numpy as np
-import pyarrow as pa
 import io
 
 # Global variables

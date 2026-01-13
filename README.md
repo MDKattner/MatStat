@@ -1,8 +1,11 @@
-<div style="text-align: center;">
-
-![MatStat Logo](./logo.png)
-
-</div>
+<img
+    style="display: block;
+           margin-left: auto;
+           margin-right: auto;
+           width: 30%;"
+    src="./logo.png"
+    alt="MatStat Logo">
+</img>
 
 A tool for statistical analysis of folkstyle wrestling film.
 
@@ -23,7 +26,7 @@ The data pipelines are as follows:
 
 1.  **Tagging (`Tag Film` script):** A user selects a raw video from `vids/untaged/`. The script guides the user through creating chapters for each action sequence. A new, tagged `.mkv` video is created in `vids/taged/`, and the original is hidden.
 2.  **Compilation (`Compile Stats` script):** This script processes all tagged videos in `vids/taged/`. It extracts the chapter data and aggregates it, writing one `.csv` file per wrestler into `stats/wrestler_data/`.
-3.  **Data Use**
+3.  **Data Use:**
    - **Analysis (`Team Evaluation` script):** This script reads the per-wrestler CSV files, loads them into pandas DataFrames, and calculates a variety of statistics. These stats are then added to wrestler-specific sheets of the , `stats/reports/Team_Stats.xlsx`, Excel file.
    - **Viewing (`Combine Clips` script):** *TO BE IMPLEMENTED* This script creates a new video file in the `vids/clips/` which concatenates all chapters meeting user specifications into a single video.
 
@@ -92,7 +95,7 @@ Select the desired script from the menu. The preview pane shows a description of
 
 Customize the tagging options by editing the text files in the `cfg/` directory:
 
--   `Wrestlers.config`: Add wrestler names with each wrestler on a new line (in .gitignore to avoid commiting PID).
+-   `Wrestlers.config`: Add wrestler names with each wrestler on a new line (in `.gitignore` to avoid commiting PID).
 -   `Ties.config`: Add tie-ups or positions (e.g., "overhook", "leg ride", "in base").
 -   `Moves.config`: Add move names.
 -   `Outcomes.config`: Add scoring notations (e.g., "T" for Takedown, "N3" for Nearfall-3pts).
