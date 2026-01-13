@@ -6,8 +6,8 @@ if ! command -v pipenv &>/dev/null ; then
     exit 1
 fi
 
-if ! command -v fzf &>/dev/null ; then
-    echo "This utillity depends on fzf, please install it in the enviornment this script is being run on" >&2
+if ! command -v ffprobe &>/dev/null ; then
+    echo "This utillity depends on ffprobe, please install it in the enviornment this script is being run on" >&2
     exit 1
 fi
 
