@@ -1,11 +1,13 @@
-<img
-    style="display: block;
-           margin-left: auto;
-           margin-right: auto;
-           width: 30%;"
-    src="./logo.png"
-    alt="MatStat Logo">
-</img>
+<p align="center">
+    <img
+        style="display: block;
+               margin-left: auto;
+               margin-right: auto;
+               width: 30%;"
+        src="./logo.png"
+        alt="MatStat Logo">
+    </img>
+</p>
 
 A tool for statistical analysis of folkstyle wrestling film.
 
@@ -95,7 +97,8 @@ Select the desired script from the menu. The preview pane shows a description of
 
 Customize the tagging options by editing the text files in the `cfg/` directory:
 
--   `Wrestlers.config`: Add wrestler names with each wrestler on a new line (in `.gitignore` to avoid commiting PID).
+-   `Wrestlers.config`: Add wrestler names with each wrestler on a new line. DO NOT COMMIT PID IN THIS FILE.
+    - To avoid this run ```git update-index --assume-unchanged cfg/Wrestlers.config``` after cloning the repo
 -   `Ties.config`: Add tie-ups or positions (e.g., "overhook", "leg ride", "in base").
 -   `Moves.config`: Add move names.
 -   `Outcomes.config`: Add scoring notations (e.g., "T" for Takedown, "N3" for Nearfall-3pts).
