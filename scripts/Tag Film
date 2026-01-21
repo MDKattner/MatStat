@@ -61,7 +61,7 @@ def TagVideo(vid_file_name: str, wrestler_name: str, chap_list: list[ChapterSequ
         "-y",  # Overwrite output file if it exists
         str(output_path),
     ]
-    logging.debug(f"Executing ffmpeg command: {' '.join(map(str, command))}")
+    logging.debug(f"Executing ffmpeg command: {' '.join(command)}")
 
     try:
         result = subprocess.run(
@@ -113,16 +113,23 @@ def VideoSelect() -> str:
         "--header-border=bold --header-label-pos=top --no-multi"
     )
 
-    logging.debug(f"Executing fzf command for video selection: {fzf_cmd}")
-    selected_video = subprocess.run(
-        fzf_cmd,
-        shell=True,
-        capture_output=True,
-        text=True,
-        check=True
-    ).stdout.strip()
-    logging.info(f"Selected video for tagging: '{selected_video}'")
-    return selected_video
+    while True:
+        try:
+            logging.debug(
+                f"Executing fzf command for video selection: {fzf_cmd}")
+            selected_video = subprocess.run(
+                fzf_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                check=True
+            ).stdout.strip()
+            logging.info(f"Selected video for tagging: '{selected_video}'")
+            return selected_video
+        except subprocess.CalledProcessError:
+            logging.info("No video selected, exiting")
+            print("No video selected, exiting")
+            sys.exit(0)
 
 
 def AskToContinue(chap_in: ChapterSequence) -> str:
@@ -220,48 +227,54 @@ def Main() -> None:
         logging.info(
             f"Wrestler was attacking: {attacking}")
 
-        # Loop to ensure valid input
         tie: str = ""
-        while tie == "":
+        while not tie:
             tie = SelectFromConfig("Ties.config",
                                    "What was the inital position/tie-up?\n"
                                    "From The Perspective of YOUR wrestler.").removesuffix("\n")
-            logging.info(f"Selected tie-up: {tie}")
+            if not tie:
+                logging.warning("User made no selection for tie-up. Re-prompting.")
+        logging.info(f"Selected tie-up: {tie}")
 
-        our_moves: list[str] = list()
-        while our_moves == list():
-            logging.info(f"Loading moves list from {cfg_dir / "Moves.config"}")
-            our_moves = SelectMultiFromConfig(
+        our_moves: list[str] = ['']
+        while our_moves == ['']:
+            our_moves_str = SelectMultiFromConfig(
                 "Moves.config",
                 "Select the moves YOUR wrestler used in the sequence.\n"
                 "Use tab to select multiple moves."
-            ).removesuffix("\n").split(sep="\n")
+            ).removesuffix("\n")
+            our_moves = our_moves_str.split(sep="\n")
+            if our_moves == ['']:
+                logging.warning(
+                    "User made no selection for team moves. Re-prompting.")
         logging.info(f"Your wrestler's moves: {our_moves}")
 
-        other_moves: list[str] = list()
-        while other_moves == list():
-            other_moves = SelectMultiFromConfig(
+        other_moves: list[str] = ['']
+        while other_moves == ['']:
+            other_moves_str = SelectMultiFromConfig(
                 "Moves.config",
                 "Select the moves the OPPONENT used in the sequence.\n"
                 "Use tab to select multiple moves."
-            ).removesuffix("\n").split(sep="\n")
+            ).removesuffix("\n")
+            other_moves = other_moves_str.split(sep="\n")
+            if other_moves == ['']:
+                logging.warning(
+                    "User made no selection for opponent moves. Re-prompting.")
         logging.info(f"Opponent's moves: {other_moves}")
 
-        our_seq: list[str] = SelectMultiFromConfig(
+        our_seq_str: str = SelectMultiFromConfig(
             "Outcomes.config",
-            "What points did YOUR wrestler score?").removesuffix("\n").split(sep="\n")
+            "What points did YOUR wrestler score?").removesuffix("\n")
+        our_seq: list[str] = our_seq_str.split(
+            sep="\n") if our_seq_str else ["None"]
         logging.info(f"Your wrestler's scores: {our_seq}")
-        # Correct no input
-        if our_seq == "":
-            our_seq = "None"
 
-        other_seq: list[str] = SelectMultiFromConfig(
+        other_seq_str: str = SelectMultiFromConfig(
             "Outcomes.config",
-            "What points did the OPPONENT score?").removesuffix("\n").split(sep="\n")
+            "What points did the OPPONENT score?").removesuffix("\n")
+        other_seq: list[str] = other_seq_str.split(
+            sep="\n") if other_seq_str else ["None"]
         logging.info(f"Opponent's scores: {other_seq}")
-        # Correct no input
-        if other_seq == "":
-            other_seq = "None"
 
         end: int = GetTimeFromUsr(
             "Enter the END time in this format mins:secs\t")

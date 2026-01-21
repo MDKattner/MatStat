@@ -19,7 +19,9 @@ def Main() -> None:
     data for each wrestler using `MakeNameAndCSV`, and then writes this
     compiled data into wrestler-specific CSV files in `csv_dir`.
     """
+
     logging.info("Starting Compile Stats script.")
+    print("Starting to Compile Stats...")
 
     logging.debug(
         "Reading Wrestlers.config to initialize wrestler_to_csv_list.")
@@ -34,6 +36,10 @@ def Main() -> None:
         f"Initialized wrestler_to_csv_list with {len(wrestler_to_csv_list)} wrestlers.")
 
     logging.info(f"Processing videos in {taged_dir}.")
+    print(f"Processing videos...")
+
+    processing_errors: list[str] = list()
+
     for vid_file in os.listdir(taged_dir):
         vid_path = taged_dir / vid_file
         logging.debug(f"Extracting chapter data from video: {vid_path}")
@@ -46,14 +52,23 @@ def Main() -> None:
             else:
                 logging.warning(
                     f"Wrestler '{name}' from video '{vid_file}' not found in Wrestlers.config. Skipping data.")
+                processing_errors.append(
+                    f"Skipped video '{vid_file}': Wrestler '{name}' not found in configuration.")
         except Exception as e:
             logging.error(f"Error processing video {vid_path}: {e}")
+            processing_errors.append(
+                f"Failed to process video '{vid_file}': {e}")
 
-    wrestler_to_csv: dict[str, str] = {wrestler: 
-        "\n".join(data) for (wrestler, data) in wrestler_to_csv_list.items()}
+    wrestler_to_csv: dict[str, str] = {wrestler:
+                                       "\n".join(data) for (wrestler, data) in wrestler_to_csv_list.items()}
     logging.info("Finished processing all videos. Compiling CSV strings.")
+    print("Finished processing all videos.")
 
     logging.info(f"Writing compiled data to CSV files in {csv_dir}.")
+    print(f"Writing compiled data to CSV files in '{csv_dir}'...")
+
+    writing_errors: list[str] = list()
+
     for name, data in wrestler_to_csv.items():
         output_csv_path = (csv_dir / name).with_suffix(".csv")
         try:
@@ -63,7 +78,18 @@ def Main() -> None:
                 f"Successfully wrote data for '{name}' to '{output_csv_path}'.")
         except IOError as e:
             logging.error(
-                f"Failed to write CSV for '{name}' to '{output_csv_path}': {e}")
+                f"Failed to write CSV to '{output_csv_path}': {e}")
+            writing_errors.append(
+                f"Failed to write data to '{output_csv_path}': {e}")
+
+    if processing_errors or writing_errors:
+        print("\nCompile Stats finished with issues:")
+        for err in processing_errors:
+            print(f"  - {err}")
+        for err in writing_errors:
+            print(f"  - {err}")
+    else:
+        print("\nCompile Stats completed successfully.")
 
     logging.info("Compile Stats script finished.")
 

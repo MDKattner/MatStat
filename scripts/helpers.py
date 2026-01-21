@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import io
+import json
 
 # Global variables
 taged_dir: Path = Path("vids") / "taged"
@@ -42,21 +43,10 @@ score_to_pts: dict[str, np.int16] = {
 }
 
 # Create directories that are not tracked by git
-try:
-    logging.info(f"Creating directories {csv_dir}")
-    os.makedirs(csv_dir)
-except FileExistsError as e:
-    logging.info(f"{csv_dir} already exists")
-try:
-    logging.info(f"Creating directories {eval_dir}")
-    os.mkdir(eval_dir)
-except FileExistsError as e:
-    logging.info(f"{eval_dir} already exists")
-try:
-    logging.info(f"Creating directories {tmp_dir}")
-    os.mkdir(tmp_dir)
-except FileExistsError as e:
-    logging.info(f"{tmp_dir} already exists")
+csv_dir.mkdir(parents=True, exist_ok=True)
+eval_dir.mkdir(parents=True, exist_ok=True)
+tmp_dir.mkdir(parents=True, exist_ok=True)
+logging.info(f"Ensured directories {csv_dir}, {eval_dir}, {tmp_dir} exist.")
 
 
 @dataclass(order=True)
@@ -192,18 +182,22 @@ def SelectFromConfig(file_name: str, desc: str) -> str:
     """
     fzf_cmd = (
         f"sed 's/#.*//' ./cfg/{file_name} | grep -G '\\S' | sed 's/[[:space:]]\\+$//' | "
-        f"fzf --header='{desc}' --header-border=bold --header-label-pos=top --no-multi --preview='cat ./cfg/{file_name}' --preview-window=80%"
+        f"fzf --header='{desc}' --header-border=bold --header-label-pos=top --no-multi --preview='cat ./cfg/{file_name}' --preview-window=70%"
     )
-    logging.debug(f"Executing fzf command: {fzf_cmd}")
-    result = subprocess.run(
-        fzf_cmd,
-        shell=True,
-        capture_output=True,
-        text=True,
-        check=True
-    ).stdout.strip()
-    logging.info(f"Selected from config '{file_name}': {result}")
-    return result
+    try:
+        logging.debug(f"Executing fzf command: {fzf_cmd}")
+        result = subprocess.run(
+            fzf_cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            check=True
+        ).stdout.strip()
+        logging.info(f"Selected from config '{file_name}': {result}")
+        return result
+    except subprocess.CalledProcessError:
+        logging.warning(f"User made no selection for config: {file_name}")
+        return ""
 
 
 def SelectMultiFromConfig(file_name: str, desc: str) -> str:
@@ -218,19 +212,24 @@ def SelectMultiFromConfig(file_name: str, desc: str) -> str:
     """
     fzf_cmd = (
         f"sed 's/#.*//' ./cfg/{file_name} | grep -G '\\S' | sed 's/[[:space:]]\\+$//' | "
-        f"fzf --header='{desc}' --header-border=bold --header-label-pos=top --multi --preview='cat ./cfg/{file_name}' --preview-window=80%"
+        f"fzf --header='{desc}' --header-border=bold --header-label-pos=top --multi --preview='cat ./cfg/{file_name}' --preview-window=70%"
     )
-    logging.debug(f"Executing fzf command: {fzf_cmd}")
-    result = subprocess.run(
-        fzf_cmd,
-        shell=True,
-        capture_output=True,
-        text=True,
-        check=True
-    ).stdout.strip()
-    logging.info(
-        f"Selected multiple from config '{file_name}': {result.splitlines()}")
-    return result
+    try:
+        logging.debug(f"Executing fzf command: {fzf_cmd}")
+        result = subprocess.run(
+            fzf_cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            check=True
+        ).stdout.strip()
+        logging.info(
+            f"Selected multiple from config '{file_name}': {result.splitlines()}")
+        return result
+    except subprocess.CalledProcessError:
+        logging.warning(
+            f"User made no selection for multiselect config: {file_name}")
+        return ""
 
 
 def GetTimeFromUsr(msg: str) -> int:
@@ -461,7 +460,7 @@ def CalculateNetPoints(row: pd.Series) -> np.int16:
         for score in row["Team Scores"]:
             try:
                 sum += score_to_pts[score]
-            except KeyError as e:
+            except KeyError:
                 logging.warning(
                     f"Malformed data in 'Team Scores' encountered while summing row: {score}")
 
@@ -469,7 +468,7 @@ def CalculateNetPoints(row: pd.Series) -> np.int16:
         for score in row["Opponent Scores"]:
             try:
                 sum -= score_to_pts[score]
-            except KeyError as e:
+            except KeyError:
                 logging.warning(
                     f"Malformed data in 'Opponent Scores' encountered while summing row: {score}")
 
