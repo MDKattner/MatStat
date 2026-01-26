@@ -56,8 +56,8 @@ def Main() -> None:
                 print(f"  - Processing data for '{sheet_name}'...")
 
                 try:
-                    full_csv_path: Path = csv_dir / csv_file
-                    tmp_df: pd.DataFrame = MakeFormatedDataFrame(full_csv_path)
+                    csv_file
+                    tmp_df: pd.DataFrame = MakeFormatedDataFrame(csv_file)
 
                     logging.debug(
                         f"Generating and writing Initiation DF for '{sheet_name}'.")
