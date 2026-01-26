@@ -10,6 +10,26 @@ import os
 import pandas as pd
 from pathlib import Path
 import logging  # Explicitly import logging for clarity
+import multiprocessing
+from typing import TextIO
+
+
+def process_video_safely(vid_path: Path) -> tuple[str | None, str]:
+    """
+    A wrapper for MakeNameAndCSV to safely handle exceptions in a multiprocessing pool.
+    Returns (name, data) on success, and (None, error_message) on failure.
+    """
+    logging.debug(f"Extracting chapter data from video: {vid_path}")
+    try:
+        # MakeNameAndCSV is imported from helpers
+        name: str
+        data: str
+        name, data = MakeNameAndCSV(vid_path)
+        return (name, data)
+    except Exception as e:
+        error_msg: str = f"Failed to process video '{vid_path.name}': {e}"
+        logging.error(error_msg)
+        return (None, error_msg)
 
 
 def Main() -> None:
@@ -38,26 +58,31 @@ def Main() -> None:
     logging.info(f"Processing videos in {taged_dir}.")
     print(f"Processing videos...")
 
+    video_paths: list[Path] = [taged_dir /
+                               vid_file for vid_file in os.listdir(taged_dir)]
     processing_errors: list[str] = list()
 
-    for vid_file in os.listdir(taged_dir):
-        vid_path = taged_dir / vid_file
-        logging.debug(f"Extracting chapter data from video: {vid_path}")
-        try:
-            (name, data) = MakeNameAndCSV(vid_path)
-            if name in wrestler_to_csv_list:
+    # Use a pool of worker processes to analyze videos in parallel
+    with multiprocessing.Pool() as pool:
+        # map will apply the function to each path and return a list of results
+        results: list[tuple[str | None, str]] = pool.map(
+            process_video_safely, video_paths)
+
+    for name, data in results:
+        # Check if the worker process returned an error
+        if name is None:
+            processing_errors.append(data)  # data contains the error message
+            continue
+
+        if name in wrestler_to_csv_list:
+            # Check if data is not empty, as MakeNameAndCSV can return empty string on some failures
+            if data:
                 wrestler_to_csv_list[name].append(data)
-                logging.debug(
-                    f"Appended data for wrestler '{name}' from video '{vid_file}'.")
-            else:
-                logging.warning(
-                    f"Wrestler '{name}' from video '{vid_file}' not found in Wrestlers.config. Skipping data.")
-                processing_errors.append(
-                    f"Skipped video '{vid_file}': Wrestler '{name}' not found in configuration.")
-        except Exception as e:
-            logging.error(f"Error processing video {vid_path}: {e}")
-            processing_errors.append(
-                f"Failed to process video '{vid_file}': {e}")
+                logging.debug(f"Appended data for wrestler '{name}'.")
+        else:
+            error_msg: str = f"Wrestler '{name}' from a processed video not found in Wrestlers.config. Skipping data."
+            logging.warning(error_msg)
+            processing_errors.append(error_msg)
 
     wrestler_to_csv: dict[str, str] = {wrestler:
                                        "\n".join(data) for (wrestler, data) in wrestler_to_csv_list.items()}
@@ -70,7 +95,7 @@ def Main() -> None:
     writing_errors: list[str] = list()
 
     for name, data in wrestler_to_csv.items():
-        output_csv_path = (csv_dir / name).with_suffix(".csv")
+        output_csv_path: Path = (csv_dir / name).with_suffix(".csv")
         try:
             with open(output_csv_path, "w") as csv_file:
                 csv_file.write(data)

@@ -17,6 +17,8 @@ import sys
 import logging
 from pathlib import Path
 from helpers import *
+from typing import TextIO
+
 
 logging.info("Starting Tag Film script.")
 
@@ -43,7 +45,7 @@ def TagVideo(vid_file_name: str, wrestler_name: str, chap_list: list[ChapterSequ
     logging.debug(
         f"Input path: {input_path}, Output path: {output_path}, Metadata path: {metadata_path}")
 
-    metadata_content = f";FFMETADATA1\ntitle={wrestler_name.strip()}\n\n"
+    metadata_content: str = f";FFMETADATA1\ntitle={wrestler_name.strip()}\n\n"
     for chap in chap_list:
         metadata_content += chap.ToMetadata()
     logging.debug("Generated ffmpeg metadata content.")
@@ -52,7 +54,7 @@ def TagVideo(vid_file_name: str, wrestler_name: str, chap_list: list[ChapterSequ
         f.write(metadata_content)
     logging.info(f"Wrote metadata to temporary file: {metadata_path}")
 
-    command = [
+    command: list[str] = [
         "ffmpeg",
         "-i", str(input_path),
         "-i", str(metadata_path),
@@ -64,7 +66,7 @@ def TagVideo(vid_file_name: str, wrestler_name: str, chap_list: list[ChapterSequ
     logging.debug(f"Executing ffmpeg command: {' '.join(command)}")
 
     try:
-        result = subprocess.run(
+        result: subprocess.CompletedProcess[str] = subprocess.run(
             command,
             check=True,
             capture_output=True,
@@ -107,7 +109,7 @@ def VideoSelect() -> str:
     Returns:
         The file name of the video selected by the user.
     """
-    fzf_cmd = (  # Does not work if split into a list
+    fzf_cmd: str = (  # Does not work if split into a list
         "ls ./vids/untaged/ | fzf --header='Select the Video You Want to Tag\n"
         "WARNING: This file will be hidden and a new one will be created in the `taged` folder' "
         "--header-border=bold --header-label-pos=top --no-multi"
@@ -117,7 +119,7 @@ def VideoSelect() -> str:
         try:
             logging.debug(
                 f"Executing fzf command for video selection: {fzf_cmd}")
-            selected_video = subprocess.run(
+            selected_video: str = subprocess.run(
                 fzf_cmd,
                 shell=True,
                 capture_output=True,
@@ -149,11 +151,13 @@ def AskToContinue(chap_in: ChapterSequence) -> str:
     with open(tmp_dir / "tmp_chap.txt", "w") as file:
         file.write(chap_in.PretyChapter())
 
-    fzf_cmd = ("echo 'Re-do Sequence\nNew Sequence\nDone' | fzf --header='Do you have new sequences to add?' "
-               f"--header-border=bold --header-label-pos=top --no-multi --preview='cat {tmp_dir}/tmp_chap.txt'")
+    fzf_cmd: str = (
+        "echo 'Re-do Sequence\nNew Sequence\nDone' | fzf --header='Do you have new sequences to add?' "
+        f"--header-border=bold --header-label-pos=top --no-multi --preview='cat {tmp_dir}/tmp_chap.txt'"
+    )
 
     logging.debug(f"Executing fzf command for continuation: {fzf_cmd}")
-    user_choice = subprocess.run(
+    user_choice: str = subprocess.run(
         fzf_cmd,
         shell=True,
         capture_output=True,
@@ -170,7 +174,7 @@ def AskIfAttacking() -> bool:
     Returns:
         `True` if attacking, otherwise `False`
     """
-    attacking_fzf_cmd = (
+    attacking_fzf_cmd: str = (
         "echo 'Attacking\nDefending' | fzf --header='Was YOUR wrestler initially attacking or defending?' "
         f"--header-border=bold --header-label-pos=top --no-multi"
     )
@@ -233,12 +237,13 @@ def Main() -> None:
                                    "What was the inital position/tie-up?\n"
                                    "From The Perspective of YOUR wrestler.").removesuffix("\n")
             if not tie:
-                logging.warning("User made no selection for tie-up. Re-prompting.")
+                logging.warning(
+                    "User made no selection for tie-up. Re-prompting.")
         logging.info(f"Selected tie-up: {tie}")
 
         our_moves: list[str] = ['']
         while our_moves == ['']:
-            our_moves_str = SelectMultiFromConfig(
+            our_moves_str: str = SelectMultiFromConfig(
                 "Moves.config",
                 "Select the moves YOUR wrestler used in the sequence.\n"
                 "Use tab to select multiple moves."
@@ -251,7 +256,7 @@ def Main() -> None:
 
         other_moves: list[str] = ['']
         while other_moves == ['']:
-            other_moves_str = SelectMultiFromConfig(
+            other_moves_str: str = SelectMultiFromConfig(
                 "Moves.config",
                 "Select the moves the OPPONENT used in the sequence.\n"
                 "Use tab to select multiple moves."
@@ -305,7 +310,7 @@ def Main() -> None:
 
     logging.info("Finished collecting all chapters from user input.")
     # Cap off the list with an empty Chapter to finish the list
-    video_duration = GetVidDuration(
+    video_duration: int = GetVidDuration(
         untaged_dir / vid_file_name
     )
     logging.debug(

@@ -30,7 +30,7 @@ The data pipelines are as follows:
 2.  **Compilation (`Compile Stats` script):** This script processes all tagged videos in `vids/taged/`. It extracts the chapter data and aggregates it, writing one `.csv` file per wrestler into `stats/wrestler_data/`.
 3.  **Data Use:**
    - **Analysis (`Team Evaluation` script):** This script reads the per-wrestler CSV files, loads them into pandas DataFrames, and calculates a variety of statistics. These stats are then added to wrestler-specific sheets of the , `stats/reports/Team_Stats.xlsx`, Excel file.
-   - **Viewing (`Combine Clips` script):** *TO BE IMPLEMENTED* This script creates a new video file in the `vids/clips/` which concatenates all chapters meeting user specifications into a single video.
+   - **Viewing (`Combine Clips` script):** This script creates a new video file in the `vids/clips/` which concatenates all chapters meeting user specifications into a single video.
 
 ## Directory Structure
 

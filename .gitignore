@@ -1,6 +1,7 @@
 # Protect PID
 vids/taged/*
 vids/untaged/*
+vids/clips/*
 stats/compiled/*
 stats/quick_evals/*
 stats/wrestler_data/*
