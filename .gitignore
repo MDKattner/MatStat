@@ -13,3 +13,5 @@ tmp/.*
 tmp/*
 *.ipynb
 MatStat.log
+tests/__pycache__
+scripts/qt_app/__pycache__
