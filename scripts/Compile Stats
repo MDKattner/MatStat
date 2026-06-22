@@ -95,6 +95,9 @@ def Main() -> None:
     writing_errors: list[str] = list()
 
     for name, data in wrestler_to_csv.items():
+        if not data:
+            logging.info(f"Skipping '{name}' — no sequences found.")
+            continue
         output_csv_path: Path = (csv_dir / name).with_suffix(".csv")
         try:
             with open(output_csv_path, "w") as csv_file:
