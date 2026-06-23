@@ -4,9 +4,7 @@ import logging
 import os
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal
-from PyQt6.QtMultimedia import QMediaPlayer
-from PyQt6.QtMultimediaWidgets import QVideoWidget
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QGroupBox,
@@ -20,7 +18,6 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
-    QSlider,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -40,6 +37,7 @@ from scripts.qt_app.widgets import (
     ConfigComboBox,
     MultiSelector,
     TimeInput,
+    VideoPreviewPanel,
 )
 
 
@@ -87,97 +85,6 @@ class VideoSelectorWidget(QWidget):
     def _on_selected(self, item: QListWidgetItem) -> None:
         self.videoSelected.emit(item.text())
 
-
-class VideoPlayerControls(QWidget):
-    """Playback controls for the video preview."""
-
-    def __init__(self, player: QMediaPlayer, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._player: QMediaPlayer = player
-
-        layout: QHBoxLayout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        self.play_btn: QPushButton = QPushButton("Play")
-        self.play_btn.setCheckable(True)
-        self.play_btn.clicked.connect(self._toggle_play)
-        layout.addWidget(self.play_btn)
-
-        self.skip_back_btn: QPushButton = QPushButton("-5s")
-        self.skip_back_btn.clicked.connect(lambda: self._seek_relative(-5000))
-        layout.addWidget(self.skip_back_btn)
-
-        self.skip_fwd_btn: QPushButton = QPushButton("+5s")
-        self.skip_fwd_btn.clicked.connect(lambda: self._seek_relative(5000))
-        layout.addWidget(self.skip_fwd_btn)
-
-        self.position_slider: QSlider = QSlider(Qt.Orientation.Horizontal)
-        self.position_slider.setRange(0, 0)
-        self.position_slider.sliderMoved.connect(self._player.setPosition)
-        layout.addWidget(self.position_slider)
-
-        self.time_label: QLabel = QLabel("0:00 / 0:00")
-        layout.addWidget(self.time_label)
-
-        self._player.positionChanged.connect(self._on_position_changed)
-        self._player.durationChanged.connect(self._on_duration_changed)
-        self._player.playbackStateChanged.connect(self._on_state_changed)
-
-    def _toggle_play(self) -> None:
-        if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-            self._player.pause()
-        else:
-            self._player.play()
-
-    def _seek_relative(self, ms: int) -> None:
-        new_pos: int = max(0, self._player.position() + ms)
-        self._player.setPosition(new_pos)
-
-    def _on_position_changed(self, pos: int) -> None:
-        if not self.position_slider.isSliderDown():
-            self.position_slider.setValue(pos)
-        dur: int = self._player.duration()
-        self.time_label.setText(
-            f"{pos // 60000}:{(pos // 1000) % 60:02} / "
-            f"{dur // 60000}:{(dur // 1000) % 60:02}"
-        )
-
-    def _on_duration_changed(self, dur: int) -> None:
-        self.position_slider.setRange(0, dur)
-
-    def _on_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
-        self.play_btn.setChecked(state == QMediaPlayer.PlaybackState.PlayingState)
-        self.play_btn.setText("Pause" if state == QMediaPlayer.PlaybackState.PlayingState else "Play")
-
-
-class VideoPreviewPanel(QWidget):
-    """Right panel with video player and controls."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._player: QMediaPlayer = QMediaPlayer(self)
-
-        layout: QVBoxLayout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        self.video_widget: QVideoWidget = QVideoWidget()
-        self.video_widget.setMinimumSize(320, 240)
-        self._player.setVideoOutput(self.video_widget)
-        layout.addWidget(self.video_widget, stretch=1)
-
-        self.controls: VideoPlayerControls = VideoPlayerControls(self._player, self)
-        layout.addWidget(self.controls)
-
-    def load_video(self, file_path: str) -> None:
-        url: QUrl = QUrl.fromLocalFile(str(file_path))
-        self._player.setSource(url)
-        self._player.pause()
-
-    def current_position_ms(self) -> int:
-        return self._player.position()
-
-    def duration_ms(self) -> int:
-        return self._player.duration()
 
 
 class TagFilmWidget(QWidget):
@@ -412,7 +319,7 @@ class TagFilmWidget(QWidget):
             op_scores=opp_scores,
         )
 
-        dialog: ChapterPreviewDialog = ChapterPreviewDialog(temp_chap.PretyChapter(), self)
+        dialog: ChapterPreviewDialog = ChapterPreviewDialog(temp_chap.PrettyChapter(), self)
         dialog.exec()
 
         code: int = dialog.result_code
@@ -446,7 +353,7 @@ class TagFilmWidget(QWidget):
             return
 
         try:
-            video_duration: int = GetVidDuration(str(untaged_dir / self._vid_file_name))
+            video_duration: int = GetVidDuration(untaged_dir / self._vid_file_name)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not get video duration: {e}")
             logging.error(f"Failed to get video duration: {e}")

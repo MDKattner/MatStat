@@ -1,26 +1,25 @@
 from __future__ import annotations
 
 import logging
-from typing import ClassVar
+import re
 
 from PyQt6.QtCore import QObject, QProcess, pyqtSignal
 
 
 class AsyncFfmpegRunner(QObject):
-    """Run ffmpeg/ffprobe commands asynchronously via QProcess."""
+    """Run ffmpeg commands asynchronously via QProcess."""
 
     finished = pyqtSignal(bool, str)
     progress = pyqtSignal(int, str)
 
-    _cmd_type: ClassVar[str] = "ffmpeg"
-
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._process: QProcess = QProcess(self)
-        self._process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        self._process.readyReadStandardOutput.connect(self._on_ready_read)
+        self._process.readyReadStandardOutput.connect(self._on_stdout)
+        self._process.readyReadStandardError.connect(self._on_stderr)
         self._process.finished.connect(self._on_finished)
         self._description: str = ""
+        self._stderr_buf: str = ""
 
     def run(self, cmd: list[str], description: str = "") -> None:
         """Start an ffmpeg process.
@@ -34,6 +33,7 @@ class AsyncFfmpegRunner(QObject):
             return
 
         self._description = description or " ".join(cmd[:4])
+        self._stderr_buf = ""
         logging.info(f"Starting ffmpeg: {' '.join(cmd)}")
         self._process.start(cmd[0], cmd[1:])
 
@@ -44,17 +44,18 @@ class AsyncFfmpegRunner(QObject):
             self._process.kill()
             self._process.waitForFinished(3000)
 
-    def _on_ready_read(self) -> None:
+    def _on_stdout(self) -> None:
         data: bytes = self._process.readAllStandardOutput().data()
         decoded: str = data.decode("utf-8", errors="replace")
-
         for line in decoded.splitlines():
             if "time=" in line:
                 self._parse_progress(line)
 
-    def _parse_progress(self, line: str) -> None:
-        import re
+    def _on_stderr(self) -> None:
+        data: bytes = self._process.readAllStandardError().data()
+        self._stderr_buf += data.decode("utf-8", errors="replace")
 
+    def _parse_progress(self, line: str) -> None:
         match = re.search(r"time=(\d+):(\d+):(\d+)\.(\d+)", line)
         if match:
             hours: int = int(match.group(1))
@@ -63,37 +64,18 @@ class AsyncFfmpegRunner(QObject):
             total_seconds: float = hours * 3600 + minutes * 60 + seconds
             self.progress.emit(int(total_seconds), self._description)
 
-    def _on_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
-        success: bool = exit_code == 0 and exit_status == QProcess.ExitStatus.NormalExit
-        stderr_output: str = ""
+    def _on_finished(self, exit_code: int, _exit_status: QProcess.ExitStatus) -> None:
+        success: bool = exit_code == 0
         stdout_output: str = self._process.readAllStandardOutput().data().decode("utf-8", errors="replace")
-        stderr_data: bytes = self._process.readAllStandardError().data()
-        if stderr_data:
-            stderr_output = stderr_data.decode("utf-8", errors="replace")
 
         if success:
             logging.info(f"ffmpeg completed: {self._description}")
             self.finished.emit(True, stdout_output)
         else:
-            error_msg: str = stderr_output or f"Exit code {exit_code}"
+            error_msg: str = self._stderr_buf.strip() or f"Exit code {exit_code}"
             logging.error(f"ffmpeg failed ({self._description}): {error_msg}")
             self.finished.emit(False, error_msg)
 
     @property
     def is_running(self) -> bool:
         return self._process.state() != QProcess.ProcessState.NotRunning
-
-
-class AsyncFfprobeRunner(AsyncFfmpegRunner):
-    """Run ffprobe commands asynchronously via QProcess."""
-
-    _cmd_type: ClassVar[str] = "ffprobe"
-
-    def run(self, cmd: list[str], description: str = "") -> None:
-        if self._process.state() != QProcess.ProcessState.NotRunning:
-            logging.warning(f"AsyncFfprobeRunner is already running: {self._description}")
-            return
-
-        self._description = description or " ".join(cmd[:4])
-        logging.info(f"Starting ffprobe: {' '.join(cmd)}")
-        self._process.start(cmd[0], cmd[1:])

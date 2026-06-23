@@ -147,9 +147,9 @@ def AskToContinue(chap_in: ChapterSequence) -> str:
         The user's choice: "Re-do Sequence", "New Sequence", or "Done".
     """
     logging.debug(
-        f"Asking user to continue after sequence: {chap_in.PretyChapter()}")
+        f"Asking user to continue after sequence: {chap_in.PrettyChapter()}")
     with open(tmp_dir / "tmp_chap.txt", "w") as file:
-        file.write(chap_in.PretyChapter())
+        file.write(chap_in.PrettyChapter())
 
     fzf_cmd: str = (
         "echo 'Re-do Sequence\nNew Sequence\nDone' | fzf --header='Do you have new sequences to add?' "

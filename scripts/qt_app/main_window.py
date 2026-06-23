@@ -3,12 +3,14 @@ from __future__ import annotations
 import logging
 
 from PyQt6.QtCore import QCoreApplication, QObject, Qt, pyqtSignal
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
     QDockWidget,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenuBar,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -21,6 +23,8 @@ from PyQt6.QtWidgets import (
 
 from scripts.qt_app.combine_clips_widget import CombineClipsWidget
 from scripts.qt_app.compile_stats_widget import CompileStatsWidget
+from scripts.qt_app.config_editor_dialog import ConfigEditorDialog
+from scripts.qt_app.search_widget import SearchWidget
 from scripts.qt_app.tag_film_widget import TagFilmWidget
 from scripts.qt_app.team_evaluation_widget import TeamEvaluationWidget
 
@@ -100,11 +104,13 @@ class MainWindow(QMainWindow):
         self.compile_stats_tab: CompileStatsWidget = CompileStatsWidget()
         self.team_eval_tab: TeamEvaluationWidget = TeamEvaluationWidget()
         self.combine_clips_tab: CombineClipsWidget = CombineClipsWidget()
+        self.search_tab: SearchWidget = SearchWidget()
 
         self.tabs.addTab(self.tag_film_tab, "Tag Film")
         self.tabs.addTab(self.compile_stats_tab, "Compile Stats")
         self.tabs.addTab(self.team_eval_tab, "Team Evaluation")
         self.tabs.addTab(self.combine_clips_tab, "Combine Clips")
+        self.tabs.addTab(self.search_tab, "Search")
 
         self.setCentralWidget(self.tabs)
 
@@ -116,16 +122,27 @@ class MainWindow(QMainWindow):
         self._log_bridge.messageLogged.connect(self.log_dock.append_message)
 
     def _setup_menu(self) -> None:
-        menu_bar = self.menuBar()
+        menu_bar: QMenuBar = self.menuBar()
 
         file_menu = menu_bar.addMenu("&File")
-        quit_action = file_menu.addAction("&Quit")
+
+        settings_action: QAction = file_menu.addAction("&Settings...")
+        settings_action.setShortcut("Ctrl+,")
+        settings_action.triggered.connect(self._show_settings)
+
+        file_menu.addSeparator()
+
+        quit_action: QAction = file_menu.addAction("&Quit")
         quit_action.setShortcut("Ctrl+Q")
         quit_action.triggered.connect(QCoreApplication.instance().quit)
 
         help_menu = menu_bar.addMenu("&Help")
-        about_action = help_menu.addAction("&About")
+        about_action: QAction = help_menu.addAction("&About")
         about_action.triggered.connect(self._show_about)
+
+    def _show_settings(self) -> None:
+        dialog: ConfigEditorDialog = ConfigEditorDialog(self)
+        dialog.exec()
 
     def _show_about(self) -> None:
         QMessageBox.about(

@@ -20,9 +20,9 @@ from typing import Literal
 
 from helpers import *
 
-# This is done outside of Main because they should exist before execution
-clips_dir: Path = Path("vids") / "clips"
 clips_dir.mkdir(exist_ok=True)
+
+_STREAM_COPY_DEFAULT: bool = True
 
 
 def Main() -> None:
@@ -34,13 +34,14 @@ def Main() -> None:
 
     # 1. User Input
     # --------------------------------------------------
-    wrestler_name: str = SelectFromConfig(
-        "Wrestlers.config", "Select a wrestler to create a highlight for.")
-    if not wrestler_name:
+    wrestler_names_raw: str = SelectMultiFromConfig(
+        "Wrestlers.config", "Select wrestlers (TAB to multi-select).")
+    if not wrestler_names_raw:
         print("No wrestler selected. Exiting.")
         logging.info("User made no wrestler selection.")
         sys.exit(0)
-    print(f"Selected Wrestler: {wrestler_name}")
+    wrestler_names: list[str] = [w.strip() for w in wrestler_names_raw.split("\n") if w.strip()]
+    print(f"Selected Wrestlers: {', '.join(wrestler_names)}")
 
     filter_type_prompt: str = (
         "echo 'Starting Tie\nMove Used\nMove Defended' | "
@@ -76,87 +77,114 @@ def Main() -> None:
         sys.exit(0)
     print(f"Filtering for: {selected_item}")
 
+    stream_copy_input: str = input("Use fast stream copy? [Y/n]: ").strip().lower()
+    use_stream_copy: bool = stream_copy_input != "n"
+    logging.info(f"Stream copy mode: {use_stream_copy}")
+
+    batch_mode_input: str = input("Batch process all selected wrestlers? [Y/n]: ").strip().lower()
+    batch_mode: bool = batch_mode_input != "n"
+    logging.info(f"Batch mode: {batch_mode}")
+
+    if not batch_mode:
+        wrestler_names = wrestler_names[:1]
+
     # 2. Data Loading and Filtering
     # --------------------------------------------------
-    csv_path: Path = csv_dir / f"{wrestler_name}.csv"
-    if not csv_path.exists():
-        print(
-            f"Error: Compiled data file not found for {wrestler_name} at '{csv_path}'")
-        print("Please run the 'Compile Stats' script first.")
-        logging.error(f"CSV file not found for {wrestler_name}.")
-        sys.exit(1)
+    for wrestler_name in wrestler_names:
+        print(f"\n--- Processing {wrestler_name} ---")
 
-    print(f"Loading data from {csv_path}...")
-    try:
-        wrestler_df: pd.DataFrame = MakeFormatedDataFrame(csv_path)
-    except Exception as e:
-        print(f"Error loading or formatting data from {csv_path}: {e}")
-        logging.error(f"Failed to create DataFrame from {csv_path}: {e}")
-        sys.exit(1)
-
-    filtered_df: pd.DataFrame
-    if filter_type == "Starting Tie":
-        filtered_df = wrestler_df[wrestler_df['Tie Up'] == selected_item]
-    elif filter_type == "Move Used":
-        filtered_df = wrestler_df[wrestler_df['Team Moves'].apply(
-            lambda moves: selected_item in moves)]
-    else:  # Move Defended
-        filtered_df = wrestler_df[wrestler_df['Opponent Moves'].apply(
-            lambda moves: selected_item in moves)]
-
-    if filtered_df.empty:
-        print(
-            f"\nNo sequences found for '{wrestler_name}' with the filter: {filter_type} = '{selected_item}'")
-        logging.info("Filtered DataFrame is empty. No clips to generate.")
-        sys.exit(0)
-
-    print(
-        f"\nFound {len(filtered_df)} matching sequences. Preparing to extract clips...")
-
-    # 3. Clip Generation
-    # --------------------------------------------------
-    clip_gen_dir: Path = tmp_dir / f"clip_gen_{os.getpid()}"
-    clip_gen_dir.mkdir(exist_ok=True)
-    logging.info(f"Created temporary directory for clips: {clip_gen_dir}")
-
-    segment_files: list[Path] = []
-    has_errors: bool = False
-
-    for i, (index, row) in enumerate(filtered_df.iterrows()):
-        origin_video_name: str = index.split(':')[0]
-        input_video_path: Path = taged_dir / origin_video_name
-        start_time: int = row['Start Time']
-        end_time: int = row['End Time']
-
-        if not input_video_path.exists():
-            print(
-                f"Warning: Source video '{input_video_path}' not found. Skipping clip.")
-            logging.warning(
-                f"Source video not found for sequence {index}: {input_video_path}")
+        csv_path: Path = csv_dir / f"{wrestler_name}.csv"
+        if not csv_path.exists():
+            print(f"Error: Compiled data not found for {wrestler_name} at '{csv_path}'")
+            print("Please run the 'Compile Stats' script first.")
+            logging.error(f"CSV file not found for {wrestler_name}.")
             continue
 
-        segment_filename: str = f"segment_{i}.ts"
-        output_segment_path: Path = clip_gen_dir / segment_filename
+        print(f"Loading data from {csv_path}...")
+        try:
+            wrestler_df: pd.DataFrame = MakeFormattedDataFrame(csv_path)
+        except Exception as e:
+            print(f"Error loading or formatting data from {csv_path}: {e}")
+            logging.error(f"Failed to create DataFrame from {csv_path}: {e}")
+            continue
 
-        print(
-            f"  - Extracting clip {i+1}/{len(filtered_df)} from {origin_video_name} [{start_time}s - {end_time}s]")
+        filtered_df: pd.DataFrame
+        if filter_type == "Starting Tie":
+            filtered_df = wrestler_df[wrestler_df['Tie Up'] == selected_item]
+        elif filter_type == "Move Used":
+            filtered_df = wrestler_df[wrestler_df['Team Moves'].apply(
+                lambda moves: selected_item in moves)]
+        else:  # Move Defended
+            filtered_df = wrestler_df[wrestler_df['Opponent Moves'].apply(
+                lambda moves: selected_item in moves)]
 
-        # Re-encode segments to a standard intermediate format (.ts) to ensure
-        # clean concatenation, avoiding issues with varying source params.
+        if filtered_df.empty:
+            print(f"No sequences found for '{wrestler_name}' with filter: {filter_type} = '{selected_item}'")
+            logging.info(f"Filtered DataFrame empty for {wrestler_name}.")
+            continue
+
+        print(f"Found {len(filtered_df)} matching sequences. Preparing to extract clips...")
+
+        # 3. Clip Generation (per wrestler)
+        # --------------------------------------------------
+        clip_gen_dir: Path = tmp_dir / f"clip_gen_{os.getpid()}_{wrestler_name.replace(' ', '_')}"
+        clip_gen_dir.mkdir(exist_ok=True)
+        logging.info(f"Created temporary directory for clips: {clip_gen_dir}")
+
+        segment_files: list[Path] = []
+        has_errors: bool = False
+
+        for i, (index, row) in enumerate(filtered_df.iterrows()):
+            origin_video_name: str = index.split(':')[0]
+            input_video_path: Path = taged_dir / origin_video_name
+            start_time: int = row['Start Time']
+            end_time: int = row['End Time']
+
+            if not input_video_path.exists():
+                print(f"Warning: Source video '{input_video_path}' not found. Skipping clip.")
+                logging.warning(f"Source video not found for sequence {index}: {input_video_path}")
+                continue
+
+            segment_filename: str = f"segment_{i}.ts"
+            output_segment_path: Path = clip_gen_dir / segment_filename
+
+            print(f"  - Extracting clip {i+1}/{len(filtered_df)} from {origin_video_name} [{start_time}s - {end_time}s]")
+
         ffmpeg_extract_cmd: list[str] = [
             "ffmpeg",
             "-i", str(input_video_path),
             "-ss", str(start_time),
             "-to", str(end_time),
-            "-vf", "scale=1280:720,setsar=1",  # Standardize resolution
-            "-c:v", "libx264",
-            "-preset", "medium",
-            "-crf", "23",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-y",
-            str(output_segment_path),
         ]
+
+        if use_stream_copy:
+            codecs: dict[str, str] = GetVideoCodecs(input_video_path)
+            vcodec: str = codecs.get("video", "")
+            acodec: str = codecs.get("audio", "")
+            if vcodec == "h264" and acodec == "aac":
+                ffmpeg_extract_cmd += ["-c", "copy", "-avoid_negative_ts", "1"]
+                logging.debug(f"Using stream copy for {input_video_path.name}")
+            else:
+                print(f"  Codecs ({vcodec}/{acodec}) not compatible with stream copy; re-encoding.")
+                ffmpeg_extract_cmd += [
+                    "-vf", "scale=1280:720,setsar=1",
+                    "-c:v", "libx264",
+                    "-preset", "medium",
+                    "-crf", "23",
+                    "-c:a", "aac",
+                    "-b:a", "128k",
+                ]
+        else:
+            ffmpeg_extract_cmd += [
+                "-vf", "scale=1280:720,setsar=1",
+                "-c:v", "libx264",
+                "-preset", "medium",
+                "-crf", "23",
+                "-c:a", "aac",
+                "-b:a", "128k",
+            ]
+
+        ffmpeg_extract_cmd += ["-y", str(output_segment_path)]
 
         try:
             subprocess.run(ffmpeg_extract_cmd, check=True,
@@ -169,54 +197,52 @@ def Main() -> None:
                 f"FFMPEG clip extraction failed for {index}: {e.stderr}")
             has_errors = True
 
-    if not segment_files:
-        print("\nNo clips were successfully extracted. Exiting.")
+        if not segment_files:
+            print("\nNo clips were successfully extracted. Skipping.")
+            shutil.rmtree(clip_gen_dir)
+            continue
+
+        # 4. Concatenation
+        # --------------------------------------------------
+        print("\nAll clips extracted. Concatenating into final video...")
+        list_file_path: Path = clip_gen_dir / "mylist.txt"
+        with open(list_file_path, "w") as f:
+            for segment_path in segment_files:
+                f.write(f"file '{segment_path.resolve()}'\n")
+
+        sanitized_item: str = selected_item.replace(' ', '_').replace('/', '_')
+        final_output_path: Path = (
+            clips_dir /
+            f"{wrestler_name.replace(' ', '_')}_{filter_type.replace(' ', '_')}_{sanitized_item}.mkv"
+        )
+
+        ffmpeg_concat_cmd: list[str] = [
+            "ffmpeg",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(list_file_path),
+            "-c", "copy",
+            "-y",
+            str(final_output_path)
+        ]
+
+        try:
+            subprocess.run(ffmpeg_concat_cmd, check=True,
+                           capture_output=True,
+                           text=True)
+            print(f"\nSuccessfully created highlight reel: {final_output_path}")
+            if has_errors:
+                print("Note: Some clips could not be extracted due to errors.")
+        except subprocess.CalledProcessError as e:
+            print(f"Error creating final video: {e.stderr}")
+            logging.error(f"FFMPEG concatenation failed: {e.stderr}")
+            has_errors = True
+
+        # 5. Cleanup
+        # --------------------------------------------------
+        logging.info(f"Cleaning up temporary directory: {clip_gen_dir}")
         shutil.rmtree(clip_gen_dir)
-        sys.exit(0)
-
-    # 4. Concatenation
-    # --------------------------------------------------
-    print("\nAll clips extracted. Concatenating into final video...")
-    list_file_path: Path = clip_gen_dir / "mylist.txt"
-    with open(list_file_path, "w") as f:
-        for segment_path in segment_files:
-            # Use relative paths if possible, but absolute works with -safe 0
-            f.write(f"file '{segment_path.resolve()}'\n")
-
-    sanitized_item: str = selected_item.replace(' ', '_').replace('/', '_')
-    final_output_path: Path = (
-        clips_dir /
-        f"{wrestler_name.replace(' ', '_')}_{filter_type.replace(' ', '_')}_{sanitized_item}.mkv"
-    )
-
-    # Since intermediate files are standardized .ts, we can safely stream copy.
-    ffmpeg_concat_cmd: list[str] = [
-        "ffmpeg",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(list_file_path),
-        "-c", "copy",
-        "-y",
-        str(final_output_path)
-    ]
-
-    try:
-        subprocess.run(ffmpeg_concat_cmd, check=True,
-                       capture_output=True,
-                       text=True)
-        print(f"\nSuccessfully created highlight reel: {final_output_path}")
-        if has_errors:
-            print("Note: Some clips could not be extracted due to errors.")
-    except subprocess.CalledProcessError as e:
-        print(f"Error creating final video: {e.stderr}")
-        logging.error(f"FFMPEG concatenation failed: {e.stderr}")
-        has_errors = True
-
-    # 5. Cleanup
-    # --------------------------------------------------
-    logging.info(f"Cleaning up temporary directory: {clip_gen_dir}")
-    shutil.rmtree(clip_gen_dir)
-    print("Cleanup complete.")
+        print("Cleanup complete.")
 
 
 if __name__ == '__main__':

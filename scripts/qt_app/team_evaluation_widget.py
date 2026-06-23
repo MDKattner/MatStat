@@ -23,7 +23,7 @@ from scripts.helpers import (
     GenerateDefenseDF,
     GenerateInitiationDF,
     GenerateOffenseDF,
-    MakeFormatedDataFrame,
+    MakeFormattedDataFrame,
     csv_dir,
     eval_dir,
 )

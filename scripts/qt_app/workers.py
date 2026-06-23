@@ -2,37 +2,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from scripts.helpers import (
-    ChapterSequence,
-    MakeFormatedDataFrame,
-    MakeNameAndCSV,
-    NameProbe,
-)
-
-
-class FfprobeWorker(QThread):
-    """Run ffprobe operations in a background thread."""
-
-    resultReady = pyqtSignal(object)
-    error = pyqtSignal(str)
-
-    def __init__(self, fn: Callable, *args: object, **kwargs: object) -> None:
-        super().__init__()
-        self._fn: Callable = fn
-        self._args: tuple[object, ...] = args
-        self._kwargs: dict[str, object] = kwargs
-
-    def run(self) -> None:
-        try:
-            result: object = self._fn(*self._args, **self._kwargs)
-            self.resultReady.emit(result)
-        except Exception as e:
-            logging.error(f"FfprobeWorker error: {e}")
-            self.error.emit(str(e))
+from scripts.helpers import MakeFormattedDataFrame, MakeNameAndCSV
 
 
 class CompileStatsWorker(QThread):
@@ -87,7 +60,7 @@ class LoadDataWorker(QThread):
 
     def run(self) -> None:
         try:
-            df = MakeFormatedDataFrame(self.csv_path)
+            df = MakeFormattedDataFrame(self.csv_path)
             self.resultReady.emit(df)
         except Exception as e:
             logging.error(f"LoadDataWorker error: {e}")

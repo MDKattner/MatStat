@@ -4,7 +4,6 @@
 # It compiles everything into a single excel file with multiple sheets
 ###############################################################################################################################################################################################################################################################
 
-import os
 import pandas as pd
 from helpers import *
 from pathlib import Path
@@ -56,8 +55,7 @@ def Main() -> None:
                 print(f"  - Processing data for '{sheet_name}'...")
 
                 try:
-                    csv_file
-                    tmp_df: pd.DataFrame = MakeFormatedDataFrame(csv_file)
+                    tmp_df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
 
                     logging.debug(
                         f"Generating and writing Initiation DF for '{sheet_name}'.")

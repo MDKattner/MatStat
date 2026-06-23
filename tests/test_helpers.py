@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 import pytest
 import numpy as np
+from pandas import DataFrame
 
 # Add the script's parent directory to the Python path
 # to allow for importing the helpers module.
@@ -66,12 +67,43 @@ class TestChapterSequence:
         )
         assert sample_sequence.ToMetadata() == expected_metadata
 
-    def test_prety_chapter(self, sample_sequence: ChapterSequence):
-        """Test the PretyChapter representation method for human-readable output."""
-        pretty_string = sample_sequence.PretyChapter()
+    def test_pretty_chapter(self, sample_sequence: ChapterSequence):
+        """Test the PrettyChapter representation method for human-readable output."""
+        pretty_string = sample_sequence.PrettyChapter()
         assert "Start Time" in pretty_string
         assert "1:00" in pretty_string
         assert "End Time" in pretty_string
         assert "1:15" in pretty_string
         assert "High Crotch, Lift" in pretty_string
         assert "Sprawl" in pretty_string
+
+class TestHelpers:
+    """Tests for standalone helper functions in scripts/helpers.py."""
+
+    def test_get_video_codecs_empty_on_failure(self) -> None:
+        import subprocess
+        from pathlib import Path
+        from scripts.helpers import GetVideoCodecs
+
+        result: dict[str, str] = GetVideoCodecs(Path("/nonexistent/video.mkv"))
+        assert result == {}
+
+    def test_load_all_wrestler_data_returns_dict(self) -> None:
+        from scripts.helpers import LoadAllWrestlerData, csv_dir
+
+        result: dict[str, DataFrame] = LoadAllWrestlerData(csv_dir)
+        assert isinstance(result, dict)
+
+    def test_get_video_codecs_returns_codecs(self, monkeypatch) -> None:
+        import subprocess
+        from pathlib import Path
+        from scripts.helpers import GetVideoCodecs
+
+        def mock_run(cmd: str, **kwargs) -> subprocess.CompletedProcess:
+            if "select_streams v:0" in cmd:
+                return subprocess.CompletedProcess([], 0, "h264", "")
+            return subprocess.CompletedProcess([], 0, "aac", "")
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        result: dict[str, str] = GetVideoCodecs(Path("fake.mkv"))
+        assert result == {"video": "h264", "audio": "aac"}
