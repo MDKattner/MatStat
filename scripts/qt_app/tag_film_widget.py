@@ -82,6 +82,11 @@ class VideoSelectorWidget(QWidget):
                 item: QListWidgetItem = QListWidgetItem(f)
                 self.list_widget.addItem(item)
 
+    def refresh(self) -> None:
+        text: str = self.search_box.text()
+        self._refresh()
+        self._filter_items(text)
+
     def _on_selected(self, item: QListWidgetItem) -> None:
         self.videoSelected.emit(item.text())
 
@@ -219,7 +224,7 @@ class TagFilmWidget(QWidget):
         self.add_seq_btn.setEnabled(False)
         gl.addWidget(self.add_seq_btn)
 
-        self.finish_btn: QPushButton = QPushButton("Finish & Tag Video")
+        self.finish_btn: QPushButton = QPushButton("Finish && Tag Video")
         self.finish_btn.setEnabled(False)
         gl.addWidget(self.finish_btn)
 
@@ -268,6 +273,14 @@ class TagFilmWidget(QWidget):
         can_tag: bool = bool(self._vid_file_name and self._wrestler_name)
         self.add_seq_btn.setEnabled(can_tag)
         self.finish_btn.setEnabled(bool(self._chap_list))
+
+    def _reset_details_section(self) -> None:
+        self.attack_radio.setChecked(True)
+        self.tie_selector.combo.setCurrentIndex(-1)
+        self.moves_selector.clear_selection()
+        self.opp_moves_selector.clear_selection()
+        self.scores_selector.clear_selection()
+        self.opp_scores_selector.clear_selection()
 
     def _mark_start(self) -> None:
         ms: int = self._video_panel.current_position_ms()
@@ -336,6 +349,9 @@ class TagFilmWidget(QWidget):
                 f"{'A' if attacking else 'D'} | {tie}"
             )
             self.seq_count_label.setText(f"Sequences tagged: {len(self._chap_list) // 2}")
+
+            if code == 1:
+                self._reset_details_section()
 
         self._update_buttons()
         self.status_label.setText(f"Added sequence. {len(self._chap_list) // 2} sequences tagged.")
@@ -418,6 +434,8 @@ class TagFilmWidget(QWidget):
                 )
             except OSError as e:
                 logging.warning(f"Cleanup after tagging: {e}")
+
+            self.video_selector.refresh()
 
             QMessageBox.information(
                 self,

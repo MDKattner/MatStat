@@ -178,7 +178,7 @@ class ChapterSequence:
             f"Start Time\t\t\t: {self.start_time // 60}:{self.start_time % 60:02}\n"
             f"End Time\t\t\t: {self.end_time // 60}:{self.end_time % 60:02}\n"
             f"Was your wrestler attacking?\t: {self.attack_defend}\n"
-            f"Starting position or tie\t: {self.tie_up}\n"
+            f"Starting position or tie\t\t: {self.tie_up}\n"
             f"Your wrestler's attacks\t\t: {team_moves_str}\n"
             f"The opponent's attacks\t\t: {op_moves_str}\n"
             f"Your wrestler's scoring\t\t: {team_scores_str}\n"

@@ -142,6 +142,18 @@ class MultiSelector(QWidget):
             item.setHidden(not match)
             widget.setVisible(match)
 
+    def clear_selection(self) -> None:
+        for i in range(self.list_widget.count()):
+            item: QListWidgetItem | None = self.list_widget.item(i)
+            if item is None:
+                continue
+            widget: QWidget | None = self.list_widget.itemWidget(item)
+            if widget is None:
+                continue
+            cb: QCheckBox | None = widget.findChild(QCheckBox)
+            if cb is not None:
+                cb.setChecked(False)
+
     def _on_selection_changed(self) -> None:
         self.selectionMade.emit(self.selected)
 
@@ -402,19 +414,16 @@ class ChapterPreviewDialog(QDialog):
         self.button_box: QDialogButtonBox = QDialogButtonBox()
         self.re_do_btn: QPushButton = QPushButton("Re-do Sequence")
         self.new_seq_btn: QPushButton = QPushButton("New Sequence")
-        self.done_btn: QPushButton = QPushButton("Done")
 
         self.button_box.addButton(self.re_do_btn, QDialogButtonBox.ButtonRole.ActionRole)
         self.button_box.addButton(self.new_seq_btn, QDialogButtonBox.ButtonRole.ActionRole)
-        self.button_box.addButton(self.done_btn, QDialogButtonBox.ButtonRole.AcceptRole)
 
         self.re_do_btn.clicked.connect(lambda: self.done(0))
         self.new_seq_btn.clicked.connect(lambda: self.done(1))
-        self.done_btn.clicked.connect(lambda: self.done(2))
 
         layout.addWidget(self.button_box)
 
-        self._result_code: int = 2
+        self._result_code: int = 0
 
     def done(self, result_code: int) -> None:
         self._result_code = result_code
