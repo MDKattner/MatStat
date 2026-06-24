@@ -142,17 +142,22 @@ class SearchWidget(QWidget):
         self.result_count.setStyleSheet("font-size: 14px; font-weight: bold;")
         layout.addWidget(self.result_count)
 
-        self.results_list: QListWidget = QListWidget()
-        self.results_list.setAlternatingRowColors(True)
-        self.results_list.itemClicked.connect(self._on_result_selected)
-        layout.addWidget(self.results_list, stretch=1)
-
         preview_label: QLabel = QLabel("Preview")
         preview_label.setStyleSheet("font-size: 14px; font-weight: bold; margin-top: 8px;")
         layout.addWidget(preview_label)
 
         self._video_panel: VideoPreviewPanel = VideoPreviewPanel()
-        layout.addWidget(self._video_panel)
+        layout.addWidget(self._video_panel, stretch=1)
+
+        seq_label: QLabel = QLabel("Matched Sequences")
+        seq_label.setStyleSheet("font-size: 14px; font-weight: bold; margin-top: 8px;")
+        layout.addWidget(seq_label)
+
+        self.results_list: QListWidget = QListWidget()
+        self.results_list.setAlternatingRowColors(True)
+        self.results_list.itemClicked.connect(self._on_result_selected)
+        self.results_list.setFixedHeight(180)
+        layout.addWidget(self.results_list)
 
         btn_layout: QHBoxLayout = QHBoxLayout()
         self.export_btn: QPushButton = QPushButton("Export Results as CSV")
@@ -201,24 +206,24 @@ class SearchWidget(QWidget):
             subset["_wrestler"] = wrestler_name
 
             if attack_mode == "Attacking":
-                subset = subset[subset["Attacking"] == True]
+                subset = subset[subset["Attacking"] == True]  # type: ignore[assignment]
             elif attack_mode == "Defending":
-                subset = subset[subset["Attacking"] == False]
+                subset = subset[subset["Attacking"] == False]  # type: ignore[assignment]
 
             if tie_text:
-                subset = subset[subset["Tie Up"] == tie_text]
+                subset = subset[subset["Tie Up"] == tie_text]  # type: ignore[assignment]
 
             if team_move_text:
-                subset = subset[subset["Team Moves"].apply(
+                subset = subset[subset["Team Moves"].apply(  # type: ignore[assignment]
                     lambda m: any(team_move_text in mv.lower() for mv in m) if isinstance(m, list) else False
                 )]
 
             if opp_move_text:
-                subset = subset[subset["Opponent Moves"].apply(
+                subset = subset[subset["Opponent Moves"].apply(  # type: ignore[assignment]
                     lambda m: any(opp_move_text in mv.lower() for mv in m) if isinstance(m, list) else False
                 )]
 
-            subset = subset[(subset["Net Points"] >= min_pts) & (subset["Net Points"] <= max_pts)]
+            subset = subset[(subset["Net Points"] >= min_pts) & (subset["Net Points"] <= max_pts)]  # type: ignore[assignment]
 
             for index, row in subset.iterrows():
                 rows.append({
@@ -226,7 +231,7 @@ class SearchWidget(QWidget):
                     "Origin": index,
                     "Start Time": row["Start Time"],
                     "End Time": row["End Time"],
-                    "Attacking": "A" if row["Attacking"] else "D",
+                    "Attacking": "A" if bool(row["Attacking"]) else "D",
                     "Tie Up": row["Tie Up"],
                     "Team Moves": ", ".join(row["Team Moves"]) if isinstance(row["Team Moves"], list) else "",
                     "Opponent Moves": ", ".join(row["Opponent Moves"]) if isinstance(row["Opponent Moves"], list) else "",

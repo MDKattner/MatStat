@@ -70,7 +70,7 @@ class CombineClipsWorker(QThread):
         total: int = len(self._filtered_df)
 
         for i, (index, row) in enumerate(self._filtered_df.iterrows()):
-            origin_video_name: str = index.split(":")[0]
+            origin_video_name: str = str(index).split(":")[0]
             input_video_path: Path = taged_dir / origin_video_name
             start_time: int = int(row["Start Time"])
             end_time: int = int(row["End Time"])
@@ -220,11 +220,11 @@ class BatchCombineClipsWorker(QThread):
                 continue
 
             if combo.filter_type == "Starting Tie":
-                filtered: pd.DataFrame = df[df["Tie Up"] == combo.filter_item]
+                filtered: pd.DataFrame = df[df["Tie Up"] == combo.filter_item]  # type: ignore[assignment]
             elif combo.filter_type == "Move Used":
-                filtered = df[df["Team Moves"].apply(lambda m: combo.filter_item in m)]
+                filtered = df[df["Team Moves"].apply(lambda m: combo.filter_item in m)]  # type: ignore[assignment]
             else:
-                filtered = df[df["Opponent Moves"].apply(lambda m: combo.filter_item in m)]
+                filtered = df[df["Opponent Moves"].apply(lambda m: combo.filter_item in m)]  # type: ignore[assignment]
 
             if filtered.empty:
                 self.combo_finished.emit(combo.wrestler, False, "No matches")
@@ -237,7 +237,7 @@ class BatchCombineClipsWorker(QThread):
             has_errors: bool = False
 
             for j, (index, row) in enumerate(filtered.iterrows()):
-                origin_video_name: str = index.split(":")[0]
+                origin_video_name: str = str(index).split(":")[0]
                 input_video_path: Path = taged_dir / origin_video_name
                 start_time: int = int(row["Start Time"])
                 end_time: int = int(row["End Time"])
@@ -450,22 +450,22 @@ class CombineClipsWidget(QWidget):
         layout.addStretch()
 
     def _build_preview(self, layout: QVBoxLayout) -> None:
+        preview_label: QLabel = QLabel("Preview")
+        preview_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        layout.addWidget(preview_label)
+
+        self._video_panel: VideoPreviewPanel = VideoPreviewPanel()
+        layout.addWidget(self._video_panel, stretch=1)
+
         seq_label: QLabel = QLabel("Matched Sequences")
-        seq_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        seq_label.setStyleSheet("font-size: 14px; font-weight: bold; margin-top: 8px;")
         layout.addWidget(seq_label)
 
         self.seq_list: QListWidget = QListWidget()
         self.seq_list.setAlternatingRowColors(True)
         self.seq_list.itemClicked.connect(self._on_sequence_selected)
-        self.seq_list.setMinimumHeight(150)
+        self.seq_list.setFixedHeight(180)
         layout.addWidget(self.seq_list)
-
-        preview_label: QLabel = QLabel("Preview")
-        preview_label.setStyleSheet("font-size: 14px; font-weight: bold; margin-top: 8px;")
-        layout.addWidget(preview_label)
-
-        self._video_panel: VideoPreviewPanel = VideoPreviewPanel()
-        layout.addWidget(self._video_panel, stretch=1)
 
     def _connect_signals(self) -> None:
         self.tie_radio.toggled.connect(self._on_filter_type_changed)
@@ -525,11 +525,11 @@ class CombineClipsWidget(QWidget):
             return
 
         if filter_type == "Starting Tie":
-            filtered: pd.DataFrame = df[df["Tie Up"] == selected_item]
+            filtered: pd.DataFrame = df[df["Tie Up"] == selected_item]  # type: ignore[assignment]
         elif filter_type == "Move Used":
-            filtered = df[df["Team Moves"].apply(lambda m: selected_item in m)]
+            filtered = df[df["Team Moves"].apply(lambda m: selected_item in m)]  # type: ignore[assignment]
         else:
-            filtered = df[df["Opponent Moves"].apply(lambda m: selected_item in m)]
+            filtered = df[df["Opponent Moves"].apply(lambda m: selected_item in m)]  # type: ignore[assignment]
 
         if filtered.empty:
             self.status_label.setText(
@@ -570,12 +570,13 @@ class CombineClipsWidget(QWidget):
             return
 
         for row_idx, (index, row) in enumerate(self._filtered_df.iterrows()):
-            video_name: str = index.split(":")[0]
+            video_name: str = str(index).split(":")[0]
             start_time: int = int(row["Start Time"])
             end_time: int = int(row["End Time"])
-            attacking: str = "A" if row["Attacking"] else "D"
-            tie_up: str = row["Tie Up"] or ""
-            team_moves: list[str] = row["Team Moves"] or []
+            attacking: str = "A" if bool(row["Attacking"]) else "D"
+            tie_up: str = str(row["Tie Up"]) or ""
+            team_moves_list = row["Team Moves"]
+            team_moves: list[str] = team_moves_list if isinstance(team_moves_list, list) else []
             moves_str: str = ", ".join(team_moves[:2])
             if len(team_moves) > 2:
                 moves_str += "..."
@@ -595,7 +596,7 @@ class CombineClipsWidget(QWidget):
 
         row_idx: int = item.data(Qt.ItemDataRole.UserRole)
         row = self._filtered_df.iloc[row_idx]
-        video_name: str = row.name.split(":")[0]
+        video_name: str = str(row.name).split(":")[0]
         start_time: int = int(row["Start Time"])
         video_path: Path = taged_dir / video_name
 

@@ -65,6 +65,9 @@ def _write_config_file(file_path: Path, header_lines: list[str], new_entries: li
         else:
             out_lines.append(raw)
 
+    for extra in new_entries[entry_idx:]:
+        out_lines.append(f"{extra}\n")
+
     file_path.write_text("".join(out_lines))
 
 

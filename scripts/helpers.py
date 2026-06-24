@@ -441,7 +441,7 @@ def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str]:
     """
     # This command outputs the title field of the metadata as the last line
     ffprobe_command: str = ("ffprobe -v error -show_chapters -show_entries format_tags=title "
-                            f"-of default=nw=1:nk=1 '{path_to_vid}'")
+                            f"-of csv '{path_to_vid}'")
     logging.debug(
         f"Executing ffprobe command for MakeNameAndCSV: {ffprobe_command}")
 
@@ -461,7 +461,7 @@ def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str]:
         logging.warning(f"MakeNameAndCSV: no output from ffprobe for '{path_to_vid}'")
         return ("", "")
 
-    name_out: str = lines.pop()
+    name_out: str = lines.pop().removeprefix("format,")
     logging.debug(f"Extracted wrestler name: {name_out}")
 
     csv_rows: list[str] = []
@@ -470,8 +470,9 @@ def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str]:
             logging.debug(f"Skipping empty chapter line: {line}")
             continue
 
-        # The line format is: id,time_base,start,start_time,end,end_time,title,"the,title,string"
+        # The line format is: chapter,id,time_base,start,start_time,end,end_time,"title"
         try:
+            line = line.removeprefix("chapter,")
             parts: list[str] = line.split('"')
             time_meta: list[str] = parts[0].split(',')
             title: str = parts[1]

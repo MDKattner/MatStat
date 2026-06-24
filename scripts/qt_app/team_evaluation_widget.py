@@ -37,6 +37,7 @@ class TeamEvaluationWidget(QWidget):
         super().__init__(parent)
         self._evaluation_errors: list[str] = []
         self._csv_files: list[Path] = []
+        self._current_worker: LoadDataWorker | None = None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -123,11 +124,15 @@ class TeamEvaluationWidget(QWidget):
         sheet_name: str = csv_file.stem
         self.status_label.setText(f"Loading data for '{sheet_name}'...")
 
-        worker: LoadDataWorker = LoadDataWorker(csv_file)
-        worker.resultReady.connect(lambda df, i=index, name=sheet_name: self._on_data_loaded(df, i, name))
-        worker.error.connect(lambda err, name=sheet_name: self._on_data_error(err, name))
-        worker.finished.connect(lambda i=index: self._process_next_file(i + 1))
-        worker.start()
+        self._current_worker = LoadDataWorker(csv_file)
+        self._current_worker.resultReady.connect(lambda df, i=index, name=sheet_name: self._on_data_loaded(df, i, name))
+        self._current_worker.error.connect(lambda err, name=sheet_name: self._on_data_error(err, name))
+        self._current_worker.finished.connect(lambda i=index: self._on_worker_finished(i))
+        self._current_worker.start()
+
+    def _on_worker_finished(self, index: int) -> None:
+        self._current_worker = None
+        self._process_next_file(index + 1)
 
     def _on_data_loaded(self, df: pd.DataFrame, index: int, sheet_name: str) -> None:
         try:
