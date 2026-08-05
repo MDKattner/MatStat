@@ -7,8 +7,12 @@ name = "pypi"
 pyfiglet = "1.0.4"
 pandas = "2.3.3"
 openpyxl = "3.1.5"
+PyQt6 = "*"
+PyQt6-QtMultimedia = "*"
 
 [dev-packages]
+pytest = "*"
+pytest-mock = "*"
 
 [requires]
-python_version = "3.14"
+python_version = "3.13"

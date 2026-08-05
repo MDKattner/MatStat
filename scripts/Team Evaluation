@@ -1,10 +1,10 @@
 #! /usr/bin/env python
+# DEPRECATED: MatStat CLI is deprecated; use the Qt6 GUI (python scripts/qt_app/main.py).
 ###############################################################################################################################################################################################################################################################
 # Creates excel spreadsheet and advanced stats from the complied CSV files
 # It compiles everything into a single excel file with multiple sheets
 ###############################################################################################################################################################################################################################################################
 
-import os
 import pandas as pd
 from helpers import *
 from pathlib import Path
@@ -22,6 +22,8 @@ def Main() -> None:
     """
 
     logging.info("Starting Team Evaluation script.")
+    logging.warning("DEPRECATED: MatStat CLI is deprecated; use the Qt6 GUI (python scripts/qt_app/main.py).")
+    print("NOTE: MatStat CLI is deprecated. Use the Qt6 GUI instead: python scripts/qt_app/main.py", file=sys.stderr)
     print("Starting Team Evaluation...")
 
     excel_file: Path = eval_dir / "Team_Stats.xlsx"
@@ -56,8 +58,7 @@ def Main() -> None:
                 print(f"  - Processing data for '{sheet_name}'...")
 
                 try:
-                    csv_file
-                    tmp_df: pd.DataFrame = MakeFormatedDataFrame(csv_file)
+                    tmp_df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
 
                     logging.debug(
                         f"Generating and writing Initiation DF for '{sheet_name}'.")
