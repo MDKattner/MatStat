@@ -1,4 +1,5 @@
 #! /usr/bin/env python
+# DEPRECATED: MatStat CLI is deprecated; use the Qt6 GUI (python scripts/qt_app/main.py).
 ###############################################################################################################################################################################################################################################################
 # This script generates a compilation video of specific wrestling sequences.
 #
@@ -30,6 +31,8 @@ def Main() -> None:
     Main function to drive the interactive clip combination process.
     """
     logging.info("Starting Combine Clips script.")
+    logging.warning("DEPRECATED: MatStat CLI is deprecated; use the Qt6 GUI (python scripts/qt_app/main.py).")
+    print("NOTE: MatStat CLI is deprecated. Use the Qt6 GUI instead: python scripts/qt_app/main.py", file=sys.stderr)
     print("--- MatStat: Clip Combiner ---")
 
     # 1. User Input

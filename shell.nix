@@ -10,7 +10,7 @@ pkgs.mkShell {
     python3Packages.pandas
     python3Packages.numpy
     python3Packages.openpyxl       # Excel writer (.xlsx)
-    python3Packages.pyfiglet       # Banner text in Run.sh preview
+    python3Packages.pyfiglet       # Banner text in Run.sh preview (DEPRECATED — CLI-only, remove with CLI)
 
     # ── Python dev / test ──
     python3Packages.pytest
@@ -19,7 +19,7 @@ pkgs.mkShell {
 
     # ── System tools ──
     ffmpeg                         # Includes ffprobe
-    fzf
+    fzf                            # DEPRECATED — CLI-only (Run.sh menu), remove with CLI
 
     # ── Qt Multimedia backends (required for video preview) ──
     qt6.qtmultimedia               # Qt Multimedia + GStreamer/FFmpeg plugin .so files

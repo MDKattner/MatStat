@@ -214,6 +214,37 @@ class TestFilterVideos:
         assert result == []
 
 
+# ---------- _ProcessVideoSafely ----------
+
+class TestProcessVideoSafely:
+    """Tests for workers._ProcessVideoSafely — multiprocessing-safe wrapper."""
+
+    def test_returns_name_and_data(self, monkeypatch) -> None:
+        from scripts.qt_app.workers import _ProcessVideoSafely
+
+        def mock_make_name_and_csv(path: Path) -> tuple[str, str]:
+            return ("Alice", "csv data")
+
+        monkeypatch.setattr("scripts.qt_app.workers.MakeNameAndCSV", mock_make_name_and_csv)
+
+        name, data = _ProcessVideoSafely(Path("alice.mkv"))
+        assert name == "Alice"
+        assert data == "csv data"
+
+    def test_returns_error_on_exception(self, monkeypatch) -> None:
+        from scripts.qt_app.workers import _ProcessVideoSafely
+
+        def mock_make_name_and_csv(path: Path) -> tuple[str, str]:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("scripts.qt_app.workers.MakeNameAndCSV", mock_make_name_and_csv)
+
+        name, data = _ProcessVideoSafely(Path("broken.mkv"))
+        assert name is None
+        assert "broken.mkv" in data
+        assert "boom" in data
+
+
 # ---------- MakeFormattedDataFrame ----------
 
 class TestMakeFormattedDataFrame:

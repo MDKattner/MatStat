@@ -23,6 +23,14 @@ if ! command -v fzf &>/dev/null ; then
     exit 1
 fi
 
+cat >&2 <<'EOF'
+===============================================================
+  MatStat CLI (Run.sh) is DEPRECATED.
+  Use the Qt6 GUI instead:  python scripts/qt_app/main.py
+  The CLI will be removed in a future release.
+===============================================================
+EOF
+
 function ScriptSelect
 {
     # All scripts ending in '.py' are excluded from the selection menu.

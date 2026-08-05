@@ -1,4 +1,5 @@
 #! /usr/bin/env python
+# DEPRECATED: MatStat CLI is deprecated; use the Qt6 GUI (python scripts/qt_app/main.py).
 ###############################################################################################################################################################################################################################################################
 # Select a video to interactively tag by adding chapters
 # A chapter will consist of continuous action (hereby referred to as a sequence) and will end when the action stops
@@ -198,6 +199,8 @@ def Main() -> None:
     It collects all chapter metadata and then calls TagVideo to apply them to the video.
     """
     logging.info("Starting main tagging process.")
+    logging.warning("DEPRECATED: MatStat CLI is deprecated; use the Qt6 GUI (python scripts/qt_app/main.py).")
+    print("NOTE: MatStat CLI is deprecated. Use the Qt6 GUI instead: python scripts/qt_app/main.py", file=sys.stderr)
 
     vid_file_name: str = VideoSelect()
     if vid_file_name == "":

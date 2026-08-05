@@ -201,6 +201,10 @@ class ChapterSequence:
 def SelectFromConfig(file_name: str, desc: str, multi: bool = False) -> str:
     """Present a list from a config file to the user via fzf.
 
+    Deprecated: the CLI is being retired. GUI equivalents are the config-backed
+    selectors in `scripts.qt_app.widgets` (MultiSelector, CheckboxListWidget,
+    ConfigComboBox).
+
     Args:
         file_name: The name of the configuration file (e.g., "Wrestlers.config").
         desc: A description to display as the header in the fzf menu.
@@ -233,12 +237,18 @@ def SelectFromConfig(file_name: str, desc: str, multi: bool = False) -> str:
 
 
 def SelectMultiFromConfig(file_name: str, desc: str) -> str:
-    """Convenience wrapper around SelectFromConfig for multi selection."""
+    """Convenience wrapper around SelectFromConfig for multi selection.
+
+    Deprecated: the CLI is being retired; see SelectFromConfig.
+    """
     return SelectFromConfig(file_name, desc, multi=True)
 
 
 def GetTimeFromUsr(msg: str) -> int:
     """Get a time from the user, formatted as mins:secs, and handle invalid input.
+
+    Deprecated: the CLI is being retired. The GUI uses `TimeInput` (QTimeEdit)
+    in `scripts.qt_app.widgets`.
 
     This function will repeatedly prompt the user until a valid time format
     is entered.
@@ -392,6 +402,9 @@ def LoadAllWrestlerData(data_dir: Path | None = None) -> dict[str, pd.DataFrame]
 
 def FilterVideos(wrestler_name: str) -> list[Path]:
     """Return a list of paths to tagged videos matching a wrestler's name.
+
+    Deprecated: the CLI is being retired; this function has no current callers.
+    The GUI filters tagged videos per-wrestler when generating clips.
 
     Searches the `vids/taged` directory for videos that have `wrestler_name`
     in their title metadata field.
@@ -750,3 +763,9 @@ def GenerateInitiationDF(df_in: pd.DataFrame) -> pd.DataFrame:
         "Average Net Points Defending": [avg_defend],
     }
     return pd.DataFrame.from_dict(df_dict, orient='columns')
+
+def GenerateMoveMatrix() -> pd.DataFrame:
+    """
+
+    """
+

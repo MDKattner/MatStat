@@ -1,11 +1,33 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from scripts.helpers import MakeFormattedDataFrame, MakeNameAndCSV
+
+
+def _ProcessVideoSafely(vid_path: Path) -> tuple[str | None, str]:
+    """Safely extract a wrestler name and CSV data from a video.
+
+    Module-level so it can be pickled by multiprocessing.Pool. Mirrors the
+    `process_video_safely` wrapper from the deprecated CLI 'Compile Stats'.
+
+    Args:
+        vid_path: The path to the tagged video file.
+
+    Returns:
+        A tuple of (name, data) on success, or (None, error_message) on failure.
+    """
+    try:
+        name, data = MakeNameAndCSV(vid_path)
+        return (name, data)
+    except Exception as e:
+        error_msg: str = f"Failed to process video '{vid_path.name}': {e}"
+        logging.error(error_msg)
+        return (None, error_msg)
 
 
 class CompileStatsWorker(QThread):
@@ -20,27 +42,22 @@ class CompileStatsWorker(QThread):
         self.wrestler_names: list[str] = wrestler_names
 
     def run(self) -> None:
-        import multiprocessing
-
         wrestler_to_csv: dict[str, list[str]] = {name: [] for name in self.wrestler_names}
         processing_errors: list[str] = []
         total: int = len(self.video_paths)
 
-        for i, vid_path in enumerate(self.video_paths):
-            try:
-                name: str | None
-                data: str
-                name, data = MakeNameAndCSV(vid_path)
+        with multiprocessing.Pool() as pool:
+            for i, (name, data) in enumerate(pool.imap(_ProcessVideoSafely, self.video_paths)):
+                if self.isInterruptionRequested():
+                    pool.terminate()
+                    return
                 if name is None:
-                    processing_errors.append(f"Error processing: {vid_path.name}")
+                    processing_errors.append(data or f"Error processing: {self.video_paths[i].name}")
                 elif name not in wrestler_to_csv:
-                    processing_errors.append(f"Unknown wrestler '{name}' in {vid_path.name}")
+                    processing_errors.append(f"Unknown wrestler '{name}' in {self.video_paths[i].name}")
                 else:
                     wrestler_to_csv[name].append(data)
-            except Exception as e:
-                processing_errors.append(f"{vid_path.name}: {e}")
-
-            self.progress.emit(i + 1, total, vid_path.name)
+                self.progress.emit(i + 1, total, self.video_paths[i].name)
 
         result: dict[str, str] = {
             name: "\n".join(entries) for name, entries in wrestler_to_csv.items()
