@@ -12,7 +12,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from scripts.helpers import (
     COL_ATTACKING, COL_START_TIME, COL_END_TIME, COL_TIE_UP,
     COL_TEAM_MOVES, COL_OPPONENT_MOVES, COL_TEAM_SCORES, COL_OPPONENT_SCORES, COL_NET_POINTS,
-    MakeNameAndCSV, GetVidDuration, NameProbe, FilterVideos,
+    MakeNameAndCSV, GetVidDuration, NameProbe,
     MakeFormattedDataFrame, LoadAllWrestlerData,
 )
 
@@ -169,51 +169,6 @@ class TestNameProbe:
         assert result == ""
 
 
-# ---------- FilterVideos ----------
-
-class TestFilterVideos:
-    """Tests for FilterVideos — iterates tagged dir, filters by name."""
-
-    def test_returns_matching_videos(self, monkeypatch, tmp_path) -> None:
-        from scripts.helpers import taged_dir as orig_taged_dir
-
-        video_dir: Path = tmp_path / "vids" / "taged"
-        video_dir.mkdir(parents=True)
-        (video_dir / "alice.mkv").write_text("")
-        (video_dir / "bob.mkv").write_text("")
-
-        monkeypatch.setattr("scripts.helpers.taged_dir", video_dir)
-
-        name_map: dict[str, str] = {
-            "alice.mkv": "Alice",
-            "bob.mkv": "Bob",
-        }
-
-        original_name_probe = NameProbe.__wrapped__ if hasattr(NameProbe, "__wrapped__") else None
-
-        def mock_name_probe(path: Path) -> str:
-            return name_map.get(path.name, "")
-
-        monkeypatch.setattr("scripts.helpers.NameProbe", mock_name_probe)
-
-        result: list[Path] = FilterVideos("Alice")
-        assert len(result) == 1
-        assert result[0].name == "alice.mkv"
-
-    def test_no_match_returns_empty(self, monkeypatch, tmp_path) -> None:
-        from scripts.helpers import taged_dir as orig_taged_dir
-
-        video_dir: Path = tmp_path / "vids" / "taged"
-        video_dir.mkdir(parents=True)
-        (video_dir / "alice.mkv").write_text("")
-
-        monkeypatch.setattr("scripts.helpers.taged_dir", video_dir)
-        monkeypatch.setattr("scripts.helpers.NameProbe", lambda p: "Alice")
-
-        result: list[Path] = FilterVideos("Nobody")
-        assert result == []
-
-
 # ---------- _ProcessVideoSafely ----------
 
 class TestProcessVideoSafely:
@@ -352,13 +307,13 @@ class TestLoadAllWrestlerData:
         assert len(result) == 1
 
 
-# ---------- _load_config_items ----------
+# ---------- LoadConfigItems ----------
 
 class TestLoadConfigItems:
-    """Tests for _load_config_items from widgets.py."""
+    """Tests for LoadConfigItems from helpers.py — config file parser."""
 
     def test_loads_items_skipping_comments(self, tmp_path) -> None:
-        from scripts.qt_app.widgets import _load_config_items
+        from scripts.helpers import LoadConfigItems
 
         cfg: Path = tmp_path / "test.config"
         cfg.write_text(
@@ -369,27 +324,27 @@ class TestLoadConfigItems:
             "move two\n"
             "   \n"
         )
-        items: list[str] = _load_config_items(cfg)
+        items: list[str] = LoadConfigItems(cfg)
         assert items == ["move one", "move two"]
 
     def test_empty_file(self, tmp_path) -> None:
-        from scripts.qt_app.widgets import _load_config_items
+        from scripts.helpers import LoadConfigItems
 
         cfg: Path = tmp_path / "empty.config"
         cfg.write_text("")
-        items: list[str] = _load_config_items(cfg)
+        items: list[str] = LoadConfigItems(cfg)
         assert items == []
 
     def test_all_comments(self, tmp_path) -> None:
-        from scripts.qt_app.widgets import _load_config_items
+        from scripts.helpers import LoadConfigItems
 
         cfg: Path = tmp_path / "comments.config"
         cfg.write_text("# comment 1\n# comment 2\n")
-        items: list[str] = _load_config_items(cfg)
+        items: list[str] = LoadConfigItems(cfg)
         assert items == []
 
     def test_file_not_found(self, tmp_path) -> None:
-        from scripts.qt_app.widgets import _load_config_items
+        from scripts.helpers import LoadConfigItems
 
-        items: list[str] = _load_config_items(tmp_path / "nonexistent.config")
+        items: list[str] = LoadConfigItems(tmp_path / "nonexistent.config")
         assert items == []

@@ -10,7 +10,10 @@ pkgs.mkShell {
     python3Packages.pandas
     python3Packages.numpy
     python3Packages.openpyxl       # Excel writer (.xlsx)
-    python3Packages.pyfiglet       # Banner text in Run.sh preview (DEPRECATED — CLI-only, remove with CLI)
+    python3Packages.fastapi        # Web backend (scripts/web)
+    python3Packages.uvicorn        # ASGI server for the web app
+    python3Packages.python-multipart  # Multipart uploads (web video upload)
+    python3Packages.httpx          # FastAPI TestClient
 
     # ── Python dev / test ──
     python3Packages.pytest
@@ -19,7 +22,6 @@ pkgs.mkShell {
 
     # ── System tools ──
     ffmpeg                         # Includes ffprobe
-    fzf                            # DEPRECATED — CLI-only (Run.sh menu), remove with CLI
 
     # ── Qt Multimedia backends (required for video preview) ──
     qt6.qtmultimedia               # Qt Multimedia + GStreamer/FFmpeg plugin .so files
@@ -41,8 +43,8 @@ pkgs.mkShell {
     echo "  ╚═══════════════════════════════════════════╝"
     echo ""
     echo "  python scripts/qt_app/main.py     Qt6 GUI"
+    echo "  uvicorn scripts.web.app:app       Web app (http://127.0.0.1:8000)"
     echo "  pytest                            Tests"
-    echo "  ./Run.sh                          Headless TUI"
     echo ""
   '';
 }

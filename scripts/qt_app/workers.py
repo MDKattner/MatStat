@@ -13,7 +13,7 @@ def _ProcessVideoSafely(vid_path: Path) -> tuple[str | None, str]:
     """Safely extract a wrestler name and CSV data from a video.
 
     Module-level so it can be pickled by multiprocessing.Pool. Mirrors the
-    `process_video_safely` wrapper from the deprecated CLI 'Compile Stats'.
+    `process_video_safely` wrapper used by the web Compile Stats job.
 
     Args:
         vid_path: The path to the tagged video file.

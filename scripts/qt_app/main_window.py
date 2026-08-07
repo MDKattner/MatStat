@@ -82,16 +82,19 @@ class LogDockWidget(QDockWidget):
 class MainWindow(QMainWindow):
     """Main application window for MatStat."""
 
-    def __init__(self) -> None:
+    def __init__(self, show_logging: bool = False) -> None:
         super().__init__()
         self.setWindowTitle("MatStat")
         self.setMinimumSize(1200, 800)
 
+        self._show_logging: bool = show_logging
         self._setup_logging()
         self._setup_ui()
         self._setup_menu()
 
     def _setup_logging(self) -> None:
+        if not self._show_logging:
+            return
         self._log_bridge: LogBridge = LogBridge()
         self._log_handler: QtLogHandler = QtLogHandler(self._log_bridge)
         self._log_handler.setLevel(logging.DEBUG)
@@ -117,9 +120,10 @@ class MainWindow(QMainWindow):
         self.status_bar: QStatusBar = self.statusBar()
         self.status_bar.showMessage("Ready")
 
-        self.log_dock: LogDockWidget = LogDockWidget(self)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
-        self._log_bridge.messageLogged.connect(self.log_dock.append_message)
+        if self._show_logging:
+            self.log_dock: LogDockWidget = LogDockWidget(self)
+            self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
+            self._log_bridge.messageLogged.connect(self.log_dock.append_message)
 
     def _setup_menu(self) -> None:
         menu_bar: QMenuBar = self.menuBar()
@@ -148,7 +152,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About MatStat",
-            "MatStat v2.0\n\n"
+            "MatStat v0.0.2\n\n"
             "A tool for statistical analysis and move-and-position-specific "
             "film generation of folkstyle wrestling film.\n\n"
             "Uses ffmpeg for video processing, PyQt6 for the GUI.\n\n"

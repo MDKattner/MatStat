@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MatStat</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <h1 class="app-title">MatStat</h1>
+      <nav class="tab-bar" id="tab-bar" role="tablist">
+        <button class="tab-btn" data-tab="tag-film" role="tab" aria-selected="true">Tag Film</button>
+        <button class="tab-btn" data-tab="compile-stats" role="tab" aria-selected="false">Compile Stats</button>
+        <button class="tab-btn" data-tab="team-eval" role="tab" aria-selected="false">Team Evaluation</button>
+        <button class="tab-btn" data-tab="combine-clips" role="tab" aria-selected="false">Combine Clips</button>
+        <button class="tab-btn" data-tab="search" role="tab" aria-selected="false">Search</button>
+      </nav>
+      <div class="header-actions">
+        <span class="conn-badge" id="conn-badge" data-state="offline">offline</span>
+        <button class="icon-btn" id="settings-btn" title="Settings (Ctrl+,)" aria-label="Settings">&#9881;</button>
+      </div>
+    </header>
+
+    <main class="tab-content" id="tab-content">
+      <section class="tab-pane" id="tab-tag-film" data-tab="tag-film">
+        <h2>Tag Film</h2>
+        <div id="tag-film-root"></div>
+      </section>
+      <section class="tab-pane" id="tab-compile-stats" data-tab="compile-stats" hidden>
+        <h2>Compile Stats</h2>
+        <div id="compile-stats-root"></div>
+      </section>
+      <section class="tab-pane" id="tab-team-eval" data-tab="team-eval" hidden>
+        <h2>Team Evaluation</h2>
+        <div id="team-eval-root"></div>
+      </section>
+      <section class="tab-pane" id="tab-combine-clips" data-tab="combine-clips" hidden>
+        <h2>Combine Clips</h2>
+        <div id="combine-clips-root"></div>
+      </section>
+      <section class="tab-pane" id="tab-search" data-tab="search" hidden>
+        <h2>Search</h2>
+        <div id="search-root"></div>
+      </section>
+    </main>
+
+    <footer class="status-bar">
+      <span id="status-text">Ready</span>
+      <button class="log-toggle" id="log-toggle" title="Toggle log panel" aria-expanded="false">Log</button>
+    </footer>
+
+    <aside class="log-dock" id="log-dock" hidden>
+      <div class="log-dock-header">
+        <span>Log</span>
+        <div>
+          <button class="icon-btn" id="log-clear" title="Clear log" aria-label="Clear log">&#10005;</button>
+          <button class="icon-btn" id="log-close" title="Close log" aria-label="Close log">&#8211;</button>
+        </div>
+      </div>
+      <pre class="log-view" id="log-view"></pre>
+    </aside>
+  </div>
+
+  <dialog id="about-dialog" class="modal">
+    <h3>About MatStat</h3>
+    <p>MatStat v0.1.0 — a web tool for statistical analysis and move-and-position-specific film generation of folkstyle wrestling film.</p>
+    <p>GPL-3.0 License</p>
+    <form method="dialog"><button class="btn" value="close">Close</button></form>
+  </dialog>
+
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

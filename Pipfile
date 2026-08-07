@@ -4,15 +4,18 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-pyfiglet = "1.0.4"
 pandas = "2.3.3"
 openpyxl = "3.1.5"
 PyQt6 = "*"
 PyQt6-QtMultimedia = "*"
+fastapi = "*"
+uvicorn = "*"
+python-multipart = "*"
 
 [dev-packages]
 pytest = "*"
 pytest-mock = "*"
+httpx = "*"
 
 [requires]
 python_version = "3.13"

@@ -7,11 +7,44 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent))
 
+from fastapi.testclient import TestClient
+
 from scripts.helpers import (
     COL_ORIGIN, COL_START_TIME, COL_END_TIME, COL_ATTACKING, COL_TIE_UP,
     COL_TEAM_MOVES, COL_OPPONENT_MOVES, COL_TEAM_SCORES, COL_OPPONENT_SCORES,
     COL_NET_POINTS,
 )
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    """TestClient with all video/data dirs redirected into a temp dir.
+
+    Redirects the preview dirs, the upload dir, and the tag job's data dirs
+    so routes and background jobs operate on the same tmp_path (auto-restored
+    by monkeypatch after each test).
+    """
+    from scripts.web import app as web_app
+    from scripts.web import tag as tag_module
+
+    preview_dirs: dict[str, Path] = {
+        "untaged": tmp_path / "untaged",
+        "taged": tmp_path / "taged",
+        "clips": tmp_path / "clips",
+    }
+    for directory in preview_dirs.values():
+        directory.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "tmp").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(web_app, "_PREVIEW_DIRS", preview_dirs)
+    monkeypatch.setattr(web_app, "_UPLOAD_DIR", preview_dirs["untaged"])
+    monkeypatch.setattr(tag_module, "untaged_dir", preview_dirs["untaged"])
+    monkeypatch.setattr(tag_module, "taged_dir", preview_dirs["taged"])
+    monkeypatch.setattr(tag_module, "tmp_dir", tmp_path / "tmp")
+
+    with TestClient(web_app.app) as test_client:
+        yield test_client
+
 
 
 @pytest.fixture

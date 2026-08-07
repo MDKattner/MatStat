@@ -26,33 +26,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-
-def _load_config_items(config_path: Path) -> list[str]:
-    """Load non-blank, non-comment lines from a config file.
-
-    Strips inline comments (text after '#') and leading/trailing whitespace.
-
-    Args:
-        config_path: Path to the config file.
-
-    Returns:
-        A list of parsed item strings.
-    """
-    try:
-        items: list[str] = []
-        with open(config_path) as f:
-            for raw in f:
-                stripped: str = raw.strip()
-                if not stripped or stripped.startswith("#"):
-                    continue
-                items.append(stripped.split("#")[0].strip())
-        return items
-    except FileNotFoundError:
-        logging.error(f"Config file not found: {config_path}")
-        return []
-    except Exception as e:
-        logging.error(f"Error loading config {config_path}: {e}")
-        return []
+from scripts.helpers import LoadConfigItems
 
 
 def _filter_list_widget(list_widget: QListWidget, text: str) -> None:
@@ -89,7 +63,7 @@ class MultiSelector(QWidget):
     def __init__(self, config_path: Path, title: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.config_path: Path = config_path
-        self.items: list[str] = _load_config_items(config_path)
+        self.items: list[str] = LoadConfigItems(config_path)
 
         layout: QVBoxLayout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -187,7 +161,7 @@ class CheckboxListWidget(QWidget):
     def __init__(self, config_path: Path, title: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.config_path: Path = config_path
-        self.items: list[str] = _load_config_items(config_path)
+        self.items: list[str] = LoadConfigItems(config_path)
 
         layout: QVBoxLayout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -235,7 +209,7 @@ class ConfigComboBox(QWidget):
     def __init__(self, config_path: Path, title: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.config_path: Path = config_path
-        self.items: list[str] = _load_config_items(config_path)
+        self.items: list[str] = LoadConfigItems(config_path)
 
         layout: QVBoxLayout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

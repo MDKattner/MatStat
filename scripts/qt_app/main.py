@@ -31,12 +31,16 @@ def main() -> None:
 
     logging.info("MatStat GUI starting.")
 
-    app: QApplication = QApplication(sys.argv)
+    # Show the on-screen log dock only when the debug flag is passed
+    visible_logging: bool = "--visible-logging" in sys.argv
+    app_args: list[str] = [arg for arg in sys.argv if arg != "--visible-logging"]
+
+    app: QApplication = QApplication(app_args)
     app.setApplicationName("MatStat")
     app.setApplicationDisplayName("MatStat")
     app.setOrganizationName("MatStat")
 
-    window: MainWindow = MainWindow()
+    window: MainWindow = MainWindow(show_logging=visible_logging)
     window.show()
 
     logging.info("MatStat GUI started.")

@@ -67,6 +67,36 @@ tmp_dir.mkdir(parents=True, exist_ok=True)
 logging.info(f"Ensured directories {csv_dir}, {eval_dir}, {tmp_dir} exist.")
 
 
+def LoadConfigItems(config_path: Path) -> list[str]:
+    """Load non-blank, non-comment lines from a config file.
+
+    Strips inline comments (text after '#') and leading/trailing whitespace.
+    Shared by the Qt selectors (scripts/qt_app/widgets.py) and the web app
+    (scripts/web/configs.py).
+
+    Args:
+        config_path: Path to the config file.
+
+    Returns:
+        A list of parsed item strings.
+    """
+    try:
+        items: list[str] = []
+        with open(config_path) as f:
+            for raw in f:
+                stripped: str = raw.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                items.append(stripped.split("#")[0].strip())
+        return items
+    except FileNotFoundError:
+        logging.error(f"Config file not found: {config_path}")
+        return []
+    except Exception as e:
+        logging.error(f"Error loading config {config_path}: {e}")
+        return []
+
+
 @dataclass(order=True)
 class ChapterSequence:
     """A representation of the data encoded in a single chapter title.
@@ -198,90 +228,6 @@ class ChapterSequence:
                 f"title={self.MakeTitle()}\n")
 
 
-def SelectFromConfig(file_name: str, desc: str, multi: bool = False) -> str:
-    """Present a list from a config file to the user via fzf.
-
-    Deprecated: the CLI is being retired. GUI equivalents are the config-backed
-    selectors in `scripts.qt_app.widgets` (MultiSelector, CheckboxListWidget,
-    ConfigComboBox).
-
-    Args:
-        file_name: The name of the configuration file (e.g., "Wrestlers.config").
-        desc: A description to display as the header in the fzf menu.
-        multi: If True, allow multiple selections (--multi); otherwise single.
-
-    Returns:
-        The selected item(s), newline-separated if multi. Empty string on cancel.
-    """
-    config_path: Path = cfg_dir / file_name
-    multi_flag: str = "--multi" if multi else "--no-multi"
-    fzf_cmd: str = (
-        f"sed 's/#.*//' '{config_path}' | grep -G '\\S' | sed 's/[[:space:]]\\+$//' | "
-        f"fzf --header='{desc}' --header-border=bold --header-label-pos=top {multi_flag} "
-        f"--preview='cat {config_path}' --preview-window=70%"
-    )
-    try:
-        logging.debug(f"Executing fzf command: {fzf_cmd}")
-        result: str = subprocess.run(
-            fzf_cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            check=True
-        ).stdout.strip()
-        logging.info(f"Selected from config '{file_name}': {result}")
-        return result
-    except subprocess.CalledProcessError:
-        logging.warning(f"User made no selection for config: {file_name}")
-        return ""
-
-
-def SelectMultiFromConfig(file_name: str, desc: str) -> str:
-    """Convenience wrapper around SelectFromConfig for multi selection.
-
-    Deprecated: the CLI is being retired; see SelectFromConfig.
-    """
-    return SelectFromConfig(file_name, desc, multi=True)
-
-
-def GetTimeFromUsr(msg: str) -> int:
-    """Get a time from the user, formatted as mins:secs, and handle invalid input.
-
-    Deprecated: the CLI is being retired. The GUI uses `TimeInput` (QTimeEdit)
-    in `scripts.qt_app.widgets`.
-
-    This function will repeatedly prompt the user until a valid time format
-    is entered.
-
-    Args:
-        msg: The message to display to the user as a prompt.
-
-    Returns:
-        The time in seconds.
-    """
-    first_attempt: bool = True
-    while True:
-        if first_attempt:
-            logging.info(f"Asking user for a time with the following message: {msg}")
-            first_attempt = False
-
-        user_input: str = input(msg)
-        logging.debug(f"User entered for time: '{user_input}'")
-
-        try:
-            mins: int
-            secs: int
-            mins, secs = map(int, user_input.split(':'))
-            total_seconds: int = mins * 60 + secs
-            logging.info(
-                f"Successfully parsed time: {mins}m {secs}s ({total_seconds}s).")
-            return total_seconds  # exit point
-        except ValueError:
-            logging.warning(f"Invalid time format entered: '{user_input}'")
-            print(
-                f"\nInvalid format: '{user_input}'. Please use the format 'mins:secs' (e.g., '1:32').\n")
-
-
 def GetVidDuration(path_to_vid: Path) -> int:
     """Return the video duration in seconds, rounded down.
 
@@ -398,44 +344,6 @@ def LoadAllWrestlerData(data_dir: Path | None = None) -> dict[str, pd.DataFrame]
         except Exception as e:
             logging.warning(f"Could not load data for '{name}': {e}")
     return result
-
-
-def FilterVideos(wrestler_name: str) -> list[Path]:
-    """Return a list of paths to tagged videos matching a wrestler's name.
-
-    Deprecated: the CLI is being retired; this function has no current callers.
-    The GUI filters tagged videos per-wrestler when generating clips.
-
-    Searches the `vids/taged` directory for videos that have `wrestler_name`
-    in their title metadata field.
-
-    Args:
-        wrestler_name: The name of the wrestler to filter by.
-
-    Returns:
-        A list of Path objects for video files matching the wrestler's name.
-    """
-    logging.info(f"Filtering videos for wrestler: {wrestler_name}")
-
-    try:
-        vids: list[Path] = sorted(taged_dir.iterdir())
-    except FileNotFoundError:
-        logging.warning(f"Tagged videos directory not found: {taged_dir}")
-        return []
-
-    filtered: list[Path] = []
-    for vid in vids:
-        if not vid.is_file():
-            continue
-        try:
-            if NameProbe(vid) == wrestler_name:
-                filtered.append(vid)
-        except Exception as e:
-            logging.warning(f"Could not probe '{vid.name}': {e}")
-            continue
-
-    logging.info(f"Found {len(filtered)} videos for '{wrestler_name}'")
-    return filtered
 
 
 def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str]:
