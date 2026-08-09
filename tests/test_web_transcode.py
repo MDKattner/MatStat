@@ -1,5 +1,6 @@
-"""Tests for the web preview transcoder — cache logic and command building."""
+"""Tests for the web preview transcoder — HLS paths, readiness, and commands."""
 
+import os
 import sys
 import threading
 from pathlib import Path
@@ -12,134 +13,235 @@ from scripts.web import transcode
 from scripts.web.ffmpeg import FfmpegResult
 
 
-class TestPreviewCachePath:
-    """Tests for preview_cache_path naming."""
+def _redirect_preview_dir(monkeypatch, tmp_path: Path) -> None:
+    """Point the transcode module's PREVIEW_DIR at a temp dir."""
+    monkeypatch.setattr(transcode, "PREVIEW_DIR", tmp_path / "preview")
+    (tmp_path / "preview").mkdir(parents=True, exist_ok=True)
 
-    def test_cache_lives_under_preview_dir(self, monkeypatch) -> None:
+
+class TestHlsPaths:
+    """Tests for the HLS on-disk layout helpers."""
+
+    def test_paths_live_under_hls_dir(self, monkeypatch) -> None:
         monkeypatch.setattr(transcode, "PREVIEW_DIR", Path("/tmp/preview"))
-        cache: Path = transcode.preview_cache_path(Path("vids/taged/match.mkv"))
-        assert cache == Path("/tmp/preview/match.mkv.mp4")
+        source: Path = Path("vids/taged/match.mkv")
+        assert transcode.hls_dir_path(source) == Path("/tmp/preview/hls/match.mkv")
+        assert transcode.playlist_path(source) == Path("/tmp/preview/hls/match.mkv/prog.m3u8")
+        assert transcode.segments_dir(source) == Path("/tmp/preview/hls/match.mkv/segments")
 
 
-class TestPreviewIsFresh:
-    """Tests for preview_is_fresh mtime checks."""
+class TestHlsIsReady:
+    """Tests for hls_is_ready playlist playability checks."""
 
-    def test_missing_source_not_fresh(self, tmp_path) -> None:
-        cache: Path = tmp_path / "preview.mp4"
-        cache.write_bytes(b"x")
-        assert transcode.preview_is_fresh(tmp_path / "missing.mkv", cache) is False
+    def test_missing_source_not_ready(self, tmp_path, monkeypatch) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
+        playlist: Path = transcode.playlist_path(tmp_path / "match.mkv")
+        playlist.parent.mkdir(parents=True, exist_ok=True)
+        playlist.write_text("#EXTM3U\n#EXT-X-ENDLIST\n")
+        assert transcode.hls_is_ready(tmp_path / "match.mkv") is False
 
-    def test_missing_cache_not_fresh(self, tmp_path) -> None:
+    def test_missing_playlist_not_ready(self, tmp_path, monkeypatch) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
         source: Path = tmp_path / "match.mkv"
         source.write_bytes(b"x")
-        assert transcode.preview_is_fresh(source, tmp_path / "preview.mp4") is False
+        assert transcode.hls_is_ready(source) is False
 
-    def test_stale_cache_not_fresh(self, tmp_path) -> None:
-        import os
-
+    def test_stub_only_not_ready(self, tmp_path, monkeypatch) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
         source: Path = tmp_path / "match.mkv"
-        cache: Path = tmp_path / "preview.mp4"
         source.write_bytes(b"x")
-        cache.write_bytes(b"x")
-        os.utime(cache, (1000, 1000))
+        playlist: Path = transcode.playlist_path(source)
+        playlist.parent.mkdir(parents=True, exist_ok=True)
+        playlist.write_text("#EXTM3U\n#EXT-X-VERSION:3\n")
+        assert transcode.hls_is_ready(source) is False
+
+    def test_live_playlist_with_segment_is_ready(self, tmp_path, monkeypatch) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
+        source: Path = tmp_path / "match.mkv"
+        source.write_bytes(b"x")
+        playlist: Path = transcode.playlist_path(source)
+        playlist.parent.mkdir(parents=True, exist_ok=True)
+        playlist.write_text("#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:4.0,\nseg_00000.ts\n")
+        assert transcode.hls_is_ready(source) is True
+
+    def test_finished_playlist_is_ready(self, tmp_path, monkeypatch) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
+        source: Path = tmp_path / "match.mkv"
+        source.write_bytes(b"x")
+        playlist: Path = transcode.playlist_path(source)
+        playlist.parent.mkdir(parents=True, exist_ok=True)
+        playlist.write_text("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-ENDLIST\n")
+        assert transcode.hls_is_ready(source) is True
+
+    def test_stale_finished_playlist_not_ready(self, tmp_path, monkeypatch) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
+        source: Path = tmp_path / "match.mkv"
+        source.write_bytes(b"x")
+        playlist: Path = transcode.playlist_path(source)
+        playlist.parent.mkdir(parents=True, exist_ok=True)
+        playlist.write_text("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-ENDLIST\n")
         os.utime(source, (2000, 2000))
-        assert transcode.preview_is_fresh(source, cache) is False
-
-    def test_new_cache_is_fresh(self, tmp_path) -> None:
-        import os
-
-        source: Path = tmp_path / "match.mkv"
-        cache: Path = tmp_path / "preview.mp4"
-        source.write_bytes(b"x")
-        cache.write_bytes(b"x")
-        os.utime(source, (1000, 1000))
-        os.utime(cache, (2000, 2000))
-        assert transcode.preview_is_fresh(source, cache) is True
+        os.utime(playlist, (1000, 1000))
+        assert transcode.hls_is_ready(source) is False
 
 
-class TestBuildTranscodeCmd:
-    """Tests for build_transcode_cmd ffmpeg arguments."""
+class TestBuildHlsCmd:
+    """Tests for build_hls_cmd ffmpeg arguments."""
 
-    def test_includes_browser_required_flags(self) -> None:
-        cmd: list[str] = transcode.build_transcode_cmd(
-            Path("a.mkv"), Path("a.mp4")
+    def _cmd(self, use_stream_copy: bool) -> list[str]:
+        return transcode.build_hls_cmd(
+            Path("a.mkv"),
+            Path("prog.m3u8"),
+            Path("segments"),
+            use_stream_copy=use_stream_copy,
         )
+
+    def test_common_arguments(self) -> None:
+        cmd: list[str] = self._cmd(False)
         assert cmd[0] == "ffmpeg"
-        assert "-i" in cmd
         assert cmd[cmd.index("-i") + 1] == "a.mkv"
-        assert "libx264" in cmd
-        assert "yuv420p" in cmd
-        assert "+faststart" in cmd
-        assert cmd[-1] == "a.mp4"
+        assert cmd[cmd.index("-f") + 1] == "hls"
+        assert cmd[cmd.index("-hls_list_size") + 1] == "0"
+        assert "-hls_segment_filename" in cmd
+        assert cmd[-1] == "prog.m3u8"
+
+    def test_stream_copy_branch(self) -> None:
+        cmd: list[str] = self._cmd(True)
+        assert cmd[cmd.index("-c") + 1] == "copy"
+        assert "libx264" not in cmd
+
+    def test_reencode_branch(self) -> None:
+        cmd: list[str] = self._cmd(False)
+        assert cmd[cmd.index("-c:v") + 1] == "libx264"
+        assert cmd[cmd.index("-preset") + 1] == "ultrafast"
+        assert "scale=-2:min(720\\,ih)" in cmd
+        assert cmd[cmd.index("-c:a") + 1] == "aac"
 
 
-class TestEnsurePreview:
-    """Tests for ensure_preview cache-or-transcode behaviour."""
+class TestPrepareHls:
+    """Tests for prepare_hls — fresh HLS workspace creation."""
 
-    def test_returns_fresh_cache_without_ffmpeg(self, tmp_path, monkeypatch) -> None:
+    def test_creates_stub_playlist_and_dirs(self, tmp_path, monkeypatch) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
         source: Path = tmp_path / "match.mkv"
-        cache: Path = tmp_path / "match.mkv.mp4"
-        source.write_bytes(b"source")
-        cache.write_bytes(b"cached")
-        cache.touch()
+        source.write_bytes(b"x")
 
-        monkeypatch.setattr(transcode, "PREVIEW_DIR", tmp_path)
+        playlist: Path = transcode.prepare_hls(source)
+        assert playlist == transcode.playlist_path(source)
+        assert playlist.read_text() == "#EXTM3U\n#EXT-X-VERSION:3\n"
+        assert transcode.segments_dir(source).is_dir()
 
-        def fail_ffmpeg(*args, **kwargs) -> FfmpegResult:
-            raise AssertionError("ffmpeg should not be called on a cache hit")
+    def test_wipes_stale_segments(self, tmp_path, monkeypatch) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
+        source: Path = tmp_path / "match.mkv"
+        source.write_bytes(b"x")
+        stale: Path = transcode.segments_dir(source) / "seg_00000.ts"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_bytes(b"old")
 
-        monkeypatch.setattr(transcode, "run_ffmpeg", fail_ffmpeg)
+        transcode.prepare_hls(source)
+        assert not stale.exists()
 
-        result: Path = transcode.ensure_preview(source)
-        assert result == cache
 
-    def test_transcodes_when_no_cache(self, tmp_path, monkeypatch) -> None:
+class TestTranscodeHls:
+    """Tests for transcode_hls — the job body that runs the encoder."""
+
+    def test_success_appends_endlist_and_clears_in_flight(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
         source: Path = tmp_path / "match.mkv"
         source.write_bytes(b"source")
-
-        monkeypatch.setattr(transcode, "PREVIEW_DIR", tmp_path)
+        transcode.prepare_hls(source)
+        transcode.mark_in_flight(source, "job1")
 
         def fake_ffmpeg(cmd, description="", on_progress=None, cancel_event=None) -> FfmpegResult:
-            # Simulate a successful transcode producing the output file.
-            output: Path = Path(cmd[-1])
-            output.write_bytes(b"encoded")
-            if on_progress:
-                on_progress(10, description)
+            playlist: Path = Path(cmd[-1])
+            playlist.write_text(
+                "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:4.0,\nseg_00000.ts\n"
+            )
             return FfmpegResult(success=True, message="ok")
 
         monkeypatch.setattr(transcode, "run_ffmpeg", fake_ffmpeg)
+        monkeypatch.setattr(transcode, "GetVideoCodecs", lambda p: {"video": "hevc", "audio": "aac"})
 
-        progress_log: list[tuple[int, str]] = []
+        transcode.transcode_hls(source, "job1")
 
-        def on_progress(seconds: int, description: str) -> None:
-            progress_log.append((seconds, description))
+        playlist: Path = transcode.playlist_path(source)
+        assert "#EXT-X-ENDLIST" in playlist.read_text()
+        assert transcode.in_flight_job(source) is None
 
-        result: Path = transcode.ensure_preview(source, on_progress=on_progress)
-        assert result == tmp_path / "match.mkv.mp4"
-        assert result.read_bytes() == b"encoded"
-        assert progress_log == [(10, "Preparing preview: match.mkv")]
-
-    def test_raises_when_transcode_fails(self, tmp_path, monkeypatch) -> None:
+    def test_uses_stream_copy_for_h264_aac(self, tmp_path, monkeypatch) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
         source: Path = tmp_path / "match.mkv"
         source.write_bytes(b"source")
+        transcode.prepare_hls(source)
+        transcode.mark_in_flight(source, "job1")
 
-        monkeypatch.setattr(transcode, "PREVIEW_DIR", tmp_path)
+        captured: dict[str, list[str]] = {}
+
+        def fake_ffmpeg(cmd, description="", on_progress=None, cancel_event=None) -> FfmpegResult:
+            captured["cmd"] = cmd
+            Path(cmd[-1]).write_text("#EXTM3U\n#EXT-X-ENDLIST\n")
+            return FfmpegResult(success=True, message="ok")
+
+        monkeypatch.setattr(transcode, "run_ffmpeg", fake_ffmpeg)
+        monkeypatch.setattr(
+            transcode, "GetVideoCodecs", lambda p: {"video": "h264", "audio": "aac"}
+        )
+
+        transcode.transcode_hls(source, "job1")
+        assert captured["cmd"][captured["cmd"].index("-c") + 1] == "copy"
+
+    def test_uses_reencode_for_other_codecs(self, tmp_path, monkeypatch) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
+        source: Path = tmp_path / "match.mkv"
+        source.write_bytes(b"source")
+        transcode.prepare_hls(source)
+        transcode.mark_in_flight(source, "job1")
+
+        captured: dict[str, list[str]] = {}
+
+        def fake_ffmpeg(cmd, description="", on_progress=None, cancel_event=None) -> FfmpegResult:
+            captured["cmd"] = cmd
+            Path(cmd[-1]).write_text("#EXTM3U\n#EXT-X-ENDLIST\n")
+            return FfmpegResult(success=True, message="ok")
+
+        monkeypatch.setattr(transcode, "run_ffmpeg", fake_ffmpeg)
+        monkeypatch.setattr(
+            transcode, "GetVideoCodecs", lambda p: {"video": "hevc", "audio": "aac"}
+        )
+
+        transcode.transcode_hls(source, "job1")
+        assert "libx264" in captured["cmd"]
+        assert "-c" not in captured["cmd"] or captured["cmd"][captured["cmd"].index("-c") + 1] != "copy"
+
+    def test_failure_raises_and_cleans_up(self, tmp_path, monkeypatch) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
+        source: Path = tmp_path / "match.mkv"
+        source.write_bytes(b"source")
+        transcode.prepare_hls(source)
+        transcode.mark_in_flight(source, "job1")
 
         def failed_ffmpeg(*args, **kwargs) -> FfmpegResult:
             return FfmpegResult(success=False, message="encoding error")
 
         monkeypatch.setattr(transcode, "run_ffmpeg", failed_ffmpeg)
+        monkeypatch.setattr(transcode, "GetVideoCodecs", lambda p: {})
 
         with pytest.raises(RuntimeError, match="encoding error"):
-            transcode.ensure_preview(source)
+            transcode.transcode_hls(source, "job1")
+        assert not transcode.hls_dir_path(source).exists()
+        assert transcode.in_flight_job(source) is None
 
     def test_cancel_event_aborts(self, tmp_path, monkeypatch) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
         source: Path = tmp_path / "match.mkv"
         source.write_bytes(b"source")
+        transcode.prepare_hls(source)
+        transcode.mark_in_flight(source, "job1")
 
-        monkeypatch.setattr(transcode, "PREVIEW_DIR", tmp_path)
-
-        captured: list[threading.Event] = []
+        captured: list[threading.Event | None] = []
 
         def cancelled_ffmpeg(cmd, description="",
                              on_progress=None, cancel_event=None) -> FfmpegResult:
@@ -147,10 +249,12 @@ class TestEnsurePreview:
             return FfmpegResult(success=False, message="Cancelled")
 
         monkeypatch.setattr(transcode, "run_ffmpeg", cancelled_ffmpeg)
+        monkeypatch.setattr(transcode, "GetVideoCodecs", lambda p: {})
 
         cancel_event: threading.Event = threading.Event()
         cancel_event.set()
 
         with pytest.raises(RuntimeError, match="Cancelled"):
-            transcode.ensure_preview(source, cancel_event=cancel_event)
+            transcode.transcode_hls(source, "job1", cancel_event=cancel_event)
         assert captured == [cancel_event]
+        assert transcode.in_flight_job(source) is None
