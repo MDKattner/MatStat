@@ -13,16 +13,25 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from openpyxl.styles import Font
 
 from scripts.helpers import (
     GenerateDefenseDF,
-    GenerateInitiationDF,
+    GenerateInitiationDFBySegment,
     GenerateOffenseDF,
     MakeFormattedDataFrame,
     csv_dir,
     eval_dir,
 )
 from scripts.web.jobs import JobContext
+
+
+_SECTION_LABELS: list[tuple[int, int, str]] = [
+    (0, 0, "Initiation"),
+    (5, 0, "Defense"),
+    (5, 8, "Offense"),
+    (5, 16, "Raw Data"),
+]
 
 
 def _find_csv_files() -> list[Path]:
@@ -32,6 +41,19 @@ def _find_csv_files() -> list[Path]:
         The sorted CSV paths under csv_dir, minus UNKNOWN.csv.
     """
     return sorted(p for p in csv_dir.glob("*.csv") if p.name != "UNKNOWN.csv")
+
+
+def _write_section_labels(writer: pd.ExcelWriter, sheet_name: str) -> None:
+    """Write bold section headers above the report blocks on a sheet.
+
+    Args:
+        writer: The active ExcelWriter.
+        sheet_name: The sheet whose report blocks get labeled.
+    """
+    ws = writer.sheets[sheet_name]
+    for row, col, label in _SECTION_LABELS:
+        cell = ws.cell(row=row + 1, column=col + 1, value=label)
+        cell.font = Font(bold=True)
 
 
 def run_team_eval_job(ctx: JobContext) -> dict[str, Any]:
@@ -71,16 +93,19 @@ def run_team_eval_job(ctx: JobContext) -> dict[str, Any]:
                 sheet_name: str = csv_file.stem
                 try:
                     raw_df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-                    GenerateInitiationDF(raw_df).to_excel(writer, sheet_name=sheet_name)
+                    GenerateInitiationDFBySegment(raw_df).to_excel(
+                        writer, sheet_name=sheet_name, startrow=1
+                    )
                     GenerateDefenseDF(raw_df).to_excel(
-                        writer, sheet_name=sheet_name, startrow=4
+                        writer, sheet_name=sheet_name, startrow=6
                     )
                     GenerateOffenseDF(raw_df).to_excel(
-                        writer, sheet_name=sheet_name, startrow=4, startcol=8
+                        writer, sheet_name=sheet_name, startrow=6, startcol=8
                     )
                     raw_df.to_excel(
-                        writer, sheet_name=sheet_name, startrow=4, startcol=16
+                        writer, sheet_name=sheet_name, startrow=6, startcol=16
                     )
+                    _write_section_labels(writer, sheet_name)
                     processed.append(sheet_name)
                     logging.debug(f"Wrote data for sheet '{sheet_name}'.")
                 except Exception as e:

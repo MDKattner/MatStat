@@ -86,6 +86,45 @@ class TestRunTeamEvalJob:
         assert wb.sheetnames == ["Alice", "Bob Smith"]
         assert ctx.reports[-1] == (100, "Report generated: Team_Stats.xlsx")
 
+    def test_section_labels_and_layout(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        _write_csv(tmp_path, "Alice")
+
+        team_eval.run_team_eval_job(FakeContext())
+
+        ws = openpyxl.load_workbook(tmp_path / "eval" / "Team_Stats.xlsx")["Alice"]
+        assert ws["A1"].value == "Initiation"
+        assert ws["A1"].font.bold is True
+        assert ws["A6"].value == "Defense"
+        assert ws["I6"].value == "Offense"
+        assert ws["Q6"].value == "Raw Data"
+        assert ws["A2"].value == "Segment"
+        assert ws["A7"].value == "Move"
+        assert ws["I7"].value == "Move"
+        assert ws["Q7"].value == "Origin"
+
+    def test_initiation_segments_in_report(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        content: str = (
+            '"a.mkv:1",0,6,A,collar tie,"double","sprawl","T","E",2,2,W\n'
+            '"a.mkv:2",6,12,D,standing,"sprawl","sweep single","E","T",-4,-4,L\n'
+            '"a.mkv:3",12,18,A,front headlock,"single","whizzer","T","",3,3,\n'
+        )
+        _write_csv(tmp_path, "Alice", content=content)
+
+        team_eval.run_team_eval_job(FakeContext())
+
+        ws = openpyxl.load_workbook(tmp_path / "eval" / "Team_Stats.xlsx")["Alice"]
+        assert ws["A2"].value == "Segment"
+        assert ws["A3"].value == "All"
+        assert ws["A4"].value == "Wins"
+        assert ws["A5"].value == "Losses"
+        # W row is attacking (count 1); L and unrecorded rows are not.
+        assert ws["B4"].value == 1
+        assert ws["B5"].value == 0
+        # All includes all three rows, two of which attack.
+        assert ws["B3"].value == 2
+
     def test_per_file_error_keeps_others(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         _write_csv(tmp_path, "Alice")
