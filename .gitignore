@@ -14,5 +14,10 @@ tmp/*
 *.ipynb
 MatStat.log
 tests/__pycache__
-scripts/qt_app/__pycache__
 scripts/web/__pycache__
+
+# Wrestler roster (PII) — real names must never be committed
+cfg/Wrestlers.config
+cfg/Wrestlers.json
+cfg/*.bak
+cfg/*.tmp

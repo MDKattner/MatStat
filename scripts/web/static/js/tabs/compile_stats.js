@@ -1,5 +1,5 @@
 /**
- * Compile Stats tab — the web port of scripts/qt_app/compile_stats_widget.py.
+ * Compile Stats tab — the web port of the original Qt compile stats widget.
  *
  * Mounts into #compile-stats-root. Queues a compile_stats job via POST
  * /api/compile-stats and polls it, listing per-wrestler sequence counts and

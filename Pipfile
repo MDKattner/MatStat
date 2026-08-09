@@ -6,11 +6,10 @@ name = "pypi"
 [packages]
 pandas = "2.3.3"
 openpyxl = "3.1.5"
-PyQt6 = "*"
-PyQt6-QtMultimedia = "*"
 fastapi = "*"
 uvicorn = "*"
 python-multipart = "*"
+plotly = "*"
 
 [dev-packages]
 pytest = "*"

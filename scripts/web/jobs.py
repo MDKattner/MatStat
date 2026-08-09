@@ -51,8 +51,8 @@ class JobContext:
 class JobManager:
     """Run background jobs in a thread pool and broadcast progress events.
 
-    Mirrors the Qt worker pattern (QThread + signals) for the web: each job
-    runs in a worker thread and reports progress via a ``JobContext``. Event
+    Each job runs in a worker thread and reports progress via a ``JobContext``.
+    Event
     dicts are pushed to the ``publish`` callable, which the WebSocket hub
     subscribes to (see ``scripts.web.ws``).
     """

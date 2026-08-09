@@ -6,7 +6,6 @@ pkgs.mkShell {
     python3
 
     # ── Python packages (PyPI equivalents) ──
-    python3Packages.pyqt6          # PyQt6 + QtMultimedia + QtMultimediaWidgets
     python3Packages.pandas
     python3Packages.numpy
     python3Packages.openpyxl       # Excel writer (.xlsx)
@@ -14,6 +13,7 @@ pkgs.mkShell {
     python3Packages.uvicorn        # ASGI server for the web app
     python3Packages.python-multipart  # Multipart uploads (web video upload)
     python3Packages.httpx          # FastAPI TestClient
+    python3Packages.plotly          # Interactive PCA figures (web)
 
     # ── Python dev / test ──
     python3Packages.pytest
@@ -22,29 +22,17 @@ pkgs.mkShell {
 
     # ── System tools ──
     ffmpeg                         # Includes ffprobe
-
-    # ── Qt Multimedia backends (required for video preview) ──
-    qt6.qtmultimedia               # Qt Multimedia + GStreamer/FFmpeg plugin .so files
-    pipewire                       # PipeWire backend
-    gst_all_1.gstreamer            # GStreamer core
-    gst_all_1.gst-plugins-base     # Essential GStreamer plugins
-    gst_all_1.gst-plugins-good     # Good-quality plugins (common codecs)
-    gst_all_1.gst-libav            # FFmpeg-based GStreamer plugin (broad codec support)
   ];
 
-  QT_PLUGIN_PATH = "${pkgs.qt6.qtmultimedia}/lib/qt-6/plugins";
-
   shellHook = ''
-    export QT_PLUGIN_PATH="${pkgs.qt6.qtmultimedia}/lib/qt-6/plugins:$QT_PLUGIN_PATH"
     echo ""
     echo "  ╔═══════════════════════════════════════════╗"
     echo "  ║         MatStat Dev Environment           ║"
-    echo "  ║         Python ${pkgs.python3.version} + Qt6              ║"
+    echo "  ║         Python ${pkgs.python3.version}                    ║"
     echo "  ╚═══════════════════════════════════════════╝"
     echo ""
-    echo "  python scripts/qt_app/main.py     Qt6 GUI"
-    echo "  uvicorn scripts.web.app:app       Web app (http://127.0.0.1:8000)"
-    echo "  pytest                            Tests"
+    echo "  MATSTAT_AUTH=off uvicorn scripts.web.app:app   Web app (auth off, http://127.0.0.1:8000)"
+    echo "  pytest                                        Tests"
     echo ""
   '';
 }

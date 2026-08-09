@@ -1,5 +1,5 @@
 /**
- * Team Evaluation tab — the web port of scripts/qt_app/team_evaluation_widget.py.
+ * Team Evaluation tab — the web port of the original Qt team evaluation widget.
  *
  * Mounts into #team-eval-root. Queues a team_eval job via POST /api/team-eval
  * and polls it, listing per-wrestler data-load results and any errors. Once the
