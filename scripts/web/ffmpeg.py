@@ -20,6 +20,14 @@ class FfmpegResult:
     stderr: str = field(default="")
 
 
+class JobCancelledError(Exception):
+    """Raised by ``run_ffmpeg`` when the cancel event is set mid-process.
+
+    Job bodies let this propagate to ``JobManager._run``, which records the
+    job as ``cancelled`` instead of ``failed``.
+    """
+
+
 def _parse_progress(line: str) -> int | None:
     """Extract total elapsed seconds from an ffmpeg stderr progress line.
 
@@ -46,7 +54,7 @@ def run_ffmpeg(
 ) -> FfmpegResult:
     """Run an ffmpeg command in the current thread, parsing progress from stderr.
 
-    This is the web-app replacement for the Qt ``AsyncFfmpegRunner``. It is
+    This is the blocking ffmpeg runner used by the web jobs. It is
     blocking (call it from a job thread) but reports ``time=`` progress via
     ``on_progress(seconds, description)`` and honours ``cancel_event`` by
     killing the process.
@@ -59,6 +67,9 @@ def run_ffmpeg(
 
     Returns:
         An FfmpegResult describing the outcome.
+
+    Raises:
+        JobCancelledError: If ``cancel_event`` is set while the process runs.
     """
     logging.debug(f"ffmpeg start ({description or 'unspecified'}): {' '.join(cmd)}")
 
@@ -95,7 +106,7 @@ def run_ffmpeg(
                 proc.kill()
                 proc.wait()
                 reader.join(timeout=1.0)
-                return FfmpegResult(success=False, message="Cancelled")
+                raise JobCancelledError(description or "ffmpeg cancelled")
 
     reader.join(timeout=1.0)
 

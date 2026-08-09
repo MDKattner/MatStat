@@ -1,9 +1,8 @@
 /**
  * MatStat SPA shell.
  *
- * Wires the tab bar, status bar, log dock, connection badge, and About dialog.
- * Ports of the individual tabs will mount into their `.tab-pane` sections as
- * they are completed (Phases 2-6); the placeholder panes live in index.html.
+ * Wires the tab bar, status bar, log dock, connection badge, and About dialog,
+ * then mounts every tab into its `.tab-pane` section.
  */
 
 import { connectWs, onWs, onWsStatus } from "./ws.js";

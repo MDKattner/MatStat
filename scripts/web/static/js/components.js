@@ -6,7 +6,6 @@
  * - `showToast` — QMessageBox-style transient notifications.
  * - `timeInput` — mm:ss input with an optional "Mark" button (QTimeEdit).
  * - `configCombo` — editable input backed by a datalist (ConfigComboBox).
- * - `selectInput` — plain drop-down menu backed by a list of options.
  * - `filterList` — single-select filterable list (videos, wrestlers, tie-ups).
  * - `checkList` — filterable multi-check list with optional count spins (MultiSelector).
  * - `videoPlayer` — <video> with play/pause, ±5s skip, position slider, time label
@@ -97,7 +96,7 @@ export async function pollJob(jobId, { onProgress = () => {}, onStatus = () => {
  * served, so playback begins without waiting for the video to finish encoding
  * (no job polling). Throws if the preview can't be made.
  */
-export async function ensurePreview(dirName, fileName, onStatus = () => {}) {
+export async function ensurePreview(dirName, fileName) {
   const url = `/api/preview/${dirName}/${encodeURIComponent(fileName)}`;
   const resp = await fetch(url);
   if (!resp.ok) throw new Error("Preview unavailable");
@@ -180,33 +179,6 @@ export function configCombo({ label = "", items = [] } = {}) {
     get selected() { return input.value.trim(); },
     setSelected(value) { input.value = value; },
     clear() { input.value = ""; },
-    setItems(items) { rebuild(items); },
-  };
-}
-
-/**
- * Plain drop-down menu (<select>) backed by a list of options.
- * `selected` returns the current value ("" when nothing chosen).
- */
-export function selectInput({ label = "", items = [], placeholder = "Select..." } = {}) {
-  const select = el("select", { class: "combo-input select-input" });
-
-  function rebuild(newItems) {
-    select.replaceChildren();
-    select.appendChild(el("option", { value: "", text: placeholder }));
-    for (const item of newItems) select.appendChild(el("option", { value: item, text: item }));
-  }
-  rebuild(items);
-
-  const row = el("div", { class: "row" });
-  if (label) row.appendChild(el("label", { class: "field-label", text: label }));
-  row.appendChild(select);
-
-  return {
-    node: row,
-    select,
-    get selected() { return select.value.trim(); },
-    clear() { select.value = ""; },
     setItems(items) { rebuild(items); },
   };
 }

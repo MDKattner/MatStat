@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -438,7 +439,7 @@ class ChapterSequence:
     def MakeEmptyChap(cls: type[ChapterSequence], start: int, end: int) -> ChapterSequence:
         """Create a filler chapter to pad time between sequences.
 
-        Ffmpeg can corrupt timing data if there are gaps in the timeline,
+        FFmpeg can corrupt timing data if there are gaps in the timeline,
         so these empty chapters are used to fill them.
 
         Args:
@@ -476,10 +477,10 @@ class ChapterSequence:
                                    end_time=int(float(args[2])),
                                    attack_defend=args[3] == "A",
                                    tie_up=args[4],
-                                   team_moves=args[5].split(":"),
-                                   op_moves=args[6].split(":"),
-                                   team_scores=args[7].split(":"),
-                                   op_scores=args[8].split(":"))
+                                   team_moves=args[5].split(":") if args[5] else [],
+                                   op_moves=args[6].split(":") if args[6] else [],
+                                   team_scores=args[7].split(":") if args[7] else [],
+                                   op_scores=args[8].split(":") if args[8] else [])
         except (IndexError, ValueError) as e:
             logging.warning(f"Could not parse CSV row: {csv_str!r} — {e}")
             return ChapterSequence.MakeEmptyChap(0, 0)
@@ -490,8 +491,7 @@ class ChapterSequence:
         """Create the chapter title string as formatted for ffmpeg metadata.
 
         Returns:
-            A string representing the chapter's title, with colon-delimited
-            fields escaped for ffmpeg.
+            A string representing the chapter's title, with colon-delimited fields.
         """
         team_moves_str: str = ":".join(self.team_moves)
         op_moves_str: str = ":".join(self.op_moves)
@@ -551,7 +551,7 @@ def GetVidDuration(path_to_vid: Path) -> int:
     Returns:
         The duration of the video in seconds. Returns 0 on failure.
     """
-    ffprobe_cmd: str = f"ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 '{path_to_vid}'"
+    ffprobe_cmd: str = f"ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 {shlex.quote(str(path_to_vid))}"
     logging.debug(f"Executing ffprobe command for duration: {ffprobe_cmd}")
     try:
         duration_str: str = subprocess.run(ffprobe_cmd,
@@ -580,7 +580,7 @@ def NameProbe(path_to_vid: Path) -> str:
     Returns:
         The title string embedded in the video file, or empty string on failure.
     """
-    ffprobe_cmd: str = f"ffprobe -v error -select_streams v:0 -show_entries format_tags=title -of default=nw=1:nk=1 '{path_to_vid}'"
+    ffprobe_cmd: str = f"ffprobe -v error -select_streams v:0 -show_entries format_tags=title -of default=nw=1:nk=1 {shlex.quote(str(path_to_vid))}"
     logging.debug(f"Executing ffprobe command for name probe: {ffprobe_cmd}")
     try:
         name: str = subprocess.run(ffprobe_cmd,
@@ -611,7 +611,7 @@ def GetVideoCodecs(path_to_vid: Path) -> dict[str, str]:
         vcodec_cmd: str = (
             "ffprobe -v error -select_streams v:0 -show_entries "
             "stream=codec_name -of default=nw=1:nk=1 "
-            f"'{path_to_vid}'"
+            f"{shlex.quote(str(path_to_vid))}"
         )
         vcodec: str = subprocess.run(
             vcodec_cmd, shell=True, capture_output=True, text=True, check=True
@@ -622,7 +622,7 @@ def GetVideoCodecs(path_to_vid: Path) -> dict[str, str]:
         acodec_cmd: str = (
             "ffprobe -v error -select_streams a:0 -show_entries "
             "stream=codec_name -of default=nw=1:nk=1 "
-            f"'{path_to_vid}'"
+            f"{shlex.quote(str(path_to_vid))}"
         )
         acodec: str = subprocess.run(
             acodec_cmd, shell=True, capture_output=True, text=True, check=True
@@ -676,7 +676,7 @@ def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str]:
     """
     # This command outputs the title field of the metadata as the last line
     ffprobe_command: str = ("ffprobe -v error -show_chapters -show_entries format_tags=title "
-                            f"-of csv '{path_to_vid}'")
+                            f"-of csv {shlex.quote(str(path_to_vid))}")
     logging.debug(
         f"Executing ffprobe command for MakeNameAndCSV: {ffprobe_command}")
 
@@ -782,7 +782,8 @@ def MakeFormattedDataFrame(csv_path: Path) -> pd.DataFrame:
     list_columns: list[str] = [COL_TEAM_MOVES, COL_OPPONENT_MOVES,
                                COL_TEAM_SCORES, COL_OPPONENT_SCORES]
     for col in list_columns:
-        df[col] = df[col].str.split(':')
+        df[col] = df[col].apply(
+            lambda value: str(value).split(":") if pd.notna(value) and value != "" else [])
     df[COL_ATTACKING] = df[COL_ATTACKING] == "A"
     if COL_MATCH_RESULT in df.columns:
         df[COL_MATCH_RESULT] = df[COL_MATCH_RESULT].fillna("").astype(str)
@@ -932,7 +933,7 @@ def CalculateNetPoints(row: pd.Series) -> np.int16:
         row: The sequence, represented by a pd.Series, being scored.
 
     Returns:
-        The sum of the points scored.
+        The net points scored (team scores minus opponent scores).
     """
     logging.debug(f"Summing the net points of the row: {row}")
     sum_val: np.int16 = np.int16(0)
@@ -1057,14 +1058,19 @@ def MoveDefenseCounts(df_in: pd.DataFrame) -> dict[str, int]:
 
 
 def PinCount(df_in: pd.DataFrame, column: str) -> int:
-    """Counts how many times "PIN" appears in `column` entries.
+    """Count the number of sequences containing a pin in ``column``.
+
+    A sequence counts at most once, and only when it contains a score code
+    from the active ruleset's ``counts_as_pin`` outcomes (e.g. "PIN" in
+    Folkstyle). This matches the "Number of Pins" column in the move
+    DataFrames, which is per-sequence (a pin ends the match).
 
     Args:
         df_in: The DataFrame to search.
         column: The column to search (e.g. COL_TEAM_SCORES or COL_OPPONENT_SCORES).
 
     Returns:
-        The number of pins found.
+        The number of sequences that contain a pin.
     """
     pins_count: int = 0
     for sequence in df_in[column]:
@@ -1226,22 +1232,27 @@ def GenerateMoveMatrix(
     string, e.g. "video.mkv:3"); columns are the kept moves and entries are
     int16 counts of how many times that move appears in that row's move list
     (duplicates within one sequence count). The literal move "nothing" is
-    dropped before counting, and moves appearing in fewer than
-    ``min_occurrences`` rows are dropped (the rare-move PCA mitigation).
+    dropped before counting, and moves appearing fewer than
+    ``min_occurrences`` total times are dropped (the rare-move PCA mitigation).
 
     Args:
         df_in: The sequence DataFrame; ``df_in[move_column]`` holds lists of
             move names (from MakeFormattedDataFrame).
         move_column: The column holding the move lists (COL_TEAM_MOVES or
             COL_OPPONENT_MOVES).
-        min_occurrences: Minimum number of rows a move must appear in to be
-            kept as a matrix column.
+        min_occurrences: Minimum number of total occurrences a move must have
+            to be kept as a matrix column.
 
     Returns:
         A (matrix, kept_moves) tuple: the int16 move-count matrix (index = the
         Origin index, columns = sorted kept moves) and the sorted kept-move list.
     """
-    exploded: pd.Series = df_in[move_column].explode().dropna()
+    # Group by unique row position (not index label) so duplicate Origin
+    # strings — e.g. the same "video.mkv:chap" appearing in a wrestler's CSV
+    # and the opponent's perspective-swapped CSV in dual mode — do not merge.
+    unique_index: pd.RangeIndex = pd.RangeIndex(len(df_in))
+    tmp: pd.DataFrame = df_in.reset_index(drop=True)
+    exploded: pd.Series = tmp[move_column].explode().dropna()
     exploded = exploded[exploded != "nothing"]
     counts: pd.Series = exploded.value_counts()
     kept_moves: list[str] = sorted(
@@ -1251,10 +1262,11 @@ def GenerateMoveMatrix(
         pd.get_dummies(exploded)
         .groupby(level=0)
         .sum()
-        .reindex(index=df_in.index, fill_value=0)
+        .reindex(index=unique_index, fill_value=0)
         .reindex(columns=kept_moves, fill_value=0)
         .astype(np.int16)
     )
+    matrix = matrix.set_axis(df_in.index)
     return (matrix, kept_moves)
 
 

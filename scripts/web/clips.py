@@ -284,7 +284,7 @@ def _build_reel(
             input_path, start_time, end_time, segment_path, use_stream_copy, codecs
         )
 
-        result = run_ffmpeg(cmd, description=f"Extracting {origin_video_name}")
+        result = run_ffmpeg(cmd, description=f"Extracting {origin_video_name}", cancel_event=ctx.cancel_event)
         if not result.success or not segment_path.is_file():
             has_errors = True
             continue
@@ -306,7 +306,7 @@ def _build_reel(
         "".join(f"file '{seg.resolve()}'\n" for seg in segment_files)
     )
 
-    result = run_ffmpeg(build_concat_cmd(list_file, output_path), description="Concatenating clips")
+    result = run_ffmpeg(build_concat_cmd(list_file, output_path), description="Concatenating clips", cancel_event=ctx.cancel_event)
     shutil.rmtree(clip_dir, ignore_errors=True)
 
     if not result.success or not output_path.is_file():

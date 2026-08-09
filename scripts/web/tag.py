@@ -57,7 +57,9 @@ def build_tag_metadata(chapters: list[ChapterSequence], title: str) -> str:
 
     Args:
         chapters: The chapter list (filler and real), in timeline order.
-        title: The wrestler name to store in the format ``title`` tag.
+        title: The embedded title — the wrestler name, or the dual-wrestler
+            ``BuildTagTitle`` composite ("wrestler / opponent" with optional
+            " (W)" / " (L)" markers).
 
     Returns:
         The metadata file content (``;FFMETADATA1`` header + chapters).
@@ -90,11 +92,14 @@ def build_tag_cmd(input_path: Path, metadata_path: Path, output_path: Path) -> l
     ]
 
 
-def validate_sequences(sequences: list[TagSequence]) -> None:
+def validate_sequences(sequences: list[TagSequence], duration: int | None = None) -> None:
     """Validate a list of real sequences: non-negative, ordered, non-overlapping.
 
     Args:
         sequences: The real sequences, in chronological order.
+        duration: Optional video duration in seconds; sequences ending after it
+            are rejected so the trailing filler chapter never gets a
+            negative length.
 
     Raises:
         ValueError: If any sequence has bad times or overlaps the previous one.
@@ -106,6 +111,10 @@ def validate_sequences(sequences: list[TagSequence]) -> None:
         if seq.start_time >= seq.end_time:
             raise ValueError(
                 f"Start time must be before end time ({seq.start_time} >= {seq.end_time})"
+            )
+        if duration is not None and seq.end_time > duration:
+            raise ValueError(
+                f"Sequence ending at {seq.end_time}s exceeds the video duration ({duration}s)"
             )
         if seq.start_time < prev_end:
             raise ValueError(
@@ -187,6 +196,7 @@ def run_tag_job(
     duration: int = GetVidDuration(input_path)
     if duration <= 0:
         raise RuntimeError(f"Could not determine duration for '{video}'")
+    validate_sequences(sequences, duration=duration)
 
     chapters: list[ChapterSequence] = build_chapters(sequences, duration)
     title: str = BuildTagTitle(wrestler_clean, opponent, match_result)
@@ -211,7 +221,7 @@ def run_tag_job(
         build_tag_cmd(input_path, metadata_path, output_path),
         description=f"Tagging {video}",
         on_progress=_on_progress,
-        cancel_event=None,
+        cancel_event=ctx.cancel_event,
     )
 
     metadata_path.unlink(missing_ok=True)

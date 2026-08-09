@@ -154,6 +154,7 @@ def run_retag_job(
     duration: int = GetVidDuration(input_path)
     if duration <= 0:
         raise RuntimeError(f"Could not determine duration for '{video}'")
+    tag.validate_sequences(sequences, duration=duration)
 
     chapters: list[ChapterSequence] = tag.build_chapters(sequences, duration)
     title: str = BuildTagTitle(wrestler_clean, opponent, match_result)
@@ -178,7 +179,7 @@ def run_retag_job(
         tag.build_tag_cmd(input_path, metadata_path, tmp_output),
         description=f"Re-tagging {video}",
         on_progress=_on_progress,
-        cancel_event=None,
+        cancel_event=ctx.cancel_event,
     )
 
     metadata_path.unlink(missing_ok=True)

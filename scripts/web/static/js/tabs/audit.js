@@ -421,7 +421,7 @@ export function mountAudit(root) {
 
   async function loadPreview(fileName) {
     try {
-      const url = await ensurePreview("taged", fileName, setStatus);
+      const url = await ensurePreview("taged", fileName);
       player.load(url);
     } catch (err) {
       showToast(err.message || "Could not load preview.", "error");

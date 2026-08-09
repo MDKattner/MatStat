@@ -45,10 +45,11 @@ class TestCalculateNetPoints:
         result: np.int16 = CalculateNetPoints(row)
         assert result == 0  # None(0) - 0 = 0
 
-    def test_empty_lists(self, empty_df: pd.DataFrame) -> None:
-        if empty_df.empty:
-            return
-        row = empty_df.iloc[0]
+    def test_empty_lists(self) -> None:
+        row = pd.Series({
+            COL_TEAM_SCORES: [],
+            COL_OPPONENT_SCORES: [],
+        })
         result: np.int16 = CalculateNetPoints(row)
         assert result == 0
 
@@ -74,9 +75,6 @@ class TestTabulateNetPoints:
         df = simple_df.copy()
         if COL_NET_POINTS in df.columns:
             df.drop(columns=[COL_NET_POINTS], inplace=True)
-        df[COL_NET_POINTS] = 0  # give it a dummy value
-        # rebuild without Net Points
-        df = df.drop(columns=[COL_NET_POINTS])
         TabulateNetPoints(df)
         assert COL_NET_POINTS in df.columns
         assert df[COL_NET_POINTS].iloc[0] == 3

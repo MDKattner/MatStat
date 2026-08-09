@@ -65,7 +65,7 @@ export function mountCombineClips(root) {
   async function previewMatch(match) {
     setStatus(`Loading preview: ${match.video}...`);
     try {
-      const url = await ensurePreview("taged", match.video, setStatus);
+      const url = await ensurePreview("taged", match.video);
       player.load(url, match.start_time);
       setStatus(`Previewing: ${match.video} [${formatClock(match.start_time)}]`);
     } catch (err) {
@@ -78,7 +78,11 @@ export function mountCombineClips(root) {
   const wrestlers = checkList({
     label: "Wrestlers (check one or more for batch):",
     items: [],
-    onChange: () => updateButtons(),
+    onChange: () => {
+      state.matches = [];
+      renderMatches();
+      updateButtons();
+    },
   });
 
   const tieRadio = el("input", { type: "radio", name: "clip-filter", value: "Starting Tie", checked: "" });
@@ -102,6 +106,8 @@ export function mountCombineClips(root) {
     items: [],
     onChange: () => {
       state.filterItem = filterItem.selected;
+      state.matches = [];
+      renderMatches();
       updateButtons();
     },
   });
@@ -285,7 +291,7 @@ export function mountCombineClips(root) {
     if (!file) return;
     const name = decodeURIComponent(file.split("/").pop());
     try {
-      const url = await ensurePreview("clips", name, setStatus);
+      const url = await ensurePreview("clips", name);
       player.load(url);
       player.play();
     } catch (err) {

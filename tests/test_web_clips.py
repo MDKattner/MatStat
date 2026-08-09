@@ -1,6 +1,7 @@
 """Tests for the web Combine Clips flow — command builders, jobs, and routes."""
 
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ class FakeContext:
 
     def __init__(self) -> None:
         self.job_id: str = "testjob"
+        self.cancel_event: threading.Event = threading.Event()
         self.reports: list[tuple[float, str]] = []
 
     def report(self, progress: float, message: str = "") -> None:

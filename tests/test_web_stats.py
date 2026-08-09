@@ -119,10 +119,10 @@ class TestRunCompileStatsJob:
         (tmp_path / "taged" / "b.mkv").write_bytes(b"x")
         (tmp_path / "taged" / "c.mkv").write_bytes(b"x")
         _mock_make_name_and_csv(monkeypatch, {
-            "a.mkv": ("Alice", "a.mkv:1,0,10,collar tie,double,nothing,T,None"),
-            "b.mkv": ("Alice", "b.mkv:1,0,10,standing,single,nothing,None,None\n"
-                      "b.mkv:2,10,20,front headlock,double,whizzer,T,E"),
-            "c.mkv": ("Bob Smith", "c.mkv:1,0,10,regular ride,nothing,sprawl,None,T"),
+            "a.mkv": ("Alice", "a.mkv:1,0,10,A,collar tie,double,nothing,T,None"),
+            "b.mkv": ("Alice", "b.mkv:1,0,10,A,standing,single,nothing,None,None\n"
+                      "b.mkv:2,10,20,D,front headlock,double,whizzer,T,E"),
+            "c.mkv": ("Bob Smith", "c.mkv:1,0,10,A,regular ride,nothing,sprawl,None,T"),
         })
 
         result: dict[str, Any] = stats.run_compile_stats_job(
@@ -134,7 +134,12 @@ class TestRunCompileStatsJob:
         assert result["errors"] == []
         assert (tmp_path / "csv" / "Alice.csv").read_text().count("\n") == 2
         assert "b.mkv:2,10,20" in (tmp_path / "csv" / "Alice.csv").read_text()
-        assert (tmp_path / "csv" / "Bob Smith.csv").read_text() == "c.mkv:1,0,10,regular ride,nothing,sprawl,None,T"
+        assert "a.mkv:1,0,10,A,collar tie,double,nothing,T,None,3,3," in (
+            (tmp_path / "csv" / "Alice.csv").read_text()
+        )
+        assert (tmp_path / "csv" / "Bob Smith.csv").read_text() == (
+            "c.mkv:1,0,10,A,regular ride,nothing,sprawl,None,T,-3,-3,"
+        )
 
     def test_dual_mode_swaps_into_opponent_bucket(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
@@ -232,8 +237,8 @@ class TestRunCompileStatsJob:
         (tmp_path / "taged" / "a.mkv").write_bytes(b"x")
         (tmp_path / "taged" / "b.mkv").write_bytes(b"x")
         _mock_make_name_and_csv(monkeypatch, {
-            "a.mkv": ("Alice", "a.mkv:1,0,10,collar tie,double,nothing,T,None"),
-            "b.mkv": ("Alice", "b.mkv:1,0,10,standing,single,nothing,None,None"),
+            "a.mkv": ("Alice", "a.mkv:1,0,10,A,collar tie,double,nothing,T,None"),
+            "b.mkv": ("Alice", "b.mkv:1,0,10,A,standing,single,nothing,None,None"),
         })
 
         result: dict[str, Any] = stats.run_compile_stats_job(FlipContext(), ["Alice"])
@@ -250,7 +255,7 @@ class TestCompileStatsRoute:
         _write_config(tmp_path)
         (tmp_path / "taged" / "a.mkv").write_bytes(b"x")
         _mock_make_name_and_csv(monkeypatch, {
-            "a.mkv": ("Alice", "a.mkv:1,0,10,collar tie,double,nothing,T,None")
+            "a.mkv": ("Alice", "a.mkv:1,0,10,A,collar tie,double,nothing,T,None")
         })
 
         resp = client.post("/api/compile-stats")

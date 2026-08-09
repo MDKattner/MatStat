@@ -88,11 +88,22 @@ class TestHelpers:
         result: dict[str, str] = GetVideoCodecs(Path("/nonexistent/video.mkv"))
         assert result == {}
 
-    def test_load_all_wrestler_data_returns_dict(self) -> None:
-        from scripts.helpers import LoadAllWrestlerData, csv_dir
+    def test_load_all_wrestler_data_returns_dict(self, tmp_path, monkeypatch) -> None:
+        import scripts.helpers as helpers
+        from scripts.helpers import LoadAllWrestlerData
 
-        result: dict[str, DataFrame] = LoadAllWrestlerData(csv_dir)
+        data_dir = tmp_path / "csv"
+        data_dir.mkdir()
+        (data_dir / "Alice.csv").write_text(
+            'match.mkv:1,0,10,A,collar tie,double,sprawl,T,None\n'
+        )
+        (data_dir / "UNKNOWN.csv").write_text("")
+        monkeypatch.setattr(helpers, "csv_dir", data_dir)
+
+        result: dict[str, DataFrame] = LoadAllWrestlerData()
         assert isinstance(result, dict)
+        assert list(result) == ["Alice"]
+        assert not result["Alice"].empty
 
     def test_get_video_codecs_returns_codecs(self, monkeypatch) -> None:
         import subprocess

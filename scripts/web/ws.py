@@ -16,8 +16,8 @@ class EventHub:
 
     ``publish`` is thread-safe: job workers and logging handlers may call it
     from any thread; events are marshalled onto the event loop via
-    ``call_soon_threadsafe``. This is the web equivalent of the Qt
-    ``LogBridge``/signal pattern.
+    ``call_soon_threadsafe`` (the pre-web signal pattern for logging + job
+    events).
     """
 
     def __init__(self) -> None:
@@ -59,8 +59,7 @@ class EventHub:
 class WebLogHandler(logging.Handler):
     """A logging handler that forwards formatted records to the EventHub.
 
-    Mirrors the Qt ``QtLogHandler`` → ``LogBridge`` pattern: every log record
-    is pushed to the browser as a ``log`` event.
+    Every log record is pushed to the browser as a ``log`` event.
     """
 
     def __init__(self, hub: EventHub) -> None:

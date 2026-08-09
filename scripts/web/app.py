@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -60,7 +61,7 @@ _SAFE_NAME_RE: re.Pattern[str] = re.compile(r"^[^/\\]+$")
 _SEGMENT_RE: re.Pattern[str] = re.compile(r"^seg_\d{5}\.ts$")
 
 # The log panel is removed from the web UI unless logging is explicitly
-# enabled (the web analog of the Qt GUI's --visible-logging flag).
+# enabled (the web analog of the pre-web --visible-logging flag).
 _VISIBLE_LOGGING: bool = os.environ.get("MATSTAT_VISIBLE_LOGGING", "").lower() in (
     "1", "true", "yes", "on",
 )
@@ -100,8 +101,8 @@ async def lifespan(_app: FastAPI):
 def _attach_log_handler() -> None:
     """Add the WebLogHandler to the root logger exactly once.
 
-    Skipped entirely when logging is disabled, mirroring the Qt GUI's
-    ``_setup_logging`` behavior under ``--visible-logging``.
+    Skipped entirely when logging is disabled (the pre-web behavior under
+    ``--visible-logging``).
     """
     if not _VISIBLE_LOGGING:
         return
@@ -181,6 +182,30 @@ def _is_transcoding(source: Path) -> bool:
         return False
     job: Job | None = job_manager.get(job_id)
     return job is not None and job.status in ("queued", "running")
+
+
+# Serializes the "is a preview ready / in flight?" check with the
+# prepare+submit sequence so two concurrent first-time requests for the same
+# source cannot both wipe the HLS workspace and launch overlapping transcodes.
+_PREVIEW_LOCK: threading.Lock = threading.Lock()
+
+
+def _ensure_transcode(source: Path) -> None:
+    """Start an HLS transcode for ``source`` unless one is ready or in flight."""
+    with _PREVIEW_LOCK:
+        if transcode.hls_is_ready(source) or _is_transcoding(source):
+            return
+        transcode.prepare_hls(source)
+
+        def _transcode(ctx: JobContext) -> None:
+            transcode.transcode_hls(source, ctx.job_id, on_progress=ctx.report, cancel_event=ctx.cancel_event)
+
+        job_id: str = job_manager.submit(
+            "transcode",
+            _transcode,
+            message=f"Preparing preview: {source.name}",
+        )
+        transcode.mark_in_flight(source, job_id)
 
 
 # ---- Routes ----
@@ -311,7 +336,7 @@ async def upload_videos(files: list[UploadFile] | None = File(default=None)) -> 
         try:
             with open(dest, "wb") as out:
                 shutil.copyfileobj(file.file, out)
-        except OSError as e:
+        except Exception as e:
             dest.unlink(missing_ok=True)
             result["status"] = "error"
             result["detail"] = f"Upload failed: {e}"
@@ -431,20 +456,9 @@ def _prewarm_tagged_preview(output_name: str) -> None:
     if not tagged_source.is_file():
         return
     try:
-        transcode.prepare_hls(tagged_source)
+        _ensure_transcode(tagged_source)
     except OSError as e:
         logging.warning(f"Could not prepare preview for {output_name}: {e}")
-        return
-
-    def _transcode(ctx: JobContext) -> None:
-        transcode.transcode_hls(tagged_source, ctx.job_id, on_progress=ctx.report, cancel_event=None)
-
-    job_id: str = job_manager.submit(
-        "transcode",
-        _transcode,
-        message=f"Preparing preview: {output_name}",
-    )
-    transcode.mark_in_flight(tagged_source, job_id)
 
 
 @app.post("/api/compile-stats")
@@ -662,18 +676,7 @@ async def preview(
     """
     source: Path = _resolve_preview_source(dir_name, file_name)
 
-    if not transcode.hls_is_ready(source) and not _is_transcoding(source):
-        transcode.prepare_hls(source)
-
-        def _transcode(ctx: JobContext) -> None:
-            transcode.transcode_hls(source, ctx.job_id, on_progress=ctx.report, cancel_event=None)
-
-        job_id: str = job_manager.submit(
-            "transcode",
-            _transcode,
-            message=f"Preparing preview: {source.name}",
-        )
-        transcode.mark_in_flight(source, job_id)
+    _ensure_transcode(source)
 
     return {
         "status": "ready",

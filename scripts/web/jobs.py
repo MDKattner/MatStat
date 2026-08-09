@@ -8,12 +8,14 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
+from scripts.web.ffmpeg import JobCancelledError
+
 JobStatus = Literal["queued", "running", "done", "failed", "cancelled"]
 
 # Event dicts published by the manager (see ws.py for the wire format):
-#   {"type": "job_started", "id", "kind", "status"}
+#   {"type": "job_started", "id", "kind", "status", "message"}
 #   {"type": "job_progress", "id", "progress", "message"}
-#   {"type": "job_finished", "id", "status", "message"}
+#   {"type": "job_finished", "id", "status", "message", "error"}
 EventPublisher = Callable[[dict[str, Any]], None]
 
 
@@ -47,13 +49,21 @@ class JobContext:
         """True if the job has been requested to cancel."""
         return self._manager._is_cancelled(self.job_id)
 
+    @property
+    def cancel_event(self) -> threading.Event:
+        """The job's cancellation event (set by ``JobManager.cancel``).
+
+        Pass this to ``run_ffmpeg`` so a cancel request aborts the running
+        process instead of merely relabeling the job afterwards.
+        """
+        return self._manager._get_cancel_event(self.job_id)
+
 
 class JobManager:
     """Run background jobs in a thread pool and broadcast progress events.
 
     Each job runs in a worker thread and reports progress via a ``JobContext``.
-    Event
-    dicts are pushed to the ``publish`` callable, which the WebSocket hub
+    Event dicts are pushed to the ``publish`` callable, which the WebSocket hub
     subscribes to (see ``scripts.web.ws``).
     """
 
@@ -102,6 +112,8 @@ class JobManager:
                 self._finish(job_id, status="cancelled", message="Cancelled")
             else:
                 self._finish(job_id, status="done", message="Done", result=result)
+        except JobCancelledError:
+            self._finish(job_id, status="cancelled", message="Cancelled")
         except Exception as e:
             logging.error(f"Job {job_id} failed: {e}")
             self._finish(job_id, status="failed", message=f"Failed: {e}", error=str(e))
@@ -127,6 +139,13 @@ class JobManager:
         with self._lock:
             event: threading.Event | None = self._cancel_events.get(job_id)
         return event is not None and event.is_set()
+
+    def _get_cancel_event(self, job_id: str) -> threading.Event:
+        with self._lock:
+            event: threading.Event | None = self._cancel_events.get(job_id)
+        if event is None:
+            event = threading.Event()
+        return event
 
     def _set(self, job_id: str, **updates: Any) -> None:
         with self._lock:

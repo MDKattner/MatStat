@@ -57,7 +57,7 @@ export function mountSearch(root) {
   async function previewMatch(match) {
     setStatus(`Loading preview: ${match.video}...`);
     try {
-      const url = await ensurePreview("taged", match.video, setStatus);
+      const url = await ensurePreview("taged", match.video);
       player.load(url, match.start_time);
       setStatus(`Previewing: ${match.video} [${formatClock(match.start_time)}]`);
     } catch (err) {
@@ -98,6 +98,11 @@ export function mountSearch(root) {
     exportBtn.disabled = active;
   }
 
+  function pointsValue(input, fallback) {
+    const n = parseInt(input.value, 10);
+    return Number.isNaN(n) ? fallback : n;
+  }
+
   function currentQuery() {
     return {
       wrestler: wrestler.selected,
@@ -105,8 +110,8 @@ export function mountSearch(root) {
       tie_up: tie.selected,
       team_move: teamMove.value,
       opp_move: oppMove.value,
-      min_points: parseInt(minPts.value, 10) || -20,
-      max_points: parseInt(maxPts.value, 10) || 20,
+      min_points: pointsValue(minPts, -20),
+      max_points: pointsValue(maxPts, 20),
     };
   }
 

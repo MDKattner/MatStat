@@ -120,7 +120,7 @@ pipenv run pytest                                    # Run tests
 ```bash
 uvicorn scripts.web.app:app --reload
 ```
-The five tabs above are available in the browser with the same workflows, plus a sixth PCA tab. Browsers can't play `.mkv` directly, so sources are streamed as progressive HLS previews that start playing within seconds while the rest of the video encodes in the background. The on-screen log panel is removed from the web UI by default; pass the logging flag to show it:
+The tabs above are available in the browser with the same workflows, plus PCA and Auditing tabs. Browsers can't play `.mkv` directly, so sources are streamed as progressive HLS previews that start playing within seconds while the rest of the video encodes in the background. The on-screen log panel is removed from the web UI by default; pass the logging flag to show it:
 ```bash
 MATSTAT_VISIBLE_LOGGING=1 uvicorn scripts.web.app:app
 ```
@@ -148,12 +148,12 @@ Because the app is password-only and single-session, it is meant to sit **behind
 
 ## Module Overview
 
--   **`helpers.py`**: Contains shared data classes (`ChapterSequence`) and functions used by the GUI and web app for video processing, data formatting, and statistical calculation. Also contains many useful functions for analyzing the csv files in a Jupyter Notebook.
+-   **`helpers.py`**: Contains shared data classes (`ChapterSequence`) and functions used by the web app for video processing, data formatting, and statistical calculation. Also contains many useful functions for analyzing the csv files in a Jupyter Notebook.
 -   **`scripts/web/`**: The FastAPI web app (app.py, ffmpeg.py, jobs.py, ws.py, transcode.py, and the tab modules tag/stats/team_eval/clips/search/pca).
 
 ## Configuration
 
-Customize the tagging options via JSON files in the `cfg/` directory (or the structured editors in the GUI/web Config Editor):
+Customize the tagging options via JSON files in the `cfg/` directory (or the structured editors in the web Config Editor):
 
 -   `config.json` (committed): Holds `active_ruleset`, `moves`, `ties`, and per-ruleset `rulesets` (each with `outcomes: {code: {points, description, counts_as_pin}}`). Seeded with Folkstyle (real values) plus Freestyle and Greco-Roman (UWW scoring templates — review before relying on them). Move/ties/outcome lists are shared across rulesets; only the scoring outcomes differ per ruleset.
 -   `Wrestlers.json` (gitignored — contains PII): Holds `wrestlers: [names]` and `teams: {team: [names]}`. A wrestler may belong to multiple teams. The committed `Wrestlers.json.example` placeholder (`UNKNOWN` wrestler) is used as a fresh-clone fallback, so **never commit real wrestler names** to the repo.

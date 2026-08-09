@@ -192,7 +192,7 @@ export function mountPca(root) {
   async function previewItem(item) {
     setStatus(`Loading preview: ${item.video}...`);
     try {
-      const url = await ensurePreview("taged", item.video, setStatus);
+      const url = await ensurePreview("taged", item.video);
       player.load(url, item.start_time);
       setStatus(`Previewing: ${item.video} [${formatClock(item.start_time)}]`);
     } catch (err) {
@@ -359,7 +359,7 @@ export function mountPca(root) {
     if (!file) return;
     const name = decodeURIComponent(file.split("/").pop());
     try {
-      const url = await ensurePreview("clips", name, setStatus);
+      const url = await ensurePreview("clips", name);
       player.load(url);
       player.play();
     } catch (err) {

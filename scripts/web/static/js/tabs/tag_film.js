@@ -128,7 +128,7 @@ export function mountTagFilm(root) {
 
   async function loadPreview(fileName) {
     try {
-      const url = await ensurePreview("untaged", fileName, setStatus);
+      const url = await ensurePreview("untaged", fileName);
       player.load(url);
     } catch (err) {
       showToast(err.message || "Could not load preview.", "error");

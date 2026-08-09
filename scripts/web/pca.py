@@ -302,7 +302,7 @@ def run_pca_compile_job(ctx: JobContext, req: PcaCompileRequest) -> dict[str, An
             input_path, item.start_time, item.end_time, segment_path,
             req.use_stream_copy, codecs,
         )
-        result = run_ffmpeg(cmd, description=f"Extracting {item.video}")
+        result = run_ffmpeg(cmd, description=f"Extracting {item.video}", cancel_event=ctx.cancel_event)
         if result.success and segment_path.is_file():
             segment_files.append(segment_path)
         else:
@@ -318,7 +318,8 @@ def run_pca_compile_job(ctx: JobContext, req: PcaCompileRequest) -> dict[str, An
     list_file: Path = work_dir / "mylist.txt"
     list_file.write_text("".join(f"file '{seg.resolve()}'\n" for seg in segment_files))
     result = run_ffmpeg(
-        build_concat_cmd(list_file, output_path), description="Concatenating clips"
+        build_concat_cmd(list_file, output_path), description="Concatenating clips",
+        cancel_event=ctx.cancel_event,
     )
     shutil.rmtree(work_dir, ignore_errors=True)
     if not result.success or not output_path.is_file():

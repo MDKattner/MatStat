@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 sys.path.append(str(Path(__file__).parent.parent))
 
@@ -147,9 +148,10 @@ class TestWsAuth:
     """Tests for WebSocket authentication."""
 
     def test_ws_rejected_when_unauthenticated(self, auth_client) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(WebSocketDisconnect) as exc_info:
             with auth_client.websocket_connect("/ws"):
                 pass
+        assert exc_info.value.code == 1008
 
     def test_ws_connects_when_authenticated(self, auth_client) -> None:
         auth_client.post("/api/auth/login", json={"password": "test-secret"})

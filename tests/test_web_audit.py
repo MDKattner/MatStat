@@ -1,6 +1,7 @@
 """Tests for the web Auditing flow — the audit listing, retag job, and routes."""
 
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ class FakeContext:
 
     def __init__(self) -> None:
         self.job_id: str = "testjob"
+        self.cancel_event: threading.Event = threading.Event()
         self.reports: list[tuple[float, str]] = []
 
     def report(self, progress: float, message: str = "") -> None:
@@ -363,10 +365,10 @@ class TestAuditRoutes:
 
     def test_retag_invalid_name_400(self, client) -> None:
         resp = client.post(
-            "/api/audit/bad%2Fname.mkv/retag",
+            "/api/audit/bad%5Cname.mkv/retag",
             json={"wrestler": "Alice", "sequences": [{"start_time": 0, "end_time": 5}]},
         )
-        assert resp.status_code in (400, 404)
+        assert resp.status_code == 400
 
     def test_retag_no_sequences_400(self, client, tmp_path, monkeypatch) -> None:
         dirs = _redirect_dirs(monkeypatch, tmp_path)
