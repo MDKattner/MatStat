@@ -1,9 +1,10 @@
 """Search job for the web app — query all wrestler tagged data.
 
-Ports ``SearchWidget`` from scripts/qt_app/search_widget.py: every wrestler's
+Every wrestler's
 compiled CSV is loaded via ``LoadAllWrestlerData`` and filtered by wrestler,
-attack/defense mode, starting tie-up, team/opponent move substrings, and a net
-points range. The matching sequences are returned as JSON or exported as CSV.
+attack/defense mode, starting tie-up, team/opponent move substrings, and an
+adjusted net points range. The matching sequences are returned as JSON or
+exported as CSV.
 """
 
 from __future__ import annotations
@@ -16,9 +17,9 @@ import pandas as pd
 from pydantic import BaseModel
 
 from scripts.helpers import (
+    COL_ADJUSTED_NET_POINTS,
     COL_ATTACKING,
     COL_END_TIME,
-    COL_NET_POINTS,
     COL_OPPONENT_MOVES,
     COL_START_TIME,
     COL_TEAM_MOVES,
@@ -39,12 +40,16 @@ _CSV_FIELDS: list[str] = [
     "tie_up",
     "team_moves",
     "opponent_moves",
-    "net_points",
+    "adjusted_net_points",
 ]
 
 
 class SearchQuery(BaseModel):
-    """Payload for POST /api/search — the filter criteria."""
+    """Payload for POST /api/search — the filter criteria.
+
+    ``min_points``/``max_points`` bound the adjusted net points range (net
+    points plus the pin bonus), matching PCA dot coloring and report stats.
+    """
 
     wrestler: str = ""
     attack_mode: AttackMode = "All"
@@ -81,7 +86,7 @@ def execute_search(query: SearchQuery) -> list[dict[str, Any]]:
 
     Returns:
         A list of match dicts (wrestler, origin, video, times, attacking,
-        tie_up, team_moves, opponent_moves, net_points).
+        tie_up, team_moves, opponent_moves, adjusted_net_points).
     """
     all_data: dict[str, pd.DataFrame] = LoadAllWrestlerData(csv_dir)
     team_move: str = query.team_move.strip().lower()
@@ -99,7 +104,11 @@ def execute_search(query: SearchQuery) -> list[dict[str, Any]]:
             subset = subset[~subset[COL_ATTACKING]]
 
         if query.tie_up.strip():
-            subset = subset[subset[COL_TIE_UP] == query.tie_up.strip()]
+            # Dual-wrestler sequences store the pair "yours:theirs"; match on
+            # the tagged wrestler's own tie (the element before the colon).
+            subset = subset[
+                subset[COL_TIE_UP].str.split(":").str[0] == query.tie_up.strip()
+            ]
 
         if team_move:
             subset = subset[subset[COL_TEAM_MOVES].apply(
@@ -114,8 +123,8 @@ def execute_search(query: SearchQuery) -> list[dict[str, Any]]:
             )]
 
         subset = subset[
-            (subset[COL_NET_POINTS] >= query.min_points)
-            & (subset[COL_NET_POINTS] <= query.max_points)
+            (subset[COL_ADJUSTED_NET_POINTS] >= query.min_points)
+            & (subset[COL_ADJUSTED_NET_POINTS] <= query.max_points)
         ]
 
         for index, row in subset.iterrows():
@@ -129,7 +138,7 @@ def execute_search(query: SearchQuery) -> list[dict[str, Any]]:
                 "tie_up": str(row[COL_TIE_UP]) or "",
                 "team_moves": _join_list(row[COL_TEAM_MOVES]),
                 "opponent_moves": _join_list(row[COL_OPPONENT_MOVES]),
-                "net_points": int(row[COL_NET_POINTS]),
+                "adjusted_net_points": int(row[COL_ADJUSTED_NET_POINTS]),
             })
 
     return rows

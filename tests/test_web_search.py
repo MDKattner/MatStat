@@ -92,6 +92,18 @@ class TestExecuteSearch:
         assert len(rows) == 2
         assert all(row["tie_up"] == "standing" for row in rows)
 
+    def test_filters_by_tie_up_dual_mode(self, tmp_path, monkeypatch) -> None:
+        csv_path: Path = _redirect_csv_dir(tmp_path)
+        monkeypatch.setattr(search, "csv_dir", csv_path)
+        _write_wrestler_csv(csv_path, "Alice", [
+            "alice.mkv:1,0,10,A,collar tie:underhook,double,nothing,T,None",
+            "alice.mkv:2,10,20,D,standing:front headlock,single,sprawl,None,T",
+        ])
+
+        rows: list[dict[str, Any]] = search.execute_search(SearchQuery(tie_up="collar tie"))
+        assert len(rows) == 1
+        assert rows[0]["tie_up"] == "collar tie:underhook"
+
     def test_filters_by_team_move_substring(self, tmp_path, monkeypatch) -> None:
         _seed_search_data(tmp_path, monkeypatch)
         rows: list[dict[str, Any]] = search.execute_search(SearchQuery(team_move="high"))
@@ -111,7 +123,24 @@ class TestExecuteSearch:
         )
         assert len(rows) == 1
         assert rows[0]["origin"] == "bob.mkv:2"
-        assert rows[0]["net_points"] == 0
+        assert rows[0]["adjusted_net_points"] == 0
+
+    def test_filters_by_adjusted_net_points_with_pin(self, tmp_path, monkeypatch) -> None:
+        csv_path: Path = _redirect_csv_dir(tmp_path)
+        monkeypatch.setattr(search, "csv_dir", csv_path)
+        _write_wrestler_csv(csv_path, "Carol", [
+            # Team pin: raw net = 3 (T), adjusted = 3 + 13 pin bonus = 16.
+            "carol.mkv:1,0,10,A,standing,double,sprawl,T:PIN,None",
+        ])
+
+        rows: list[dict[str, Any]] = search.execute_search(
+            SearchQuery(min_points=10, max_points=20)
+        )
+        assert len(rows) == 1
+        assert rows[0]["adjusted_net_points"] == 16
+        assert search.execute_search(
+            SearchQuery(min_points=0, max_points=5)
+        ) == []
 
     def test_combined_filters(self, tmp_path, monkeypatch) -> None:
         _seed_search_data(tmp_path, monkeypatch)
@@ -137,18 +166,18 @@ class TestSearchToCsv:
             "tie_up": "collar tie",
             "team_moves": "high crotch, double",
             "opponent_moves": "sprawl",
-            "net_points": 4,
+            "adjusted_net_points": 4,
         }]
         csv_text: str = search.search_to_csv(rows)
         lines: list[str] = csv_text.splitlines()
-        assert lines[0] == "wrestler,origin,video,start_time,end_time,attacking,tie_up,team_moves,opponent_moves,net_points"
+        assert lines[0] == "wrestler,origin,video,start_time,end_time,attacking,tie_up,team_moves,opponent_moves,adjusted_net_points"
         assert "alice.mkv:1" in lines[1]
         assert "high crotch, double" in lines[1]
 
     def test_empty_rows_keeps_header(self) -> None:
         assert search.search_to_csv([]) == (
             "wrestler,origin,video,start_time,end_time,attacking,"
-            "tie_up,team_moves,opponent_moves,net_points\r\n"
+            "tie_up,team_moves,opponent_moves,adjusted_net_points\r\n"
         )
 
 

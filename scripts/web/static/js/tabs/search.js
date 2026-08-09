@@ -1,5 +1,5 @@
 /**
- * Search tab — the web port of scripts/qt_app/search_widget.py.
+ * Search tab — the web port of the original Qt search widget.
  *
  * Mounts into #search-root. Loads every wrestler's compiled CSV server-side
  * (GET /api/search/wrestlers) and filters it by wrestler, attack/defense mode,
@@ -12,6 +12,7 @@ import {
   configCombo,
   el,
   ensurePreview,
+  filterList,
   showToast,
   videoPlayer,
 } from "../components.js";
@@ -75,7 +76,7 @@ export function mountSearch(root) {
     el("option", { value: "Defending", text: "Defending" }),
   ]);
 
-  const tie = configCombo({ label: "Tie Up:", items: [] });
+  const tie = filterList({ label: "Tie Up:", items: [] });
   const teamMove = el("input", { class: "combo-input", type: "text", placeholder: "e.g. high crotch" });
   const oppMove = el("input", { class: "combo-input", type: "text", placeholder: "e.g. sprawl" });
 
@@ -156,17 +157,18 @@ export function mountSearch(root) {
   }
 
   async function loadOptions() {
-    const [wrestlerItems, tieItems] = await Promise.all([
+    const [wrestlerItems, config] = await Promise.all([
       fetchJson("/api/search/wrestlers"),
-      fetchJson("/api/configs/Ties.config"),
+      fetchJson("/api/config"),
     ]);
     const names = wrestlerItems.ok ? wrestlerItems.body.items || [] : [];
     wrestler.setItems(["All", ...names]);
-    tie.setItems(tieItems.ok ? tieItems.body.items || [] : []);
+    tie.setItems(config.ok ? config.body.ties || [] : []);
   }
 
   searchBtn.addEventListener("click", runSearch);
   exportBtn.addEventListener("click", exportResults);
+  window.addEventListener("configs-updated", loadOptions);
 
   // ---------- Layout ----------
 
@@ -180,8 +182,8 @@ export function mountSearch(root) {
     el("label", { class: "field-label", text: "Team Move (contains):" }, [teamMove]),
     el("label", { class: "field-label", text: "Opponent Move (contains):" }, [oppMove]),
     el("div", { class: "row filter-row" }, [
-      el("label", { class: "field-label", text: "Min Net Points:" }, [minPts]),
-      el("label", { class: "field-label", text: "Max Net Points:" }, [maxPts]),
+      el("label", { class: "field-label", text: "Min Adjusted Net Points:" }, [minPts]),
+      el("label", { class: "field-label", text: "Max Adjusted Net Points:" }, [maxPts]),
     ]),
     el("div", { class: "row" }, [searchBtn, exportBtn]),
     statusLabel,
