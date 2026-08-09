@@ -11,7 +11,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from scripts.helpers import (
     COL_ATTACKING, COL_START_TIME, COL_END_TIME, COL_TIE_UP,
-    COL_TEAM_MOVES, COL_OPPONENT_MOVES, COL_TEAM_SCORES, COL_OPPONENT_SCORES, COL_NET_POINTS,
+    COL_TEAM_MOVES, COL_OPPONENT_MOVES, COL_TEAM_SCORES, COL_OPPONENT_SCORES,
+    COL_NET_POINTS, COL_ADJUSTED_NET_POINTS, COL_MATCH_RESULT,
     MakeNameAndCSV, GetVidDuration, NameProbe,
     MakeFormattedDataFrame, LoadAllWrestlerData,
 )
@@ -169,37 +170,6 @@ class TestNameProbe:
         assert result == ""
 
 
-# ---------- _ProcessVideoSafely ----------
-
-class TestProcessVideoSafely:
-    """Tests for workers._ProcessVideoSafely — multiprocessing-safe wrapper."""
-
-    def test_returns_name_and_data(self, monkeypatch) -> None:
-        from scripts.qt_app.workers import _ProcessVideoSafely
-
-        def mock_make_name_and_csv(path: Path) -> tuple[str, str]:
-            return ("Alice", "csv data")
-
-        monkeypatch.setattr("scripts.qt_app.workers.MakeNameAndCSV", mock_make_name_and_csv)
-
-        name, data = _ProcessVideoSafely(Path("alice.mkv"))
-        assert name == "Alice"
-        assert data == "csv data"
-
-    def test_returns_error_on_exception(self, monkeypatch) -> None:
-        from scripts.qt_app.workers import _ProcessVideoSafely
-
-        def mock_make_name_and_csv(path: Path) -> tuple[str, str]:
-            raise RuntimeError("boom")
-
-        monkeypatch.setattr("scripts.qt_app.workers.MakeNameAndCSV", mock_make_name_and_csv)
-
-        name, data = _ProcessVideoSafely(Path("broken.mkv"))
-        assert name is None
-        assert "broken.mkv" in data
-        assert "boom" in data
-
-
 # ---------- MakeFormattedDataFrame ----------
 
 class TestMakeFormattedDataFrame:
@@ -256,6 +226,8 @@ class TestMakeFormattedDataFrame:
         df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
         assert COL_NET_POINTS in df.columns
         assert df[COL_NET_POINTS].iloc[0] == 4  # T(3) + N2(2) - E(1)
+        assert COL_ADJUSTED_NET_POINTS in df.columns
+        assert df[COL_ADJUSTED_NET_POINTS].iloc[0] == 4  # no pins in fixture
 
     def test_converts_time_columns_to_int(self, tmp_path) -> None:
         csv_file: Path = tmp_path / "test.csv"
@@ -270,6 +242,42 @@ class TestMakeFormattedDataFrame:
         csv_file.write_text("")
         df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
         assert len(df) == 0
+
+    CSV_CONTENT_12COL: str = (
+        'vid.mkv:1,0,6,A,collar tie:underhook,high crotch,sprawl,T,None,3,3,W\n'
+        'vid.mkv:2,6,12,D,standing:front headlock,sprawl,sweep single,None,T,-3,-3,L'
+    )
+
+    def test_loads_wl_column(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "wl.csv"
+        csv_file.write_text(self.CSV_CONTENT_12COL)
+
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
+        assert COL_MATCH_RESULT in df.columns
+        assert df[COL_MATCH_RESULT].iloc[0] == "W"
+        assert df[COL_MATCH_RESULT].iloc[1] == "L"
+        assert df[COL_NET_POINTS].iloc[0] == 3
+        assert df[COL_NET_POINTS].iloc[1] == -3
+
+    def test_empty_result_becomes_empty_string(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "empty_result.csv"
+        csv_file.write_text(
+            'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,\n'
+        )
+
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
+        assert df[COL_MATCH_RESULT].iloc[0] == ""
+
+    def test_legacy_11_col_csv_loads(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "legacy.csv"
+        csv_file.write_text(
+            'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3\n'
+        )
+
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
+        assert COL_NET_POINTS in df.columns
+        assert COL_ADJUSTED_NET_POINTS in df.columns
+        assert COL_MATCH_RESULT not in df.columns
 
 
 # ---------- LoadAllWrestlerData ----------
@@ -305,46 +313,3 @@ class TestLoadAllWrestlerData:
         result: dict[str, pd.DataFrame] = LoadAllWrestlerData(tmp_path)
         assert "Alice" in result
         assert len(result) == 1
-
-
-# ---------- LoadConfigItems ----------
-
-class TestLoadConfigItems:
-    """Tests for LoadConfigItems from helpers.py — config file parser."""
-
-    def test_loads_items_skipping_comments(self, tmp_path) -> None:
-        from scripts.helpers import LoadConfigItems
-
-        cfg: Path = tmp_path / "test.config"
-        cfg.write_text(
-            "# This is a comment\n"
-            "  # indented comment\n"
-            "\n"
-            "  move one  \n"
-            "move two\n"
-            "   \n"
-        )
-        items: list[str] = LoadConfigItems(cfg)
-        assert items == ["move one", "move two"]
-
-    def test_empty_file(self, tmp_path) -> None:
-        from scripts.helpers import LoadConfigItems
-
-        cfg: Path = tmp_path / "empty.config"
-        cfg.write_text("")
-        items: list[str] = LoadConfigItems(cfg)
-        assert items == []
-
-    def test_all_comments(self, tmp_path) -> None:
-        from scripts.helpers import LoadConfigItems
-
-        cfg: Path = tmp_path / "comments.config"
-        cfg.write_text("# comment 1\n# comment 2\n")
-        items: list[str] = LoadConfigItems(cfg)
-        assert items == []
-
-    def test_file_not_found(self, tmp_path) -> None:
-        from scripts.helpers import LoadConfigItems
-
-        items: list[str] = LoadConfigItems(tmp_path / "nonexistent.config")
-        assert items == []

@@ -12,10 +12,13 @@ sys.path.append(str(Path(__file__).parent.parent))
 from scripts.helpers import (
     COL_TEAM_MOVES, COL_OPPONENT_MOVES, COL_TEAM_SCORES, COL_OPPONENT_SCORES,
     COL_START_TIME, COL_END_TIME, COL_ATTACKING, COL_NET_POINTS,
-    CalculateNetPoints, TabulateNetPoints,
+    COL_ADJUSTED_NET_POINTS, COL_MATCH_RESULT,
+    CalculateNetPoints, TabulateNetPoints, AdjustedNetPoints,
+    TabulateAdjustedNetPoints,
     MoveCounts, MoveUsageCounts, MoveDefenseCounts, PinCount,
     _MoveFilter, DidMove, DefendedMove,
     _GenerateMoveDF, GenerateOffenseDF, GenerateDefenseDF, GenerateInitiationDF,
+    GenerateInitiationDFBySegment,
 )
 
 
@@ -187,10 +190,11 @@ class TestGenerateMoveDF:
     def test_generates_stats_dataframe(self, sample_df: pd.DataFrame) -> None:
         df = _GenerateMoveDF(sample_df, COL_TEAM_MOVES)
         assert "Count" in df.columns
-        assert "Net Pts" in df.columns
-        assert "Average Net Points" in df.columns
+        assert "Adjusted Net Pts" in df.columns
+        assert "Average Adjusted Net Points" in df.columns
         assert "Number of Pins" in df.columns
         assert "Times Pinned" in df.columns
+        assert df.index.name == "Move"
         assert len(df) > 0
 
     def test_offense_df(self, sample_df: pd.DataFrame) -> None:
@@ -216,11 +220,12 @@ class TestGenerateMoveDF:
             COL_TEAM_SCORES: [["T"], []],
             COL_OPPONENT_SCORES: [[], ["E"]],
             COL_NET_POINTS: [3, -1],
+            COL_ADJUSTED_NET_POINTS: [3, -1],
         }, index=pd.Index(["v.mkv:1", "v.mkv:2"], name="Origin"))
         result = _GenerateMoveDF(df, COL_TEAM_MOVES)
         assert result.loc["double", "Count"] == 2
-        assert result.loc["double", "Net Pts"] == 2
-        assert result.loc["double", "Average Net Points"] == 1.0
+        assert result.loc["double", "Adjusted Net Pts"] == 2
+        assert result.loc["double", "Average Adjusted Net Points"] == 1.0
 
 
 class TestGenerateInitiationDF:
@@ -246,11 +251,129 @@ class TestGenerateInitiationDF:
 
     def test_net_points_computed(self, sample_df: pd.DataFrame) -> None:
         df = GenerateInitiationDF(sample_df)
-        assert df["Net Points Attacking"].iloc[0] == 7  # 4 + 3 + 0
-        assert df["Net Points Defending"].iloc[0] == -5  # -3 + -2 + 0
+        assert df["Adjusted Net Points Attacking"].iloc[0] == 7  # 4 + 3 + 0
+        assert df["Adjusted Net Points Defending"].iloc[0] == -5  # -3 + -2 + 0
+
+    def test_index_named(self, sample_df: pd.DataFrame) -> None:
+        df = GenerateInitiationDF(sample_df)
+        assert df.index.name == "Metric"
 
     def test_empty_dataframe(self, empty_df: pd.DataFrame) -> None:
         df = GenerateInitiationDF(empty_df)
         assert df["Attack Count"].iloc[0] == 0
         assert df["Defense Count"].iloc[0] == 0
         assert df["Attacks / Sequences"].iloc[0] == 0.0
+
+
+class TestGenerateInitiationDFBySegment:
+    """Tests for GenerateInitiationDFBySegment — W/L split rows."""
+
+    def test_segment_split_correctness(self, sample_df: pd.DataFrame) -> None:
+        df = sample_df.copy()
+        df[COL_MATCH_RESULT] = ["W", "W", "L", "L", "", ""]
+        out = GenerateInitiationDFBySegment(df)
+        assert list(out.index) == ["All", "Wins", "Losses"]
+        assert out.index.name == "Segment"
+        # W rows: 0 (attack, +4) and 1 (defend, -3)
+        assert out.loc["Wins", "Attack Count"] == 1
+        assert out.loc["Wins", "Adjusted Net Points Attacking"] == 4
+        # L rows: 2 (attack, +3) and 3 (defend, -2)
+        assert out.loc["Losses", "Attack Count"] == 1
+        assert out.loc["Losses", "Adjusted Net Points Attacking"] == 3
+        # All matches the full-data single-row table
+        full = GenerateInitiationDF(df)
+        assert out.loc["All", "Attack Count"] == full["Attack Count"].iloc[0]
+        assert out.loc["All", "Defense Count"] == full["Defense Count"].iloc[0]
+        assert out.loc["All", "Adjusted Net Points Attacking"] == full[
+            "Adjusted Net Points Attacking"
+        ].iloc[0]
+        assert out.loc["All", "Adjusted Net Points Defending"] == full[
+            "Adjusted Net Points Defending"
+        ].iloc[0]
+
+    def test_unrecorded_rows_only_in_all(self, sample_df: pd.DataFrame) -> None:
+        df = sample_df.copy()
+        df[COL_MATCH_RESULT] = ["W", "W", "L", "L", "", ""]
+        out = GenerateInitiationDFBySegment(df)
+        # Unrecorded rows 4 (attack, +0) and 5 (defend, +0) add no attacking/
+        # defending counts or net to the W/L rows beyond the recorded ones.
+        assert out.loc["Wins", "Attack Count"] == 1
+        assert out.loc["Wins", "Defense Count"] == 1
+        assert out.loc["Losses", "Attack Count"] == 1
+        assert out.loc["Losses", "Defense Count"] == 1
+        # ...while All includes all six rows.
+        assert out.loc["All", "Attack Count"] == 3
+        assert out.loc["All", "Defense Count"] == 3
+
+    def test_missing_result_column(self, sample_df: pd.DataFrame) -> None:
+        out = GenerateInitiationDFBySegment(sample_df)
+        full = GenerateInitiationDF(sample_df)
+        assert out.loc["All", "Attack Count"] == full["Attack Count"].iloc[0]
+        assert out.loc["Wins", "Attack Count"] == 0
+        assert out.loc["Losses", "Attack Count"] == 0
+        assert out.loc["Wins", "Defense Count"] == 0
+        assert out.loc["Losses", "Defense Count"] == 0
+
+    def test_empty_dataframe(self, empty_df: pd.DataFrame) -> None:
+        out = GenerateInitiationDFBySegment(empty_df)
+        assert list(out.index) == ["All", "Wins", "Losses"]
+        assert out.index.name == "Segment"
+        assert (out == 0).all().all()
+
+
+class TestAdjustedNetPoints:
+    """Tests for AdjustedNetPoints — net points plus the pin bonus."""
+
+    def _row(self, team_scores, opponent_scores) -> pd.Series:
+        return pd.Series({
+            COL_TEAM_SCORES: team_scores,
+            COL_OPPONENT_SCORES: opponent_scores,
+        })
+
+    def test_no_pins_equals_net(self, monkeypatch) -> None:
+        monkeypatch.setattr("scripts.helpers.score_to_pts", {"T": np.int16(3), "E": np.int16(1)})
+        monkeypatch.setattr("scripts.helpers._ACTIVE_PIN_CODES", frozenset({"PIN"}))
+        monkeypatch.setattr("scripts.helpers.active_pin_points", 13)
+        row = self._row(["T"], ["E"])
+        assert AdjustedNetPoints(row) == 2
+
+    def test_team_pin_adds_bonus(self, monkeypatch) -> None:
+        monkeypatch.setattr("scripts.helpers.score_to_pts", {"PIN": np.int16(0)})
+        monkeypatch.setattr("scripts.helpers._ACTIVE_PIN_CODES", frozenset({"PIN"}))
+        monkeypatch.setattr("scripts.helpers.active_pin_points", 13)
+        assert AdjustedNetPoints(self._row(["PIN"], [])) == 13
+
+    def test_opponent_pin_subtracts_bonus(self, monkeypatch) -> None:
+        monkeypatch.setattr("scripts.helpers.score_to_pts", {"PIN": np.int16(0)})
+        monkeypatch.setattr("scripts.helpers._ACTIVE_PIN_CODES", frozenset({"PIN"}))
+        monkeypatch.setattr("scripts.helpers.active_pin_points", 9)
+        assert AdjustedNetPoints(self._row([], ["PIN"])) == -9
+
+    def test_both_pins_cancel(self, monkeypatch) -> None:
+        monkeypatch.setattr("scripts.helpers.score_to_pts", {"PIN": np.int16(0)})
+        monkeypatch.setattr("scripts.helpers._ACTIVE_PIN_CODES", frozenset({"PIN"}))
+        monkeypatch.setattr("scripts.helpers.active_pin_points", 13)
+        assert AdjustedNetPoints(self._row(["PIN"], ["PIN"])) == 0
+
+    def test_non_pin_codes_no_bonus(self, monkeypatch) -> None:
+        monkeypatch.setattr("scripts.helpers.score_to_pts", {"T": np.int16(3), "None": np.int16(0)})
+        monkeypatch.setattr("scripts.helpers._ACTIVE_PIN_CODES", frozenset({"PIN"}))
+        monkeypatch.setattr("scripts.helpers.active_pin_points", 13)
+        assert AdjustedNetPoints(self._row(["T"], ["None"])) == 3
+
+
+class TestTabulateAdjustedNetPoints:
+    """Tests for TabulateAdjustedNetPoints — in-place column addition."""
+
+    def test_adds_column(self, simple_df: pd.DataFrame) -> None:
+        df = simple_df.copy()
+        df.drop(columns=[COL_ADJUSTED_NET_POINTS], inplace=True)
+        TabulateAdjustedNetPoints(df)
+        assert COL_ADJUSTED_NET_POINTS in df.columns
+        assert df[COL_ADJUSTED_NET_POINTS].iloc[0] == 3
+
+    def test_empty_dataframe(self, empty_df: pd.DataFrame) -> None:
+        df = empty_df.copy()
+        TabulateAdjustedNetPoints(df)
+        assert COL_ADJUSTED_NET_POINTS in df.columns
+        assert len(df) == 0

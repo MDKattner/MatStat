@@ -1,5 +1,5 @@
 /**
- * Combine Clips tab — the web port of scripts/qt_app/combine_clips_widget.py.
+ * Combine Clips tab — the web port of the original Qt combine clips widget.
  *
  * Mounts into #combine-clips-root. Pick one or more wrestlers and a filter
  * (starting tie-up, move used, or move defended), preview the matching
@@ -9,9 +9,9 @@
 
 import {
   checkList,
-  configCombo,
   el,
   ensurePreview,
+  filterList,
   pollJob,
   showToast,
   videoPlayer,
@@ -97,10 +97,13 @@ export function mountCombineClips(root) {
     el("label", { class: "check-label", text: "Move Defended" }, [defendRadio]),
   ]);
 
-  const filterItem = configCombo({ label: "Filter Item:", items: [] });
-  filterItem.input.addEventListener("input", () => {
-    state.filterItem = filterItem.selected;
-    updateButtons();
+  const filterItem = filterList({
+    label: "Filter Item:",
+    items: [],
+    onChange: () => {
+      state.filterItem = filterItem.selected;
+      updateButtons();
+    },
   });
 
   const streamCopy = el("input", { type: "checkbox", checked: "" });
@@ -142,22 +145,19 @@ export function mountCombineClips(root) {
   }
 
   async function loadConfigs() {
-    const names = ["Wrestlers.config", "Ties.config", "Moves.config"];
-    const results = await Promise.all(names.map(async (name) => {
-      const { ok, body } = await fetchJson(`/api/configs/${name}`);
-      return ok ? body.items : [];
-    }));
-    const [wrestlerItems, ties, moves] = results;
-    wrestlers.setItems(wrestlerItems);
-    state.ties = ties;
-    state.moves = moves;
+    const { ok, body } = await fetchJson("/api/config");
+    const config = ok ? body : {};
+    wrestlers.setItems(config.wrestlers || []);
+    wrestlers.setTeams(config.teams || {});
+    state.ties = config.ties || [];
+    state.moves = config.moves || [];
     swapFilterItems();
   }
 
   function swapFilterItems() {
     const items = state.filterType === "Starting Tie" ? state.ties || [] : state.moves || [];
     filterItem.setItems(items);
-    filterItem.setSelected("");
+    filterItem.clear();
     state.filterItem = "";
     state.matches = [];
     renderMatches();
@@ -327,5 +327,6 @@ export function mountCombineClips(root) {
 
   // ---------- Boot ----------
 
+  window.addEventListener("configs-updated", loadConfigs);
   loadConfigs();
 }

@@ -107,3 +107,64 @@ class TestHelpers:
         monkeypatch.setattr(subprocess, "run", mock_run)
         result: dict[str, str] = GetVideoCodecs(Path("fake.mkv"))
         assert result == {"video": "h264", "audio": "aac"}
+
+    def test_build_tag_title_single(self) -> None:
+        from scripts.helpers import BuildTagTitle
+
+        assert BuildTagTitle("Alice") == "Alice"
+        assert BuildTagTitle("Alice", match_result="W") == "Alice (W)"
+        assert BuildTagTitle("Alice", match_result="L") == "Alice (L)"
+
+    def test_build_tag_title_dual(self) -> None:
+        from scripts.helpers import BuildTagTitle
+
+        assert BuildTagTitle("Alice", "Bob") == "Alice / Bob"
+        assert BuildTagTitle("Alice", "Bob", "W") == "Alice (W) / Bob"
+        assert BuildTagTitle("Alice", "Bob", "L") == "Alice / Bob (W)"
+
+    def test_build_tag_title_invalid_result(self) -> None:
+        from scripts.helpers import BuildTagTitle
+
+        with pytest.raises(ValueError):
+            BuildTagTitle("Alice", match_result="D")
+
+    def test_parse_tagged_name_single(self) -> None:
+        from scripts.helpers import ParseTaggedName
+
+        assert ParseTaggedName("Alice") == ("Alice", None, "")
+        assert ParseTaggedName("Alice (W)") == ("Alice", None, "W")
+        assert ParseTaggedName("Alice (L)") == ("Alice", None, "L")
+
+    def test_parse_tagged_name_dual(self) -> None:
+        from scripts.helpers import ParseTaggedName
+
+        assert ParseTaggedName("Alice / Bob") == ("Alice", "Bob", "")
+        assert ParseTaggedName("Alice (W) / Bob") == ("Alice", "Bob", "W")
+        assert ParseTaggedName("Alice / Bob (W)") == ("Alice", "Bob", "L")
+
+    def test_build_tie_entry(self) -> None:
+        from scripts.helpers import BuildTieEntry
+
+        assert BuildTieEntry("collar tie") == "collar tie"
+        assert BuildTieEntry("collar tie", "underhook") == "collar tie:underhook"
+        assert BuildTieEntry("collar tie", "  ") == "collar tie"
+
+    def test_swap_perspective_csv(self) -> None:
+        from scripts.helpers import SwapPerspectiveCSV
+
+        data: str = (
+            "a.mkv:1,0,6,A,collar tie:underhook,double,nothing,T,None,3,3,W\n"
+            "a.mkv:2,6,12,D,standing:front headlock,sprawl,single,E,None,-1,-1,L"
+        )
+        lines: list[str] = SwapPerspectiveCSV(data).splitlines()
+        assert lines[0] == (
+            "a.mkv:1,0,6,D,underhook:collar tie,nothing,double,None,T,-3,-3,L"
+        )
+        assert lines[1] == (
+            "a.mkv:2,6,12,A,front headlock:standing,single,sprawl,None,E,1,1,W"
+        )
+
+    def test_swap_perspective_csv_passes_through_unknown(self) -> None:
+        from scripts.helpers import SwapPerspectiveCSV
+
+        assert SwapPerspectiveCSV("bad,row") == "bad,row"
