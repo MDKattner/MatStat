@@ -112,9 +112,6 @@ export function mountCombineClips(root) {
     },
   });
 
-  const streamCopy = el("input", { type: "checkbox", checked: "" });
-  const streamCopyRow = el("label", { class: "check-label", text: "Fast extraction (stream copy)" }, [streamCopy]);
-
   const findBtn = el("button", { class: "btn", type: "button", text: "Find Clips", disabled: "" });
   const generateBtn = el("button", { class: "btn", type: "button", text: "Generate Reel", disabled: "" });
   const batchBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Batch Generate All", disabled: "" });
@@ -219,7 +216,6 @@ export function mountCombineClips(root) {
           wrestler: selected[0],
           filter_type: state.filterType,
           filter_item: state.filterItem,
-          use_stream_copy: streamCopy.checked,
         }),
       });
       if (!ok) throw new Error(body.detail || "Could not start clip generation");
@@ -259,7 +255,6 @@ export function mountCombineClips(root) {
           wrestlers: selected,
           filter_type: state.filterType,
           filter_item: state.filterItem,
-          use_stream_copy: streamCopy.checked,
         }),
       });
       if (!ok) throw new Error(body.detail || "Could not start batch generation");
@@ -310,7 +305,6 @@ export function mountCombineClips(root) {
     wrestlers.node,
     el("div", { class: "row radio-row" }, [filterRow]),
     filterItem.node,
-    streamCopyRow,
   ]);
   const actionsCard = el("fieldset", { class: "tag-card" }, [
     el("legend", { text: "Actions" }),

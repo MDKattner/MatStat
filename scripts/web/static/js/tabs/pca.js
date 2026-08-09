@@ -121,9 +121,6 @@ export function mountPca(root) {
     layoutSelect,
   ]);
 
-  const streamCopy = el("input", { type: "checkbox", checked: "" });
-  const streamCopyRow = el("label", { class: "check-label", text: "Fast extraction (stream copy)" }, [streamCopy]);
-
   const loadPlotBtn = el("button", { class: "btn", type: "button", text: "Load Plot" });
   const compileBtn = el("button", { class: "btn", type: "button", text: "Compile Reel", disabled: "" });
 
@@ -307,7 +304,6 @@ export function mountPca(root) {
         body: JSON.stringify({
           name: `${state.scope}-${state.layout}`.toLowerCase(),
           items: state.items,
-          use_stream_copy: streamCopy.checked,
         }),
       });
       if (!ok) throw new Error(body.detail || "Could not start reel compilation");
@@ -391,7 +387,6 @@ export function mountPca(root) {
     teamRow,
     wrestlerRow,
     layoutRow,
-    streamCopyRow,
     el("div", { class: "row" }, [loadPlotBtn]),
   ]);
   const selectionCard = el("fieldset", { class: "tag-card" }, [

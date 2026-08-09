@@ -20,7 +20,7 @@ export function mountCompileStats(root) {
 
   const state = { running: false, jobId: "" };
 
-  const processBtn = el("button", { class: "btn", type: "button", text: "Process All Tagged Videos" });
+  const processBtn = el("button", { class: "btn", type: "button", text: "Process All Logged Matches" });
   const cancelBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Cancel", disabled: "" });
   const progress = el("progress", { class: "progress", max: "100", value: "0", hidden: "" });
   const statusLabel = el("p", { class: "status-label", text: "Ready" });
@@ -76,7 +76,7 @@ export function mountCompileStats(root) {
       renderResults(result);
       const processed = result.videos_processed ?? 0;
       if (processed === 0) {
-        setStatus("No tagged videos found.");
+        setStatus("No logged matches found.");
       } else {
         setStatus(`Complete. ${processed} videos processed.`);
       }

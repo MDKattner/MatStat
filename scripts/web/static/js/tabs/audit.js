@@ -47,7 +47,7 @@ export function mountAudit(root) {
   // ---------- Components ----------
 
   const videoList = filterList({
-    placeholder: "Type to filter tagged videos...",
+    placeholder: "Type to filter logged videos...",
     onChange: (fileName) => {
       const data = state.videos.find((v) => v.name === fileName);
       if (!data) return;
@@ -137,7 +137,7 @@ export function mountAudit(root) {
   function updateTitlePreview() {
     const wrestler = wrestlerList.selected;
     titlePreview.textContent = wrestler
-      ? `Will tag as: ${buildTitle(wrestler, opponentList.selected, matchResultValue)}`
+      ? `Will log as: ${buildTitle(wrestler, opponentList.selected, matchResultValue)}`
       : "";
   }
 
@@ -175,9 +175,9 @@ export function mountAudit(root) {
   const addBtn = el("button", { class: "btn", type: "button", text: "Add Sequence", disabled: "" });
   const updateBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Update Sequence", hidden: "" });
   const deleteBtn = el("button", { class: "btn btn-ghost danger", type: "button", text: "Delete Sequence", hidden: "" });
-  const retagBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Re-tag Video", disabled: "" });
+  const retagBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Re-log Match", disabled: "" });
   const progress = el("progress", { class: "progress", max: "100", value: "0", hidden: "" });
-  const statusLabel = el("p", { class: "status-label", text: "Select a tagged video to audit." });
+  const statusLabel = el("p", { class: "status-label", text: "Select a logged video to review." });
 
   const seqCount = el("span", { text: "0" });
   const seqListEl = el("ul", { class: "seq-list" });
@@ -310,7 +310,7 @@ export function mountAudit(root) {
 
   function showChapterPreview(seq) {
     const dialog = el("dialog", { class: "modal chapter-modal" });
-    dialog.appendChild(el("h3", { text: "Chapter Preview" }));
+    dialog.appendChild(el("h3", { text: "Sequence Review" }));
     dialog.appendChild(el("pre", { class: "chapter-preview", text: prettyChapter(seq) }));
     const redoBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Re-do Sequence" });
     const newBtn = el("button", { class: "btn", type: "button", text: "New Sequence" });
@@ -406,7 +406,7 @@ export function mountAudit(root) {
   async function loadVideos() {
     const { ok, body } = await fetchJson("/api/audit");
     if (!ok) {
-      showToast("Could not load tagged videos.", "error");
+      showToast("Could not load logged videos.", "error");
       return;
     }
     state.videos = body.videos || [];
@@ -416,7 +416,7 @@ export function mountAudit(root) {
       state.data = fresh || null;
       if (state.data) renderSequences();
     }
-    setStatus(`${state.videos.length} tagged video(s).`);
+    setStatus(`${state.videos.length} logged video(s).`);
   }
 
   async function loadPreview(fileName) {
@@ -475,7 +475,7 @@ export function mountAudit(root) {
     }
 
     setRetagging(true);
-    setStatus("Re-tagging video...");
+    setStatus("Re-logging match...");
     try {
       const name = state.data.name;
       const payload = {
@@ -489,14 +489,14 @@ export function mountAudit(root) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!ok) throw new Error(body.detail || "Could not start re-tagging");
+      if (!ok) throw new Error(body.detail || "Could not start re-logging");
 
       const job = await pollJob(body.job_id, {
         onProgress: (p) => { progress.value = p; },
         onStatus: setStatus,
       });
-      setStatus(`Re-tagged: ${job.result.output} (stats recompiled)`);
-      showToast("Video re-tagged and stats recompiled.", "success");
+      setStatus(`Re-logged: ${job.result.output} (stats recompiled)`);
+      showToast("Match re-logged and stats recompiled.", "success");
       state.data = null;
       opponentList.clear();
       oppTie.clear();
@@ -505,8 +505,8 @@ export function mountAudit(root) {
       videoList.clear();
       await loadVideos();
     } catch (err) {
-      showToast(err.message || "Re-tagging failed.", "error");
-      setStatus("Re-tagging failed.");
+      showToast(err.message || "Re-logging failed.", "error");
+      setStatus("Re-logging failed.");
     } finally {
       setRetagging(false);
     }
@@ -528,7 +528,7 @@ export function mountAudit(root) {
   // ---------- Layout ----------
 
   const videoCard = el("section", { class: "tag-card video-card" }, [
-    el("h3", { text: "Tagged Videos" }),
+    el("h3", { text: "Logged Videos" }),
     videoList.node,
   ]);
   const wrestlerCard = el("section", { class: "tag-card wrestler-card" }, [
@@ -570,7 +570,7 @@ export function mountAudit(root) {
     statusLabel,
   ]);
   const listCard = el("details", { class: "tag-card", open: "" }, [
-    el("summary", {}, [el("span", { text: "Tagged Sequences: " }), seqCount]),
+    el("summary", {}, [el("span", { text: "Logged Sequences: " }), seqCount]),
     seqListEl,
   ]);
   const left = el("div", { class: "tag-left" }, [

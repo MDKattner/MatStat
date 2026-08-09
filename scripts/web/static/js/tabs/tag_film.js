@@ -211,7 +211,7 @@ export function mountTagFilm(root) {
 
   function updateTitlePreview() {
     titlePreview.textContent = state.wrestler
-      ? `Will tag as: ${buildTitle(state.wrestler, state.opponent, state.matchResult)}`
+      ? `Will log as: ${buildTitle(state.wrestler, state.opponent, state.matchResult)}`
       : "";
   }
 
@@ -254,7 +254,7 @@ export function mountTagFilm(root) {
   const oppScores = checkList({ label: "Opp. Scores", items: [], counts: true });
 
   const addBtn = el("button", { class: "btn", type: "button", text: "Add Sequence", disabled: "" });
-  const finishBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Finish & Tag Video", disabled: "" });
+  const finishBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Finish & Log Match", disabled: "" });
   const progress = el("progress", { class: "progress", max: "100", value: "0", hidden: "" });
   const statusLabel = el("p", { class: "status-label", text: "Select a video and wrestler to begin." });
 
@@ -356,13 +356,13 @@ export function mountTagFilm(root) {
     }));
     seqCount.textContent = String(state.sequences.length);
     resetDetails();
-    setStatus(`Added sequence. ${state.sequences.length} sequences tagged.`);
+    setStatus(`Added sequence. ${state.sequences.length} sequences logged.`);
     updateButtons();
   }
 
   function showChapterPreview(seq) {
     const dialog = el("dialog", { class: "modal chapter-modal" });
-    dialog.appendChild(el("h3", { text: "Chapter Preview" }));
+    dialog.appendChild(el("h3", { text: "Sequence Review" }));
     dialog.appendChild(el("pre", { class: "chapter-preview", text: prettyChapter(seq) }));
     const redoBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Re-do Sequence" });
     const newBtn = el("button", { class: "btn", type: "button", text: "New Sequence" });
@@ -417,7 +417,7 @@ export function mountTagFilm(root) {
     }
 
     setTagging(true);
-    setStatus("Tagging video...");
+    setStatus("Logging match...");
     try {
       const payload = {
         video: state.video,
@@ -431,14 +431,14 @@ export function mountTagFilm(root) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!ok) throw new Error(body.detail || "Could not start tagging");
+      if (!ok) throw new Error(body.detail || "Could not start logging");
 
       const job = await pollJob(body.job_id, {
         onProgress: (p) => { progress.value = p; },
         onStatus: setStatus,
       });
-      setStatus(`Tagged: ${job.result.output}`);
-      showToast(`Video tagged successfully! Output: ${job.result.output}`, "success");
+      setStatus(`Logged: ${job.result.output}`);
+      showToast(`Match logged successfully! Output: ${job.result.output}`, "success");
       state.sequences = [];
       seqListEl.replaceChildren();
       seqCount.textContent = "0";
@@ -451,8 +451,8 @@ export function mountTagFilm(root) {
       updateVideoLock();
       await loadVideos();
     } catch (err) {
-      showToast(err.message || "Tagging failed.", "error");
-      setStatus("Tagging failed.");
+      showToast(err.message || "Logging failed.", "error");
+      setStatus("Logging failed.");
     } finally {
       setTagging(false);
     }
@@ -522,7 +522,7 @@ export function mountTagFilm(root) {
     statusLabel,
   ]);
   const listCard = el("details", { class: "tag-card", open: "" }, [
-    el("summary", {}, [el("span", { text: "Tagged Sequences: " }), seqCount]),
+    el("summary", {}, [el("span", { text: "Logged Sequences: " }), seqCount]),
     seqListEl,
   ]);
   const left = el("div", { class: "tag-left" }, [
