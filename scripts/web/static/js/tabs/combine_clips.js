@@ -322,7 +322,7 @@ export function mountCombineClips(root) {
   ]);
   const left = el("div", { class: "tag-left" }, [controlsCard, actionsCard]);
 
-  const playerCard = el("section", { class: "tag-card" }, [player.node]);
+  const playerCard = el("section", { class: "tag-card player-card" }, [player.node]);
   const matchesCard = el("fieldset", { class: "tag-card" }, [
     el("legend", {}, [el("span", { text: "Matched Sequences: " }), matchesCount]),
     matchesList,

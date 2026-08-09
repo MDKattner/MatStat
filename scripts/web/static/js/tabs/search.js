@@ -195,7 +195,7 @@ export function mountSearch(root) {
   ]);
   const left = el("div", { class: "tag-left" }, [filtersCard]);
 
-  const playerCard = el("section", { class: "tag-card" }, [player.node]);
+  const playerCard = el("section", { class: "tag-card player-card" }, [player.node]);
   const matchesCard = el("fieldset", { class: "tag-card" }, [
     el("legend", { text: "Matched Sequences" }),
     resultCount,

@@ -408,7 +408,7 @@ export function mountPca(root) {
   ]);
   const left = el("div", { class: "tag-left" }, [controlsCard, selectionCard, actionsCard]);
 
-  const playerCard = el("section", { class: "tag-card" }, [player.node]);
+  const playerCard = el("section", { class: "tag-card player-card" }, [player.node]);
   const plotCard = el("section", { class: "tag-card" }, [plotEl]);
   const right = el("div", { class: "tag-right" }, [playerCard, plotCard]);
 
