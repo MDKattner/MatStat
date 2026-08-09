@@ -119,8 +119,6 @@ html, body {
 
 .tab-pane { max-width: 1100px; }
 
-.tab-pane h2 { margin-top: 0; }
-
 .placeholder {
   color: var(--text-dim);
   border: 1px dashed var(--border);
@@ -161,6 +159,8 @@ html, body {
   background: var(--bg-input);
   border-top: 1px solid var(--border);
 }
+
+.log-dock[hidden] { display: none; }
 
 .log-dock-header {
   display: flex;
@@ -249,22 +249,40 @@ html, body {
 
 .btn-ghost:hover { background: var(--bg-input); }
 
+.btn.danger { color: #e5484d; border-color: #e5484d; }
+.btn.danger:hover { background: rgba(229, 72, 77, 0.12); }
+
 .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
+#tab-tag-film {
+  max-width: none;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+#tab-tag-film[hidden] { display: none; }
+
 .tag-film-grid {
+  flex: 1;
+  min-height: 0;
   display: grid;
-  grid-template-columns: minmax(320px, 420px) 1fr;
+  grid-template-columns: minmax(420px, 588px) 1fr;
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .tag-left {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
 }
 
 .tag-right {
@@ -272,6 +290,9 @@ html, body {
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
 }
 
 .tag-card {
@@ -282,9 +303,68 @@ html, body {
   border-radius: 10px;
   background: var(--bg-raised);
   padding: 12px;
+  min-width: 0;
 }
 
 fieldset.tag-card { margin: 0; }
+
+.selection-row {
+  flex-shrink: 0;
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.video-card { flex: 2; min-width: 0; }
+.wrestler-card { flex: 1; min-width: 0; }
+
+.player-card {
+  flex: none;
+  aspect-ratio: 16 / 9;
+  min-height: 200px;
+  max-height: 45vh;
+}
+
+.video-panel {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.video-panel video {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.video-controls {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+}
+
+.pos-slider {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.time-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
 
 .tag-card legend {
   padding: 0 6px;
@@ -295,6 +375,10 @@ fieldset.tag-card { margin: 0; }
 }
 
 .tag-card h3 { margin: 0; }
+
+.tag-card h3.subhead { margin-top: 12px; font-size: 13px; color: var(--text-dim); }
+
+.tie-row { align-items: flex-start; }
 
 .row {
   display: flex;
@@ -311,9 +395,18 @@ fieldset.tag-card { margin: 0; }
 .radio-row { gap: 16px; }
 
 .combo-input,
-.time-input,
-.filter-input {
+.time-input {
   flex: 1;
+  min-width: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 14px;
+}
+
+.filter-input {
   min-width: 0;
   background: var(--bg-input);
   border: 1px solid var(--border);
@@ -330,7 +423,24 @@ fieldset.tag-card { margin: 0; }
   border-color: var(--accent);
 }
 
+.file-input {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.upload-row { margin-bottom: 8px; }
+
+.select-input { cursor: pointer; }
+
 .check-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-group {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -340,7 +450,7 @@ fieldset.tag-card { margin: 0; }
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 180px;
+  max-height: 240px;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -376,7 +486,11 @@ fieldset.tag-card { margin: 0; }
   padding: 3px 6px;
 }
 
-.video-list { max-height: 200px; }
+#tab-tag-film .video-card .check-list,
+#tab-audit .video-card .check-list { max-height: 160px; }
+
+#tab-tag-film .wrestler-card .check-list,
+#tab-audit .wrestler-card .check-list { max-height: 160px; }
 
 .video-item {
   width: 100%;
@@ -393,8 +507,7 @@ fieldset.tag-card { margin: 0; }
 
 .video-item:hover { background: var(--bg-raised); }
 .video-item.active { background: var(--accent); color: #fff; }
-
-.upload-row { gap: 10px; }
+.video-item:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .progress {
   width: 100%;
@@ -411,7 +524,7 @@ fieldset.tag-card { margin: 0; }
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 220px;
+  max-height: 260px;
   overflow: auto;
 }
 
@@ -439,6 +552,120 @@ fieldset.tag-card { margin: 0; }
 }
 
 .dialog-actions { justify-content: flex-end; }
+
+/* ---------- Tag Film + Auditing: compact left column ---------- */
+
+#tab-tag-film .tag-left,
+#tab-audit .tag-left { gap: 8px; }
+
+#tab-tag-film .tag-left .tag-card,
+#tab-audit .tag-left .tag-card { padding: 10px; }
+
+#tab-tag-film .tag-left .check-list,
+#tab-audit .tag-left .check-list { max-height: 130px; }
+
+#tab-tag-film .tag-left .filter-group .check-list,
+#tab-audit .tag-left .filter-group .check-list { max-height: 110px; }
+
+#tab-tag-film .tag-left .check-item,
+#tab-audit .tag-left .check-item { padding: 3px 8px; }
+
+#tab-tag-film .tag-left .check-label,
+#tab-audit .tag-left .check-label {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.details-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+details.tag-card summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+details.tag-card summary::-webkit-details-marker { display: none; }
+
+details.tag-card summary:hover { color: var(--text); }
+
+.seg-toggle {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.seg-option {
+  flex: 1;
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.seg-option + .seg-option { border-left: 1px solid var(--border); }
+
+.seg-option:hover { background: var(--bg-input); }
+
+.seg-option.active { background: var(--accent); color: #fff; }
+
+/* ---------- Config Editor ---------- */
+
+.config-modal {
+  max-width: 780px;
+  width: min(92vw, 780px);
+}
+
+.config-editor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.cfg-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--bg-input);
+  min-width: 0;
+}
+
+.cfg-section h4 {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.cfg-section-wide { grid-column: 1 / -1; }
+
+.cfg-list { max-height: 180px; }
+
+.team-select { max-width: 220px; }
+
+.cfg-entry {
+  list-style: none;
+  cursor: pointer;
+}
+
+.cfg-entry.active { background: var(--accent); color: #fff; }
 
 /* ---------- Compile Stats ---------- */
 
@@ -477,11 +704,24 @@ fieldset.tag-card { margin: 0; }
   overflow: auto;
 }
 
+/* ---------- PCA ---------- */
+
+.pca-plot { width: 100%; min-height: 480px; }
+.pca-plot .js-plotly-plot { width: 100%; height: 100%; }
+
 /* ---------- Responsive ---------- */
 
 @media (max-width: 720px) {
   .app-title { display: none; }
   .tab-btn { padding: 12px 10px; }
   .tab-content { padding: 12px; }
+  #tab-tag-film { height: auto; }
   .tag-film-grid { grid-template-columns: 1fr; }
+  .tag-left, .tag-right { height: auto; overflow: visible; }
+  .details-grid { grid-template-columns: 1fr; }
+  .selection-row { flex-direction: column; }
+  .video-card { flex: none; }
+  .wrestler-card { flex: none; }
+  .player-card { flex: none; max-height: none; }
+  .video-panel { flex: none; min-height: 200px; }
 }
