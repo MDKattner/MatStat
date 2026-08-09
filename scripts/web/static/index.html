@@ -16,41 +16,51 @@
         <button class="tab-btn" data-tab="team-eval" role="tab" aria-selected="false">Team Evaluation</button>
         <button class="tab-btn" data-tab="combine-clips" role="tab" aria-selected="false">Combine Clips</button>
         <button class="tab-btn" data-tab="search" role="tab" aria-selected="false">Search</button>
+        <button class="tab-btn" data-tab="pca" role="tab" aria-selected="false">PCA</button>
+        <button class="tab-btn" data-tab="audit" role="tab" aria-selected="false">Auditing</button>
       </nav>
       <div class="header-actions">
+        <!-- logout-btn:start -->
+        <button class="btn btn-ghost" id="logout-btn" title="Log out" type="button">Log out</button>
+        <!-- logout-btn:end -->
+        <button class="icon-btn" id="about-btn" title="About MatStat" aria-label="About">?</button>
         <span class="conn-badge" id="conn-badge" data-state="offline">offline</span>
-        <button class="icon-btn" id="settings-btn" title="Settings (Ctrl+,)" aria-label="Settings">&#9881;</button>
+        <button class="icon-btn" id="settings-btn" title="Config Editor (Ctrl+,)" aria-label="Config Editor">&#9881;</button>
       </div>
     </header>
 
     <main class="tab-content" id="tab-content">
       <section class="tab-pane" id="tab-tag-film" data-tab="tag-film">
-        <h2>Tag Film</h2>
         <div id="tag-film-root"></div>
       </section>
       <section class="tab-pane" id="tab-compile-stats" data-tab="compile-stats" hidden>
-        <h2>Compile Stats</h2>
         <div id="compile-stats-root"></div>
       </section>
       <section class="tab-pane" id="tab-team-eval" data-tab="team-eval" hidden>
-        <h2>Team Evaluation</h2>
         <div id="team-eval-root"></div>
       </section>
       <section class="tab-pane" id="tab-combine-clips" data-tab="combine-clips" hidden>
-        <h2>Combine Clips</h2>
         <div id="combine-clips-root"></div>
       </section>
       <section class="tab-pane" id="tab-search" data-tab="search" hidden>
-        <h2>Search</h2>
         <div id="search-root"></div>
+      </section>
+      <section class="tab-pane" id="tab-pca" data-tab="pca" hidden>
+        <div id="pca-root"></div>
+      </section>
+      <section class="tab-pane" id="tab-audit" data-tab="audit" hidden>
+        <div id="audit-root"></div>
       </section>
     </main>
 
     <footer class="status-bar">
       <span id="status-text">Ready</span>
+      <!-- log-toggle:start -->
       <button class="log-toggle" id="log-toggle" title="Toggle log panel" aria-expanded="false">Log</button>
+      <!-- log-toggle:end -->
     </footer>
 
+    <!-- log-dock:start -->
     <aside class="log-dock" id="log-dock" hidden>
       <div class="log-dock-header">
         <span>Log</span>
@@ -61,6 +71,7 @@
       </div>
       <pre class="log-view" id="log-view"></pre>
     </aside>
+    <!-- log-dock:end -->
   </div>
 
   <dialog id="about-dialog" class="modal">
@@ -70,8 +81,78 @@
     <form method="dialog"><button class="btn" value="close">Close</button></form>
   </dialog>
 
+  <dialog id="config-editor-dialog" class="modal config-modal">
+    <h3>Config Editor</h3>
+    <div class="config-editor-grid">
+      <div class="cfg-section">
+        <h4>Moves</h4>
+        <ul id="cfg-moves" class="results-list cfg-list"></ul>
+        <div class="row">
+          <button class="btn btn-ghost" id="cfg-moves-add" type="button">Add</button>
+          <button class="btn btn-ghost" id="cfg-moves-edit" type="button">Edit</button>
+          <button class="btn btn-ghost" id="cfg-moves-del" type="button">Delete</button>
+        </div>
+      </div>
+      <div class="cfg-section">
+        <h4>Ties</h4>
+        <ul id="cfg-ties" class="results-list cfg-list"></ul>
+        <div class="row">
+          <button class="btn btn-ghost" id="cfg-ties-add" type="button">Add</button>
+          <button class="btn btn-ghost" id="cfg-ties-edit" type="button">Edit</button>
+          <button class="btn btn-ghost" id="cfg-ties-del" type="button">Delete</button>
+        </div>
+      </div>
+      <div class="cfg-section">
+        <h4>Wrestlers</h4>
+        <ul id="cfg-wrestlers" class="results-list cfg-list"></ul>
+        <div class="row">
+          <button class="btn btn-ghost" id="cfg-wrestlers-add" type="button">Add</button>
+          <button class="btn btn-ghost" id="cfg-wrestlers-edit" type="button">Edit</button>
+          <button class="btn btn-ghost" id="cfg-wrestlers-del" type="button">Delete</button>
+        </div>
+      </div>
+      <div class="cfg-section">
+        <h4>Teams</h4>
+        <ul id="cfg-teams" class="results-list cfg-list"></ul>
+        <div class="row">
+          <button class="btn btn-ghost" id="cfg-teams-add" type="button">Add</button>
+          <button class="btn btn-ghost" id="cfg-teams-rename" type="button">Rename</button>
+          <button class="btn btn-ghost" id="cfg-teams-del" type="button">Delete</button>
+          <button class="btn btn-ghost" id="cfg-teams-members" type="button">Members</button>
+        </div>
+      </div>
+      <div class="cfg-section cfg-section-wide">
+        <h4>Ruleset Outcomes</h4>
+        <div class="row">
+          <label class="field-label" for="cfg-ruleset-select">Ruleset:</label>
+          <select id="cfg-ruleset-select" class="combo-input"></select>
+        </div>
+        <div class="row">
+          <label class="field-label" for="cfg-pin-points">Pin points:</label>
+          <input type="number" id="cfg-pin-points" class="combo-input" min="0" value="0">
+        </div>
+        <ul id="cfg-outcomes" class="results-list cfg-list"></ul>
+        <div class="row">
+          <button class="btn btn-ghost" id="cfg-outcome-add" type="button">Add</button>
+          <button class="btn btn-ghost" id="cfg-outcome-edit" type="button">Edit</button>
+          <button class="btn btn-ghost" id="cfg-outcome-del" type="button">Delete</button>
+        </div>
+      </div>
+      <div class="cfg-section">
+        <h4>Active Ruleset</h4>
+        <select id="cfg-active-ruleset" class="combo-input"></select>
+      </div>
+    </div>
+    <div class="row dialog-actions">
+      <button class="btn btn-ghost" id="cfg-cancel" type="button">Cancel</button>
+      <button class="btn" id="cfg-save" type="button">Save</button>
+    </div>
+  </dialog>
+
   <div id="toast-root" class="toast-root" aria-live="polite"></div>
 
+  <script src="/static/vendor/hls.min.js"></script>
+  <script src="/static/vendor/plotly.min.js"></script>
   <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>
