@@ -145,6 +145,14 @@ class TestFilterDataframe:
         assert len(filtered) == 1
         assert filtered[COL_TIE_UP].iloc[0] == "collar tie"
 
+    def test_starting_tie_dual_mode_matches_first_element(self, simple_df) -> None:
+        dual_df: pd.DataFrame = simple_df.copy()
+        dual_df[COL_TIE_UP] = ["collar tie:underhook", "standing:front headlock"]
+
+        filtered = clips.filter_dataframe(dual_df, "Starting Tie", "collar tie")
+        assert len(filtered) == 1
+        assert filtered[COL_TIE_UP].iloc[0] == "collar tie:underhook"
+
     def test_move_used(self, simple_df) -> None:
         filtered = clips.filter_dataframe(simple_df, "Move Used", "double")
         assert len(filtered) == 1

@@ -1,5 +1,5 @@
 /**
- * Tag Film tab — the web port of scripts/qt_app/tag_film_widget.py.
+ * Tag Film tab — the web port of the original Qt tag film widget.
  *
  * Mounts into #tag-film-root. Mirrors the Qt widget's flow: pick an untagged
  * video, preview it (transcoding on demand), tag sequences with move/score
@@ -9,9 +9,9 @@
 
 import {
   checkList,
-  configCombo,
   el,
   ensurePreview,
+  filterList,
   pollJob,
   showToast,
   timeInput,
@@ -37,52 +37,85 @@ export function mountTagFilm(root) {
 
   const state = {
     video: "",
+    videoConfirmed: false,
     wrestler: "",
+    opponent: "",
+    matchResult: "",
     sequences: [],
     tagging: false,
     playerPosMs: 0,
   };
+  let wrestlerNames = [];
 
-  // ---------- Right column: video selector + upload + player ----------
+  // ---------- Right column: video selector + player ----------
 
-  const videoFilter = el("input", {
-    class: "filter-input",
-    type: "text",
+  const videoList = filterList({
     placeholder: "Type to filter videos...",
+    onChange: (fileName) => {
+      state.video = fileName;
+      setStatus(`Selected video: ${fileName}`);
+      updateButtons();
+      updateVideoLock();
+      loadPreview(fileName);
+    },
   });
-  const videoListEl = el("ul", { class: "check-list video-list" });
-  let videoFiles = [];
 
-  const uploadInput = el("input", {
-    type: "file",
-    accept: ".mkv,.mp4,.avi,.mov,.webm, video/*",
+  const confirmBtn = el("button", {
+    class: "btn btn-ghost",
+    type: "button",
+    text: "Confirm Video",
+    disabled: "",
   });
+
+  // ---------- Upload ----------
+
+  const uploadInput = el("input", { type: "file", multiple: "", class: "file-input" });
   const uploadBtn = el("button", {
-    class: "btn",
+    class: "btn btn-ghost",
     type: "button",
     text: "Upload",
+    disabled: "",
   });
+
+  async function uploadVideos() {
+    const files = uploadInput.files;
+    if (!files || files.length === 0) {
+      showToast("Select videos to upload first.", "info");
+      return;
+    }
+    uploadBtn.disabled = true;
+    setStatus(`Uploading ${files.length} video(s)...`);
+    const formData = new FormData();
+    for (const file of files) formData.append("files", file, file.name);
+    try {
+      const { ok, body } = await fetchJson("/api/videos", { method: "POST", body: formData });
+      if (!ok) throw new Error(body.detail || "Upload failed.");
+      const results = body.results || [];
+      const good = results.filter((r) => r.status === "ok").length;
+      const conflicts = results.filter((r) => r.status === "conflict");
+      const errors = results.filter((r) => r.status === "error");
+      setStatus(`Uploaded ${good} of ${results.length} video(s).`);
+      for (const r of conflicts) showToast(`${r.file}: already exists.`, "info");
+      for (const r of errors) showToast(`${r.file}: ${r.detail || "failed."}`, "error");
+      if (good > 0) showToast(`Uploaded ${good} video(s).`, "success");
+      uploadInput.value = "";
+      await loadVideos();
+    } catch (err) {
+      showToast(err.message || "Upload failed.", "error");
+      setStatus("Upload failed.");
+    } finally {
+      uploadBtn.disabled = !(uploadInput.files && uploadInput.files.length > 0);
+    }
+  }
+
+  uploadInput.addEventListener("change", () => {
+    uploadBtn.disabled = !(uploadInput.files && uploadInput.files.length > 0);
+  });
+  uploadBtn.addEventListener("click", uploadVideos);
 
   const player = videoPlayer({
     onPosition: (ms) => { state.playerPosMs = ms; },
   });
-
-  function renderVideos() {
-    const text = videoFilter.value.toLowerCase();
-    videoListEl.replaceChildren();
-    for (const file of videoFiles) {
-      if (!file.toLowerCase().includes(text)) continue;
-      const item = el("li", {}, [
-        el("button", {
-          class: "video-item" + (file === state.video ? " active" : ""),
-          type: "button",
-          text: file,
-          onclick: () => selectVideo(file),
-        }),
-      ]);
-      videoListEl.appendChild(item);
-    }
-  }
 
   async function loadVideos() {
     const { ok, body } = await fetchJson("/api/videos/untaged");
@@ -90,63 +123,135 @@ export function mountTagFilm(root) {
       showToast("Could not load video list.", "error");
       return;
     }
-    videoFiles = body.files || [];
-    renderVideos();
+    videoList.setItems(body.files || []);
   }
 
-  async function selectVideo(fileName) {
-    state.video = fileName;
-    renderVideos();
-    setStatus(`Selected video: ${fileName}`);
+  async function loadPreview(fileName) {
     try {
       const url = await ensurePreview("untaged", fileName, setStatus);
       player.load(url);
     } catch (err) {
       showToast(err.message || "Could not load preview.", "error");
     }
-    updateButtons();
   }
 
-  async function handleUpload() {
-    const file = uploadInput.files[0];
-    if (!file) return;
-    setStatus("Uploading...");
-    const form = new FormData();
-    form.append("file", file);
-    const { ok, body } = await fetchJson("/api/videos", { method: "POST", body: form });
-    if (!ok) {
-      showToast(body.detail || "Upload failed.", "error");
-      setStatus("Upload failed.");
-      return;
+  function updateVideoLock() {
+    const locked = state.videoConfirmed;
+    confirmBtn.textContent = locked ? "Change Video" : "Confirm Video";
+    confirmBtn.disabled = !state.video || state.tagging;
+    videoList.setDisabled(locked);
+  }
+
+  // ---------- Wrestler selector (right column, next to video) ----------
+
+  const wrestlerList = filterList({
+    placeholder: "Type to filter wrestlers...",
+    onChange: (name) => {
+      state.wrestler = name;
+      setStatus(`Selected wrestler: ${name}`);
+      if (state.opponent === name) {
+        state.opponent = "";
+        opponentList.clear();
+      }
+      opponentList.setItems(wrestlerNames.filter((w) => w !== name));
+      updateTitlePreview();
+      updateButtons();
+    },
+  });
+
+  const opponentList = filterList({
+    placeholder: "Type to filter opponents...",
+    onChange: (name) => {
+      state.opponent = name;
+      setStatus(state.opponent ? `Opponent: ${name}` : `Selected wrestler: ${state.wrestler}`);
+      updateDualMode();
+      updateButtons();
+    },
+  });
+
+  // Match result: "No Result" (default / draw), Win, or Loss. Draws are skipped.
+  const noResultRadio = el("input", { type: "radio", name: "tag-result", value: "", checked: "", hidden: "" });
+  const winRadio = el("input", { type: "radio", name: "tag-result", value: "W", hidden: "" });
+  const lossRadio = el("input", { type: "radio", name: "tag-result", value: "L", hidden: "" });
+  const noResultBtn = el("button", { class: "seg-option active", type: "button", text: "No Result" });
+  const winBtn = el("button", { class: "seg-option", type: "button", text: "Win" });
+  const lossBtn = el("button", { class: "seg-option", type: "button", text: "Loss" });
+
+  function setResult(value) {
+    noResultRadio.checked = value === "";
+    winRadio.checked = value === "W";
+    lossRadio.checked = value === "L";
+    noResultBtn.classList.toggle("active", value === "");
+    winBtn.classList.toggle("active", value === "W");
+    lossBtn.classList.toggle("active", value === "L");
+    state.matchResult = value;
+    updateTitlePreview();
+  }
+
+  noResultBtn.addEventListener("click", () => setResult(""));
+  winBtn.addEventListener("click", () => setResult("W"));
+  lossBtn.addEventListener("click", () => setResult("L"));
+  const resultRow = el("div", { class: "seg-toggle" }, [
+    noResultRadio, winRadio, lossRadio, noResultBtn, winBtn, lossBtn,
+  ]);
+
+  function buildTitle(wrestler, opponent, result) {
+    if (!wrestler) return "";
+    if (opponent) {
+      if (result === "W") return `${wrestler} (W) / ${opponent}`;
+      if (result === "L") return `${wrestler} / ${opponent} (W)`;
+      return `${wrestler} / ${opponent}`;
     }
-    showToast(`Uploaded ${body.file}`, "success");
-    uploadInput.value = "";
-    await loadVideos();
-    selectVideo(body.file);
+    if (result === "W") return `${wrestler} (W)`;
+    if (result === "L") return `${wrestler} (L)`;
+    return wrestler;
   }
 
-  // ---------- Left column: controls ----------
+  const titlePreview = el("p", { class: "status-label", text: "" });
 
-  const wrestler = configCombo({ label: "Wrestler:", items: [] });
+  function updateTitlePreview() {
+    titlePreview.textContent = state.wrestler
+      ? `Will tag as: ${buildTitle(state.wrestler, state.opponent, state.matchResult)}`
+      : "";
+  }
+
   const startTime = timeInput({ label: "Start:" });
   const endTime = timeInput({ label: "End:" });
 
   const attackRadio = el("input", {
-    type: "radio", name: "tag-attack-defend", value: "attack", checked: "",
+    type: "radio", name: "tag-attack-defend", value: "attack", checked: "", hidden: "",
   });
   const defendRadio = el("input", {
-    type: "radio", name: "tag-attack-defend", value: "defend",
+    type: "radio", name: "tag-attack-defend", value: "defend", hidden: "",
   });
-  const attackRow = el("div", { class: "row radio-row" }, [
-    el("label", { class: "check-label", text: "Attacking" }, [attackRadio]),
-    el("label", { class: "check-label", text: "Defending" }, [defendRadio]),
-  ]);
+  const attackBtn = el("button", { class: "seg-option active", type: "button", text: "Attacking" });
+  const defendBtn = el("button", { class: "seg-option", type: "button", text: "Defending" });
+  attackBtn.addEventListener("click", () => {
+    attackRadio.checked = true;
+    attackBtn.classList.add("active");
+    defendBtn.classList.remove("active");
+  });
+  defendBtn.addEventListener("click", () => {
+    defendRadio.checked = true;
+    defendBtn.classList.add("active");
+    attackBtn.classList.remove("active");
+  });
+  const attackRow = el("div", { class: "seg-toggle" }, [attackRadio, defendRadio, attackBtn, defendBtn]);
 
-  const tie = configCombo({ label: "Starting Tie/Position:", items: [] });
-  const ourMoves = checkList({ label: "Your Wrestler's Moves:", items: [], counts: true });
-  const oppMoves = checkList({ label: "Opponent's Moves:", items: [], counts: true });
-  const ourScores = checkList({ label: "Your Wrestler's Scores:", items: [], counts: true });
-  const oppScores = checkList({ label: "Opponent's Scores:", items: [], counts: true });
+  const tie = filterList({ label: "Starting Tie/Position:", items: [] });
+  const oppTie = filterList({ label: "Opponent Tie/Position:", items: [] });
+  oppTie.node.hidden = true;
+
+  function updateDualMode() {
+    const dual = Boolean(state.opponent);
+    oppTie.node.hidden = !dual;
+    if (!dual) oppTie.clear();
+    updateTitlePreview();
+  }
+  const ourMoves = checkList({ label: "Your Moves", items: [], counts: true });
+  const oppMoves = checkList({ label: "Opp. Moves", items: [], counts: true });
+  const ourScores = checkList({ label: "Your Scores", items: [], counts: true });
+  const oppScores = checkList({ label: "Opp. Scores", items: [], counts: true });
 
   const addBtn = el("button", { class: "btn", type: "button", text: "Add Sequence", disabled: "" });
   const finishBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Finish & Tag Video", disabled: "" });
@@ -162,7 +267,10 @@ export function mountTagFilm(root) {
 
   function resetDetails() {
     attackRadio.checked = true;
+    attackBtn.classList.add("active");
+    defendBtn.classList.remove("active");
     tie.clear();
+    oppTie.clear();
     ourMoves.clear();
     oppMoves.clear();
     ourScores.clear();
@@ -176,18 +284,27 @@ export function mountTagFilm(root) {
   }
 
   async function loadConfigs() {
-    const names = ["Wrestlers.config", "Ties.config", "Moves.config", "Outcomes.config"];
-    const results = await Promise.all(names.map(async (name) => {
-      const { ok, body } = await fetchJson(`/api/configs/${name}`);
-      return ok ? body.items : [];
-    }));
-    const [wrestlers, ties, moves, outcomes] = results;
-    wrestler.setItems(wrestlers);
-    tie.setItems(ties);
-    ourMoves.setItems(moves);
-    oppMoves.setItems(moves);
-    ourScores.setItems(outcomes);
-    oppScores.setItems(outcomes);
+    try {
+      const { ok, body } = await fetchJson("/api/config");
+      if (!ok) {
+        throw new Error(`Config returned status ${body.status || "error"}`);
+      }
+      wrestlerNames = body.wrestlers || [];
+      wrestlerList.setItems(wrestlerNames);
+      wrestlerList.setTeams(body.teams || {});
+      opponentList.setItems(wrestlerNames.filter((w) => w !== state.wrestler));
+      tie.setItems(body.ties || []);
+      oppTie.setItems(body.ties || []);
+      ourMoves.setItems(body.moves || []);
+      oppMoves.setItems(body.moves || []);
+      const ruleset = (body.rulesets || {})[body.active_ruleset] || {};
+      const outcomes = Object.keys(ruleset.outcomes || {});
+      ourScores.setItems(outcomes);
+      oppScores.setItems(outcomes);
+    } catch (err) {
+      console.error("Failed to load configs", err);
+      showToast(`Could not load config lists: ${err.message}`, "error");
+    }
   }
 
   function currentSequence() {
@@ -205,11 +322,16 @@ export function mountTagFilm(root) {
       end_time: endTime.getSeconds(),
       attack_defend: attackRadio.checked,
       tie_up: tie.selected,
+      opp_tie: state.opponent ? oppTie.selected : "",
       team_moves: teamMoves,
       op_moves: oppMovesSel,
       team_scores: teamScores,
       op_scores: oppScoresSel,
     };
+  }
+
+  function tieLabel(seq) {
+    return seq.opp_tie ? `${seq.tie_up}:${seq.opp_tie}` : seq.tie_up;
   }
 
   function prettyChapter(seq) {
@@ -218,7 +340,7 @@ export function mountTagFilm(root) {
       `Start Time\t: ${formatClock(seq.start_time)}`,
       `End Time\t: ${formatClock(seq.end_time)}`,
       `Attacking\t: ${seq.attack_defend}`,
-      `Tie/Position\t: ${seq.tie_up}`,
+      `Tie/Position\t: ${tieLabel(seq)}`,
       `Your moves\t: ${seq.team_moves.join(", ")}`,
       `Opponent moves\t: ${seq.op_moves.join(", ")}`,
       `Your scoring\t: ${seq.team_scores.join(", ")}`,
@@ -230,7 +352,7 @@ export function mountTagFilm(root) {
     state.sequences.push(seq);
     seqListEl.appendChild(el("li", {
       class: "seq-item",
-      text: `[${formatClock(seq.start_time)} - ${formatClock(seq.end_time)}] ${seq.attack_defend ? "A" : "D"} | ${seq.tie_up}`,
+      text: `[${formatClock(seq.start_time)} - ${formatClock(seq.end_time)}] ${seq.attack_defend ? "A" : "D"} | ${tieLabel(seq)}`,
     }));
     seqCount.textContent = String(state.sequences.length);
     resetDetails();
@@ -280,6 +402,7 @@ export function mountTagFilm(root) {
     } else {
       progress.value = 0;
     }
+    updateVideoLock();
     updateButtons();
   }
 
@@ -299,6 +422,8 @@ export function mountTagFilm(root) {
       const payload = {
         video: state.video,
         wrestler: state.wrestler,
+        opponent: state.opponent,
+        match_result: state.matchResult,
         sequences: state.sequences,
       };
       const { ok, body } = await fetchJson("/api/tag", {
@@ -318,6 +443,12 @@ export function mountTagFilm(root) {
       seqListEl.replaceChildren();
       seqCount.textContent = "0";
       state.video = "";
+      state.videoConfirmed = false;
+      state.opponent = "";
+      state.matchResult = "";
+      opponentList.clear();
+      setResult("");
+      updateVideoLock();
       await loadVideos();
     } catch (err) {
       showToast(err.message || "Tagging failed.", "error");
@@ -329,10 +460,11 @@ export function mountTagFilm(root) {
 
   // ---------- Wiring ----------
 
-  videoFilter.addEventListener("input", renderVideos);
-  uploadBtn.addEventListener("click", handleUpload);
-  wrestler.input.addEventListener("input", () => {
-    state.wrestler = wrestler.selected;
+  confirmBtn.addEventListener("click", () => {
+    if (!state.video || state.tagging) return;
+    state.videoConfirmed = !state.videoConfirmed;
+    setStatus(state.videoConfirmed ? `Video confirmed: ${state.video}` : `Selected video: ${state.video}`);
+    updateVideoLock();
     updateButtons();
   });
   startTime.markBtn.addEventListener("click", () => {
@@ -346,28 +478,42 @@ export function mountTagFilm(root) {
 
   // ---------- Layout ----------
 
-  const videoCard = el("section", { class: "tag-card" }, [
+  const videoCard = el("section", { class: "tag-card video-card" }, [
     el("h3", { text: "Select Video" }),
     el("div", { class: "row upload-row" }, [uploadInput, uploadBtn]),
-    videoFilter,
-    videoListEl,
+    videoList.node,
+    confirmBtn,
   ]);
-  const playerCard = el("section", { class: "tag-card" }, [player.node]);
-  const right = el("div", { class: "tag-right" }, [videoCard, playerCard]);
+  const wrestlerCard = el("section", { class: "tag-card wrestler-card" }, [
+    el("h3", { text: "Wrestler" }),
+    wrestlerList.node,
+    el("h3", { class: "subhead", text: "Opponent (optional)" }),
+    opponentList.node,
+    el("div", { class: "row result-row" }, [
+      el("label", { class: "field-label", text: "Result:" }),
+      resultRow,
+    ]),
+    titlePreview,
+  ]);
+  const selectionRow = el("div", { class: "selection-row" }, [videoCard, wrestlerCard]);
+  const playerCard = el("section", { class: "tag-card player-card" }, [player.node]);
+  const right = el("div", { class: "tag-right" }, [playerCard, selectionRow]);
 
   const timingCard = el("fieldset", { class: "tag-card" }, [
-    el("legend", { text: "2. Timing" }),
+    el("legend", { text: "Timing" }),
     startTime.node,
     endTime.node,
   ]);
-  const detailsCard = el("fieldset", { class: "tag-card" }, [
-    el("legend", { text: "3. Sequence Details" }),
+  const detailsCard = el("details", { class: "tag-card", open: "" }, [
+    el("summary", { text: "Sequence Details" }),
     attackRow,
-    tie.node,
-    ourMoves.node,
-    oppMoves.node,
-    ourScores.node,
-    oppScores.node,
+    el("div", { class: "row tie-row" }, [tie.node, oppTie.node]),
+    el("div", { class: "details-grid" }, [
+      ourMoves.node,
+      oppMoves.node,
+      ourScores.node,
+      oppScores.node,
+    ]),
   ]);
   const actionsCard = el("fieldset", { class: "tag-card" }, [
     el("legend", { text: "Actions" }),
@@ -375,12 +521,11 @@ export function mountTagFilm(root) {
     progress,
     statusLabel,
   ]);
-  const listCard = el("fieldset", { class: "tag-card" }, [
-    el("legend", {}, [el("span", { text: "Tagged Sequences: " }), seqCount]),
+  const listCard = el("details", { class: "tag-card", open: "" }, [
+    el("summary", {}, [el("span", { text: "Tagged Sequences: " }), seqCount]),
     seqListEl,
   ]);
   const left = el("div", { class: "tag-left" }, [
-    wrestler.node,
     timingCard,
     detailsCard,
     actionsCard,
@@ -391,6 +536,8 @@ export function mountTagFilm(root) {
 
   // ---------- Boot ----------
 
+  window.addEventListener("configs-updated", loadConfigs);
+  updateVideoLock();
   loadVideos();
   loadConfigs();
 }

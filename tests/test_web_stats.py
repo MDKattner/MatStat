@@ -1,14 +1,17 @@
 """Tests for the web Compile Stats flow — the job body and API routes."""
 
+import json
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 sys.path.append(str(Path(__file__).parent.parent))
 
+import scripts.helpers as helpers
 from scripts.web import configs, stats
 
 
@@ -53,9 +56,10 @@ def _redirect_dirs(monkeypatch, tmp_path: Path) -> dict[str, Path]:
 
 
 def _write_config(tmp_path: Path, names: list[str] = ("Alice", "Bob Smith")) -> None:
-    """Write a small Wrestlers.config for the route/job to read."""
-    content: str = "\n".join(names) + "\n# a comment\n"
-    (tmp_path / "cfg" / "Wrestlers.config").write_text(content)
+    """Write a small Wrestlers.json for the route/job to read."""
+    (tmp_path / "cfg" / "Wrestlers.json").write_text(
+        json.dumps({"wrestlers": list(names), "teams": {}})
+    )
 
 
 def _mock_make_name_and_csv(monkeypatch, table: dict[str, tuple[str, str]]) -> None:
@@ -131,6 +135,43 @@ class TestRunCompileStatsJob:
         assert (tmp_path / "csv" / "Alice.csv").read_text().count("\n") == 2
         assert "b.mkv:2,10,20" in (tmp_path / "csv" / "Alice.csv").read_text()
         assert (tmp_path / "csv" / "Bob Smith.csv").read_text() == "c.mkv:1,0,10,regular ride,nothing,sprawl,None,T"
+
+    def test_dual_mode_swaps_into_opponent_bucket(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        (tmp_path / "taged" / "d.mkv").write_bytes(b"x")
+        _mock_make_name_and_csv(monkeypatch, {
+            "d.mkv": ("Alice (W) / Bob Smith",
+                      "d.mkv:1,0,10,A,collar tie:underhook,double,nothing,T,None"),
+        })
+
+        result: dict[str, Any] = stats.run_compile_stats_job(
+            FakeContext(), ["Alice", "Bob Smith"]
+        )
+
+        assert result["errors"] == []
+        assert result["wrestlers"] == {"Alice": 1, "Bob Smith": 1}
+        assert (tmp_path / "csv" / "Alice.csv").read_text() == (
+            "d.mkv:1,0,10,A,collar tie:underhook,double,nothing,T,None,3,3,W"
+        )
+        assert (tmp_path / "csv" / "Bob Smith.csv").read_text() == (
+            "d.mkv:1,0,10,D,underhook:collar tie,nothing,double,None,T,-3,-3,L"
+        )
+
+    def test_dual_mode_opponent_not_in_roster_reports_error(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        (tmp_path / "taged" / "e.mkv").write_bytes(b"x")
+        _mock_make_name_and_csv(monkeypatch, {
+            "e.mkv": ("Alice / Jane Doe",
+                      "e.mkv:1,0,10,A,collar tie:underhook,double,nothing,T,None"),
+        })
+
+        result: dict[str, Any] = stats.run_compile_stats_job(FakeContext(), ["Alice"])
+
+        assert result["wrestlers"] == {"Alice": 1}
+        assert len(result["errors"]) == 1
+        assert "Jane Doe" in result["errors"][0]
+        assert (tmp_path / "csv" / "Alice.csv").is_file()
+        assert not (tmp_path / "csv" / "Jane Doe.csv").exists()
 
     def test_empty_data_skips_file(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
@@ -231,4 +272,42 @@ class TestCompileStatsRoute:
 
         resp = client.post("/api/compile-stats")
         assert resp.status_code == 404
-        assert "Wrestlers.config" in resp.json()["detail"]
+        assert "Wrestlers.json" in resp.json()["detail"]
+
+
+class TestEnrichCsvRows:
+    """Tests for stats._enrich_csv_rows — appending net/adjusted/result columns."""
+
+    def test_appends_net_and_adjusted(self, monkeypatch) -> None:
+        monkeypatch.setattr(stats, "ReloadScoringMap", lambda: None)
+        monkeypatch.setattr(helpers, "score_to_pts", {"T": np.int16(3), "None": np.int16(0)})
+        monkeypatch.setattr(helpers, "_ACTIVE_PIN_CODES", frozenset({"PIN"}))
+        monkeypatch.setattr(helpers, "active_pin_points", 13)
+        rows: list[str] = ["fake.mkv:1,0,6,A,collar tie,double,nothing,T,None"]
+        assert stats._enrich_csv_rows(rows) == [
+            "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,"
+        ]
+
+    def test_appends_match_result(self, monkeypatch) -> None:
+        monkeypatch.setattr(stats, "ReloadScoringMap", lambda: None)
+        monkeypatch.setattr(helpers, "score_to_pts", {"T": np.int16(3), "None": np.int16(0)})
+        monkeypatch.setattr(helpers, "_ACTIVE_PIN_CODES", frozenset({"PIN"}))
+        monkeypatch.setattr(helpers, "active_pin_points", 13)
+        rows: list[str] = ["fake.mkv:1,0,6,A,collar tie,double,nothing,T,None"]
+        assert stats._enrich_csv_rows(rows, "L") == [
+            "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,L"
+        ]
+
+    def test_pin_bonus_applied(self, monkeypatch) -> None:
+        monkeypatch.setattr(stats, "ReloadScoringMap", lambda: None)
+        monkeypatch.setattr(helpers, "score_to_pts", {"PIN": np.int16(0), "None": np.int16(0)})
+        monkeypatch.setattr(helpers, "_ACTIVE_PIN_CODES", frozenset({"PIN"}))
+        monkeypatch.setattr(helpers, "active_pin_points", 13)
+        rows: list[str] = ["fake.mkv:2,6,12,D,standing,sprawl,single,PIN,None"]
+        assert stats._enrich_csv_rows(rows) == [
+            "fake.mkv:2,6,12,D,standing,sprawl,single,PIN,None,0,13,"
+        ]
+
+    def test_malformed_row_passes_through(self, monkeypatch) -> None:
+        rows: list[str] = ["not,a,valid,row"]
+        assert stats._enrich_csv_rows(rows) == rows

@@ -1,7 +1,6 @@
 """Combine Clips jobs for the web app — build highlight reels with ffmpeg.
 
-Ports ``CombineClipsWorker`` + ``BatchCombineClipsWorker`` from
-scripts/qt_app/combine_clips_widget.py: a wrestler's tagged sequences are
+A wrestler's tagged sequences are
 filtered by starting tie-up, move used, or move defended; each match is
 extracted from its source video in vids/taged/; and the segments are
 concatenated into a single highlight clip in vids/clips/. Runs inside a
@@ -163,7 +162,9 @@ def filter_dataframe(
         The filtered DataFrame (possibly empty).
     """
     if filter_type == "Starting Tie":
-        return df[df[COL_TIE_UP] == filter_item]
+        # Dual-wrestler sequences store the pair "yours:theirs"; filter on the
+        # tagged wrestler's own tie (the element before the colon).
+        return df[df[COL_TIE_UP].str.split(":").str[0] == filter_item]
     if filter_type == "Move Used":
         return df[df[COL_TEAM_MOVES].apply(lambda moves: filter_item in moves)]
     return df[df[COL_OPPONENT_MOVES].apply(lambda moves: filter_item in moves)]

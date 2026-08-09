@@ -1,5 +1,6 @@
 """Tests for the web tagging flow — metadata building, the tag job, and API routes."""
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -10,7 +11,9 @@ import pytest
 sys.path.append(str(Path(__file__).parent.parent))
 
 from scripts.helpers import ChapterSequence
+from scripts.web import configs
 from scripts.web import tag
+from scripts.web import transcode
 from scripts.web.ffmpeg import FfmpegResult
 from scripts.web.tag import TagSequence
 
@@ -98,7 +101,7 @@ class TestBuildTagCmd:
 class TestRunTagJob:
     """Tests for run_tag_job — the tagging job body."""
 
-    def test_success_hides_original_and_creates_output(self, tmp_path, monkeypatch) -> None:
+    def test_success_deletes_original_and_creates_output(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         source: Path = _make_source(tmp_path, "match.mkv")
         monkeypatch.setattr(tag, "GetVidDuration", lambda p: 60)
@@ -116,9 +119,9 @@ class TestRunTagJob:
         seq: TagSequence = TagSequence(start_time=10, end_time=20, tie_up="collar tie")
         result: dict[str, Any] = tag.run_tag_job(ctx, "match.mkv", "Alice", [seq])
 
-        assert result == {"output": "match.mkv", "original_hidden": ".match.mkv"}
+        assert result == {"output": "match.mkv"}
         assert not source.exists()
-        assert (tmp_path / "untaged" / ".match.mkv").read_bytes() == b"source"
+        assert not (tmp_path / "untaged" / ".match.mkv").exists()
         assert (tmp_path / "taged" / "match.mkv").read_bytes() == b"tagged"
         assert ctx.reports[0] == (10, "Writing metadata...")
         assert ctx.reports[-1] == (100, "Tagged match.mkv")
@@ -220,63 +223,280 @@ class TestRunTagJob:
         with pytest.raises(RuntimeError, match="duration"):
             tag.run_tag_job(FakeContext(), "zero.mkv", "Alice", seqs)
 
+    def test_dual_mode_embeds_title_and_tie_pair(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        _make_source(tmp_path, "dual.mkv")
+        monkeypatch.setattr(tag, "GetVidDuration", lambda p: 60)
+
+        captured: dict[str, str] = {}
+
+        def fake_ffmpeg(cmd, description="", on_progress=None, cancel_event=None) -> FfmpegResult:
+            captured["metadata"] = Path(cmd[4]).read_text()
+            Path(cmd[-1]).parent.mkdir(parents=True, exist_ok=True)
+            Path(cmd[-1]).write_bytes(b"tagged")
+            return FfmpegResult(success=True, message="ok")
+
+        monkeypatch.setattr(tag, "run_ffmpeg", fake_ffmpeg)
+
+        seq: TagSequence = TagSequence(
+            start_time=0, end_time=6, tie_up="collar tie", opp_tie="underhook",
+            team_moves=["double"], op_moves=["nothing"],
+            team_scores=["T"], op_scores=["None"],
+        )
+        tag.run_tag_job(
+            FakeContext(), "dual.mkv", "Alice", [seq],
+            opponent="Bob", match_result="W",
+        )
+
+        assert "title=Alice (W) / Bob" in captured["metadata"]
+        assert "title=A,collar tie:underhook,double,nothing,T,None" in captured["metadata"]
+
+    def test_invalid_match_result_raises(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        _make_source(tmp_path, "badresult.mkv")
+        monkeypatch.setattr(tag, "GetVidDuration", lambda p: 60)
+
+        seqs: list[TagSequence] = [TagSequence(start_time=0, end_time=5)]
+        with pytest.raises(ValueError, match="Invalid match result"):
+            tag.run_tag_job(FakeContext(), "badresult.mkv", "Alice", seqs, match_result="D")
+
 
 class TestUploadRoutes:
-    """Tests for POST /api/videos — video upload into the untagged pool."""
+    """Tests for POST /api/videos — batch video upload into the untagged pool."""
 
     def test_upload_writes_file(self, client, tmp_path) -> None:
         resp = client.post(
             "/api/videos",
-            files={"file": ("match.mkv", b"video-bytes", "video/x-matroska")},
+            files={"files": ("match.mkv", b"video-bytes", "video/x-matroska")},
         )
         assert resp.status_code == 200
-        assert resp.json() == {"status": "ok", "file": "match.mkv"}
+        assert resp.json() == {
+            "results": [{"file": "match.mkv", "status": "ok"}],
+            "uploaded": 1,
+        }
         assert (tmp_path / "untaged" / "match.mkv").read_bytes() == b"video-bytes"
 
-    def test_upload_duplicate_409(self, client, tmp_path) -> None:
+    def test_upload_batch_multiple_files(self, client, tmp_path) -> None:
+        resp = client.post(
+            "/api/videos",
+            files=[
+                ("files", ("a.mkv", b"aaa", "video/x-matroska")),
+                ("files", ("b.mkv", b"bbb", "video/x-matroska")),
+            ],
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "results": [
+                {"file": "a.mkv", "status": "ok"},
+                {"file": "b.mkv", "status": "ok"},
+            ],
+            "uploaded": 2,
+        }
+        assert (tmp_path / "untaged" / "a.mkv").read_bytes() == b"aaa"
+        assert (tmp_path / "untaged" / "b.mkv").read_bytes() == b"bbb"
+
+    def test_upload_duplicate_reports_conflict(self, client, tmp_path) -> None:
         (tmp_path / "untaged" / "match.mkv").write_bytes(b"x")
         resp = client.post(
             "/api/videos",
-            files={"file": ("match.mkv", b"new", "video/x-matroska")},
+            files={"files": ("match.mkv", b"new", "video/x-matroska")},
         )
-        assert resp.status_code == 409
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["uploaded"] == 0
+        assert body["results"][0]["status"] == "conflict"
         assert (tmp_path / "untaged" / "match.mkv").read_bytes() == b"x"
 
-    def test_upload_invalid_name_400(self, client) -> None:
+    def test_upload_invalid_name_reports_error(self, client) -> None:
         resp = client.post(
             "/api/videos",
-            files={"file": ("bad/name.mkv", b"x", "video/x-matroska")},
+            files={"files": ("bad/name.mkv", b"x", "video/x-matroska")},
         )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["uploaded"] == 0
+        assert body["results"][0]["status"] == "error"
+        assert "Invalid file name" in body["results"][0]["detail"]
+
+    def test_upload_dotfile_reports_error(self, client) -> None:
+        resp = client.post(
+            "/api/videos",
+            files={"files": (".hidden", b"x", "video/x-matroska")},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["uploaded"] == 0
+        assert body["results"][0]["status"] == "error"
+
+    def test_upload_batch_mixed_results(self, client, tmp_path) -> None:
+        (tmp_path / "untaged" / "existing.mkv").write_bytes(b"old")
+        resp = client.post(
+            "/api/videos",
+            files=[
+                ("files", ("new.mkv", b"new", "video/x-matroska")),
+                ("files", ("existing.mkv", b"other", "video/x-matroska")),
+                ("files", ("bad/name.mkv", b"x", "video/x-matroska")),
+            ],
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["uploaded"] == 1
+        statuses: dict[str, str] = {r["file"]: r["status"] for r in body["results"]}
+        assert statuses == {
+            "new.mkv": "ok",
+            "existing.mkv": "conflict",
+            "bad/name.mkv": "error",
+        }
+        assert (tmp_path / "untaged" / "new.mkv").read_bytes() == b"new"
+        assert (tmp_path / "untaged" / "existing.mkv").read_bytes() == b"old"
+
+    def test_upload_no_files_400(self, client) -> None:
+        resp = client.post("/api/videos", files={})
         assert resp.status_code == 400
 
-    def test_upload_dotfile_400(self, client) -> None:
-        resp = client.post(
-            "/api/videos",
-            files={"file": (".hidden", b"x", "video/x-matroska")},
-        )
-        assert resp.status_code == 400
+
+def _seed_app_config(tmp_path: Path) -> None:
+    """Write a small cfg/config.json with one Folkstyle ruleset."""
+    (tmp_path / "config.json").write_text(
+        json.dumps({
+            "active_ruleset": "Folkstyle",
+            "moves": ["double", "single"],
+            "ties": ["collar tie"],
+            "rulesets": {
+                "Folkstyle": {
+                    "description": "test ruleset",
+                    "outcomes": {
+                        "T": {"points": 3, "description": "Takedown", "counts_as_pin": False},
+                    },
+                }
+            },
+        })
+    )
 
 
 class TestConfigRoutes:
-    """Tests for GET /api/configs/{name} — config file entries."""
+    """Tests for GET /api/config and GET /api/config/wrestlers."""
 
-    def test_returns_items(self, client) -> None:
-        resp = client.get("/api/configs/Wrestlers.config")
+    def test_returns_merged_config(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(configs, "cfg_dir", tmp_path)
+        _seed_app_config(tmp_path)
+        (tmp_path / "Wrestlers.json").write_text(
+            json.dumps({"wrestlers": ["Alice"], "teams": {"Varsity": ["Alice"]}})
+        )
+
+        resp = client.get("/api/config")
         assert resp.status_code == 200
-        items: list[str] = resp.json()["items"]
-        assert "UNKNOWN" in items
+        body: dict[str, Any] = resp.json()
+        assert body["active_ruleset"] == "Folkstyle"
+        assert body["moves"] == ["double", "single"]
+        assert body["ties"] == ["collar tie"]
+        assert "Folkstyle" in body["rulesets"]
+        assert body["wrestlers"] == ["Alice"]
+        assert body["teams"] == {"Varsity": ["Alice"]}
 
-    def test_unknown_config_404(self, client) -> None:
-        resp = client.get("/api/configs/Nonexistent.config")
-        assert resp.status_code == 404
+    def test_falls_back_to_defaults(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(configs, "cfg_dir", tmp_path)
 
-    def test_invalid_name_400(self, client) -> None:
-        resp = client.get("/api/configs/evil.config.txt")
+        resp = client.get("/api/config")
+        assert resp.status_code == 200
+        body: dict[str, Any] = resp.json()
+        assert body["active_ruleset"] == "Folkstyle"
+        assert "Folkstyle" in body["rulesets"]
+
+    def test_wrestlers_returns_roster(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(configs, "cfg_dir", tmp_path)
+        (tmp_path / "Wrestlers.json").write_text(
+            json.dumps({"wrestlers": ["Alice", "Bob"], "teams": {}})
+        )
+
+        resp = client.get("/api/config/wrestlers")
+        assert resp.status_code == 200
+        body: dict[str, Any] = resp.json()
+        assert body["wrestlers"] == ["Alice", "Bob"]
+        assert body["teams"] == {}
+
+    def test_wrestlers_falls_back_to_example(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(configs, "cfg_dir", tmp_path)
+        (tmp_path / "Wrestlers.json.example").write_text(
+            json.dumps({"wrestlers": ["Example"], "teams": {"A": ["Example"]}})
+        )
+
+        resp = client.get("/api/config/wrestlers")
+        assert resp.status_code == 200
+        body: dict[str, Any] = resp.json()
+        assert body["wrestlers"] == ["Example"]
+        assert body["teams"] == {"A": ["Example"]}
+
+
+class TestConfigWriteRoutes:
+    """Tests for PUT /api/config and PUT /api/config/wrestlers."""
+
+    def test_saves_app_config(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(configs, "cfg_dir", tmp_path)
+
+        resp = client.put(
+            "/api/config",
+            json={
+                "active_ruleset": "Folkstyle",
+                "moves": ["double", " single ", ""],
+                "ties": ["collar tie"],
+                "rulesets": {
+                    "Folkstyle": {
+                        "description": "test ruleset",
+                        "pin_points": 13,
+                        "outcomes": {
+                            "T": {"points": 3, "description": "Takedown"},
+                            "E": {"points": 1, "counts_as_pin": False},
+                        },
+                    }
+                },
+            },
+        )
+        assert resp.status_code == 200
+        body: dict[str, Any] = resp.json()
+        assert body["status"] == "ok"
+        assert body["active_ruleset"] == "Folkstyle"
+        assert body["moves"] == ["double", "single"]
+        assert body["ties"] == ["collar tie"]
+        assert body["rulesets"]["Folkstyle"]["outcomes"]["T"]["points"] == 3
+        assert body["rulesets"]["Folkstyle"]["pin_points"] == 13
+        # Persisted to disk for the next GET.
+        get_resp = client.get("/api/config")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["moves"] == ["double", "single"]
+
+    def test_invalid_active_ruleset_400(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(configs, "cfg_dir", tmp_path)
+        resp = client.put(
+            "/api/config",
+            json={"active_ruleset": "Nope", "rulesets": {"Folkstyle": {}}},
+        )
         assert resp.status_code == 400
 
-    def test_path_traversal_rejected_400(self, client) -> None:
-        resp = client.get("/api/configs/..%5C..%5Cetc%5Cpasswd.config")
-        assert resp.status_code == 400
+    def test_missing_active_ruleset_422(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(configs, "cfg_dir", tmp_path)
+        resp = client.put("/api/config", json={"moves": ["double"]})
+        assert resp.status_code == 422
+
+    def test_saves_roster_normalized(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(configs, "cfg_dir", tmp_path)
+        resp = client.put(
+            "/api/config/wrestlers",
+            json={
+                "wrestlers": ["Alice", "Bob"],
+                "teams": {"Varsity": ["Alice", "Ghost"]},
+            },
+        )
+        assert resp.status_code == 200
+        body: dict[str, Any] = resp.json()
+        assert body["status"] == "ok"
+        assert body["wrestlers"] == ["Alice", "Bob"]
+        # Team member "Ghost" is not on the wrestler list and is dropped.
+        assert body["teams"] == {"Varsity": ["Alice"]}
+
+        get_resp = client.get("/api/config/wrestlers")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["teams"] == {"Varsity": ["Alice"]}
 
 
 class TestTagRoute:
@@ -298,22 +518,35 @@ class TestTagRoute:
         source.write_bytes(b"source")
         monkeypatch.setattr(tag, "GetVidDuration", lambda p: 60)
 
+        captured: dict[str, str] = {}
+
         def fake_ffmpeg(cmd, description="", on_progress=None, cancel_event=None) -> FfmpegResult:
+            captured["metadata"] = Path(cmd[4]).read_text()
             Path(cmd[-1]).parent.mkdir(parents=True, exist_ok=True)
             Path(cmd[-1]).write_bytes(b"tagged")
             return FfmpegResult(success=True, message="ok")
 
         monkeypatch.setattr(tag, "run_ffmpeg", fake_ffmpeg)
 
+        # Pre-warming the tagged preview runs in a background job; stub it so
+        # it never touches real ffmpeg/ffprobe.
+        def fake_transcode_hls(src, job_id, on_progress=None, cancel_event=None) -> None:
+            return None
+
+        monkeypatch.setattr(transcode, "transcode_hls", fake_transcode_hls)
+
         payload: dict[str, Any] = {
             "video": "match.mkv",
             "wrestler": "Alice",
+            "opponent": "Bob",
+            "match_result": "W",
             "sequences": [
                 {
                     "start_time": 10,
                     "end_time": 20,
                     "attack_defend": True,
                     "tie_up": "collar tie",
+                    "opp_tie": "underhook",
                     "team_moves": ["double"],
                     "op_moves": ["nothing"],
                     "team_scores": ["T"],
@@ -329,11 +562,24 @@ class TestTagRoute:
 
         job: dict[str, Any] = self._wait_for_job(client, job_id)
         assert job["status"] == "done"
-        assert job["result"] == {"output": "match.mkv", "original_hidden": ".match.mkv"}
+        assert job["result"] == {"output": "match.mkv"}
+        assert "title=Alice (W) / Bob" in captured["metadata"]
+        assert "title=A,collar tie:underhook,double,nothing,T,None" in captured["metadata"]
 
         assert not source.exists()
-        assert (tmp_path / "untaged" / ".match.mkv").exists()
+        assert not (tmp_path / "untaged" / ".match.mkv").exists()
         assert (tmp_path / "taged" / "match.mkv").read_bytes() == b"tagged"
+
+    def test_tag_invalid_match_result_400(self, client, tmp_path) -> None:
+        (tmp_path / "untaged" / "match.mkv").write_bytes(b"x")
+        payload: dict[str, Any] = {
+            "video": "match.mkv",
+            "wrestler": "Alice",
+            "match_result": "D",
+            "sequences": [{"start_time": 0, "end_time": 5}],
+        }
+        resp = client.post("/api/tag", json=payload)
+        assert resp.status_code == 400
 
     def test_tag_missing_file_404(self, client) -> None:
         payload: dict[str, Any] = {
