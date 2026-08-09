@@ -46,7 +46,12 @@ function open() {
     }
   });
 
-  socket.addEventListener("close", () => {
+  socket.addEventListener("close", (event) => {
+    // 1008 = policy violation: the server rejected an unauthenticated socket.
+    if (event.code === 1008) {
+      window.location.href = "/login";
+      return;
+    }
     if (statusCallback) statusCallback("offline");
     setTimeout(open, RECONNECT_DELAY_MS);
   });

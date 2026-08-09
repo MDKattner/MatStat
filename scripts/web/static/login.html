@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MatStat — Log in</title>
+  <style>
+    :root {
+      --bg: #1e1e2e;
+      --bg-raised: #2a2a3c;
+      --bg-input: #17171f;
+      --border: #3b3b52;
+      --text: #d9d9e3;
+      --text-dim: #8f8fa8;
+      --accent: #4f8cff;
+      --accent-hover: #3d74d8;
+      --error: #e05c5c;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+    }
+    .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .login-card {
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 28px;
+      width: 320px;
+    }
+    h1 { margin: 0 0 4px; font-size: 22px; text-align: center; }
+    .login-sub { margin: 0 0 20px; text-align: center; color: var(--text-dim); }
+    label { display: block; margin-bottom: 6px; color: var(--text-dim); }
+    input {
+      width: 100%;
+      padding: 8px 10px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 14px;
+    }
+    input:focus { outline: none; border-color: var(--accent); }
+    button {
+      width: 100%;
+      margin-top: 14px;
+      padding: 9px 0;
+      background: var(--accent);
+      border: 0;
+      border-radius: 4px;
+      color: #fff;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-hover); }
+    button:disabled { opacity: 0.6; cursor: default; }
+    .login-error { margin-top: 12px; color: var(--error); min-height: 18px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="login-wrap">
+    <form class="login-card" id="login-form">
+      <h1>MatStat</h1>
+      <p class="login-sub">Restricted — log in to continue.</p>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
+      <button type="submit" id="login-btn">Log in</button>
+      <p class="login-error" id="login-error" role="alert"></p>
+    </form>
+  </div>
+  <script>
+    const form = document.getElementById("login-form");
+    const passwordInput = document.getElementById("password");
+    const error = document.getElementById("login-error");
+    const btn = document.getElementById("login-btn");
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      error.textContent = "";
+      btn.disabled = true;
+      try {
+        const resp = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: passwordInput.value }),
+        });
+        if (resp.ok) {
+          window.location.href = "/";
+          return;
+        }
+        const body = await resp.json().catch(() => ({}));
+        error.textContent = body.detail || "Login failed.";
+      } catch {
+        error.textContent = "Could not reach the server.";
+      }
+      btn.disabled = false;
+      passwordInput.select();
+    });
+  </script>
+</body>
+</html>
