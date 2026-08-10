@@ -41,6 +41,123 @@ export function showModal(id) {
   if (modal) modal.showModal();
 }
 
+/**
+ * Styled confirm dialog. Resolves true on OK, false on Cancel/Esc.
+ */
+export function confirmModal({ title = "Confirm", message = "" } = {}) {
+  return new Promise((resolve) => {
+    const dialog = el("dialog", { class: "modal" });
+    dialog.appendChild(el("h3", { text: title }));
+    if (message) dialog.appendChild(el("p", { text: message }));
+    const cancelBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Cancel" });
+    const okBtn = el("button", { class: "btn", type: "button", text: "OK" });
+    dialog.appendChild(el("div", { class: "row dialog-actions" }, [cancelBtn, okBtn]));
+    const finish = (result) => {
+      dialog.close();
+      dialog.remove();
+      resolve(result);
+    };
+    cancelBtn.addEventListener("click", () => finish(false));
+    okBtn.addEventListener("click", () => finish(true));
+    dialog.addEventListener("cancel", () => finish(false));
+    dialog.addEventListener("close", () => finish(false));
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    okBtn.focus();
+  });
+}
+
+/**
+ * Styled form dialog. `fields` is a list of:
+ *   { name, label, type: "text"|"number"|"textarea"|"select", options?, value?, required?, validate? }
+ * Resolves with `{ [name]: string }` on submit, or null on Cancel/Esc.
+ * The OK button is disabled until required/validation checks pass.
+ */
+export function promptForm({ title = "", fields = [] } = {}) {
+  return new Promise((resolve) => {
+    const dialog = el("dialog", { class: "modal modal-form" });
+    dialog.appendChild(el("h3", { text: title }));
+    const form = el("form", { class: "modal-form" });
+    const inputs = {};
+
+    for (const field of fields) {
+      const box = el("div", { class: "form-field" });
+      if (field.label) box.appendChild(el("label", { class: "field-label", text: field.label }));
+      let input;
+      if (field.type === "textarea") {
+        input = el("textarea", { class: "combo-input", rows: "3" });
+      } else if (field.type === "select") {
+        input = el("select", { class: "combo-input" });
+        for (const option of field.options || []) {
+          input.appendChild(el("option", { value: option, text: option }));
+        }
+      } else {
+        input = el("input", { class: "combo-input", type: field.type || "text" });
+      }
+      if (field.value != null) input.value = field.value;
+      inputs[field.name] = input;
+      box.appendChild(input);
+      if (field.validate || field.required) {
+        const errorEl = el("p", { class: "form-error", text: "" });
+        box.appendChild(errorEl);
+      }
+      form.appendChild(box);
+    }
+
+    const okBtn = el("button", { class: "btn", type: "submit", text: "OK" });
+    const cancelBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Cancel" });
+    form.appendChild(el("div", { class: "row dialog-actions" }, [cancelBtn, okBtn]));
+
+    const checkValid = () => {
+      let valid = true;
+      for (const field of fields) {
+        const input = inputs[field.name];
+        const errorEl = input.parentElement.querySelector(".form-error");
+        let message = "";
+        if (field.required && !input.value.trim()) message = "This field is required.";
+        else if (field.validate) message = field.validate(input.value) || "";
+        if (errorEl) errorEl.textContent = message;
+        if (message) valid = false;
+      }
+      okBtn.disabled = !valid;
+    };
+
+    for (const field of fields) {
+      inputs[field.name].addEventListener("input", checkValid);
+    }
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (okBtn.disabled) return;
+      const values = {};
+      for (const field of fields) values[field.name] = inputs[field.name].value.trim();
+      dialog.close();
+      dialog.remove();
+      resolve(values);
+    });
+    cancelBtn.addEventListener("click", () => {
+      dialog.close();
+      dialog.remove();
+      resolve(null);
+    });
+    dialog.addEventListener("cancel", () => {
+      dialog.remove();
+      resolve(null);
+    });
+    dialog.addEventListener("close", () => {
+      dialog.remove();
+      resolve(null);
+    });
+
+    dialog.appendChild(form);
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    const first = inputs[fields[0].name];
+    if (first) first.focus();
+    checkValid();
+  });
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -509,6 +626,8 @@ export function videoPlayer({ onPosition = () => {} } = {}) {
       })();
     },
     play() { video.play(); },
+    pause() { video.pause(); },
+    togglePlay() { if (video.paused) video.play(); else video.pause(); },
     get currentPositionMs() { return Math.floor(video.currentTime * 1000); },
   };
 }

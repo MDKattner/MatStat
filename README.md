@@ -130,7 +130,7 @@ MATSTAT_VISIBLE_LOGGING=1 uvicorn scripts.web.app:app
 MatStat protects wrestler PII and video with password authentication. It is **enabled by default**: start the server with `MATSTAT_PASSWORD` set, and every page and API (including `/ws`, static assets, previews, and downloads) requires the login page. The server **fails fast** if a password is expected but not configured, so an unprotected instance is never silently served:
 
 ```bash
-MATSTAT_PASSWORD="hunter2" uvicorn scripts.web.app:app
+MATSTAT_PASSWORD="StrongPassword" uvicorn scripts.web.app:app
 ```
 
 Behavior knobs (all optional):

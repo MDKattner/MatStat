@@ -9,6 +9,7 @@
 
 import {
   checkList,
+  confirmModal,
   el,
   ensurePreview,
   filterList,
@@ -331,6 +332,7 @@ export function mountAudit(root) {
     sequences.forEach((seq, index) => {
       const item = el("li", {
         class: "seq-item" + (index === state.editingIndex ? " active" : ""),
+        title: prettyChapter(seq),
         text: seqLabel(seq, index),
         onclick: () => {
           state.editingIndex = index;
@@ -390,9 +392,13 @@ export function mountAudit(root) {
     updateButtons();
   }
 
-  function deleteSequence() {
+  async function deleteSequence() {
     if (!state.data || state.editingIndex < 0) return;
-    if (!confirm("Delete this sequence?")) return;
+    const confirmed = await confirmModal({
+      title: "Delete sequence",
+      message: "Delete this sequence?",
+    });
+    if (!confirmed) return;
     state.data.sequences.splice(state.editingIndex, 1);
     state.editingIndex = -1;
     resetDetails();
@@ -525,6 +531,31 @@ export function mountAudit(root) {
     endTime.setFromSeconds(Math.floor(state.playerPosMs / 1000));
   });
 
+  // Keyboard shortcuts: Space = play/pause, S = mark start, E = mark end,
+  // Enter = add/update sequence. Ignored while typing in inputs and when this
+  // tab is hidden (all tabs stay mounted).
+  document.addEventListener("keydown", (event) => {
+    if (state.retagging) return;
+    const pane = root.closest(".tab-pane");
+    if (!pane || pane.hidden) return;
+    const target = event.target;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" || target.isContentEditable)) return;
+    if (event.key === " ") {
+      event.preventDefault();
+      player.togglePlay();
+    } else if (event.key === "s" || event.key === "S") {
+      event.preventDefault();
+      startTime.setFromSeconds(Math.floor(state.playerPosMs / 1000));
+    } else if (event.key === "e" || event.key === "E") {
+      event.preventDefault();
+      endTime.setFromSeconds(Math.floor(state.playerPosMs / 1000));
+    } else if (event.key === "Enter" && document.activeElement === document.body) {
+      event.preventDefault();
+      if (state.editingIndex >= 0) updateSequence(); else addSequence();
+    }
+  });
+
   // ---------- Layout ----------
 
   const videoCard = el("section", { class: "tag-card video-card" }, [
@@ -550,6 +581,7 @@ export function mountAudit(root) {
     el("legend", { text: "Timing" }),
     startTime.node,
     endTime.node,
+    el("p", { class: "shortcut-hint", text: "Space play/pause \u00b7 S start \u00b7 E end \u00b7 Enter add/update" }),
   ]);
   const detailsCard = el("details", { class: "tag-card", open: "" }, [
     el("summary", { text: "Sequence Details" }),

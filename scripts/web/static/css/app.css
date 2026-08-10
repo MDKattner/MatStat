@@ -237,6 +237,28 @@ html, body {
 .toast[data-kind="error"] { border-left-color: var(--error); }
 .toast[data-kind="success"] { border-left-color: var(--success); }
 
+/* ---------- Modal forms (Config Editor, confirmations) ---------- */
+
+.modal-form .form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.modal-form .form-field .field-label { min-width: 0; }
+
+.modal-form textarea {
+  resize: vertical;
+  min-height: 64px;
+}
+
+.form-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--error);
+}
+
 /* ---------- Tag Film tab ---------- */
 
 .btn-ghost {
@@ -428,7 +450,25 @@ fieldset.tag-card { margin: 0; }
   font-size: 13px;
 }
 
-.upload-row { margin-bottom: 8px; }
+.upload-row {
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.upload-row.dragover {
+  border-color: var(--accent);
+  background: rgba(79, 140, 255, 0.08);
+}
+
+.drop-hint {
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
 
 .select-input { cursor: pointer; }
 
@@ -516,6 +556,13 @@ fieldset.tag-card { margin: 0; }
   margin: 0;
   font-size: 13px;
   color: var(--text-dim);
+}
+
+.shortcut-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  opacity: 0.8;
 }
 
 .seq-list {

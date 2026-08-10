@@ -9,6 +9,7 @@
 
 import {
   checkList,
+  confirmModal,
   el,
   ensurePreview,
   filterList,
@@ -60,11 +61,11 @@ export function mountTagFilm(root) {
     },
   });
 
-  const confirmBtn = el("button", {
+  const changeBtn = el("button", {
     class: "btn btn-ghost",
     type: "button",
-    text: "Confirm Video",
-    disabled: "",
+    text: "Change Video",
+    hidden: "",
   });
 
   // ---------- Upload ----------
@@ -76,17 +77,19 @@ export function mountTagFilm(root) {
     text: "Upload",
     disabled: "",
   });
+  const dropHint = el("span", { class: "drop-hint", text: "or drop video files here" });
+  const uploadRow = el("div", { class: "row upload-row" }, [uploadInput, uploadBtn, dropHint]);
 
-  async function uploadVideos() {
-    const files = uploadInput.files;
-    if (!files || files.length === 0) {
+  async function uploadVideos(files) {
+    const list = files || uploadInput.files;
+    if (!list || list.length === 0) {
       showToast("Select videos to upload first.", "info");
       return;
     }
     uploadBtn.disabled = true;
-    setStatus(`Uploading ${files.length} video(s)...`);
+    setStatus(`Uploading ${list.length} video(s)...`);
     const formData = new FormData();
-    for (const file of files) formData.append("files", file, file.name);
+    for (const file of list) formData.append("files", file, file.name);
     try {
       const { ok, body } = await fetchJson("/api/videos", { method: "POST", body: formData });
       if (!ok) throw new Error(body.detail || "Upload failed.");
@@ -108,10 +111,32 @@ export function mountTagFilm(root) {
     }
   }
 
+  let dragDepth = 0;
+  uploadRow.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    uploadRow.classList.add("dragover");
+  });
+  uploadRow.addEventListener("dragenter", (event) => {
+    event.preventDefault();
+    dragDepth++;
+    uploadRow.classList.add("dragover");
+  });
+  uploadRow.addEventListener("dragleave", () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) uploadRow.classList.remove("dragover");
+  });
+  uploadRow.addEventListener("drop", (event) => {
+    event.preventDefault();
+    dragDepth = 0;
+    uploadRow.classList.remove("dragover");
+    const files = Array.from((event.dataTransfer && event.dataTransfer.files) || []);
+    if (files.length > 0) uploadVideos(files);
+  });
+
   uploadInput.addEventListener("change", () => {
     uploadBtn.disabled = !(uploadInput.files && uploadInput.files.length > 0);
   });
-  uploadBtn.addEventListener("click", uploadVideos);
+  uploadBtn.addEventListener("click", () => uploadVideos());
 
   const player = videoPlayer({
     onPosition: (ms) => { state.playerPosMs = ms; },
@@ -137,8 +162,7 @@ export function mountTagFilm(root) {
 
   function updateVideoLock() {
     const locked = state.videoConfirmed;
-    confirmBtn.textContent = locked ? "Change Video" : "Confirm Video";
-    confirmBtn.disabled = !state.video || state.tagging;
+    changeBtn.hidden = !locked;
     videoList.setDisabled(locked);
   }
 
@@ -352,9 +376,12 @@ export function mountTagFilm(root) {
     state.sequences.push(seq);
     seqListEl.appendChild(el("li", {
       class: "seq-item",
+      title: prettyChapter(seq),
       text: `[${formatClock(seq.start_time)} - ${formatClock(seq.end_time)}] ${seq.attack_defend ? "A" : "D"} | ${tieLabel(seq)}`,
     }));
     seqCount.textContent = String(state.sequences.length);
+    state.videoConfirmed = true;
+    updateVideoLock();
     resetDetails();
     setStatus(`Added sequence. ${state.sequences.length} sequences logged.`);
     updateButtons();
@@ -460,10 +487,20 @@ export function mountTagFilm(root) {
 
   // ---------- Wiring ----------
 
-  confirmBtn.addEventListener("click", () => {
-    if (!state.video || state.tagging) return;
-    state.videoConfirmed = !state.videoConfirmed;
-    setStatus(state.videoConfirmed ? `Video confirmed: ${state.video}` : `Selected video: ${state.video}`);
+  changeBtn.addEventListener("click", async () => {
+    if (state.tagging) return;
+    if (state.sequences.length > 0) {
+      const confirmed = await confirmModal({
+        title: "Change video",
+        message: "Changing the video clears the logged sequences. Continue?",
+      });
+      if (!confirmed) return;
+    }
+    state.videoConfirmed = false;
+    state.sequences = [];
+    seqListEl.replaceChildren();
+    seqCount.textContent = "0";
+    setStatus(`Selected video: ${state.video}`);
     updateVideoLock();
     updateButtons();
   });
@@ -476,13 +513,38 @@ export function mountTagFilm(root) {
   addBtn.addEventListener("click", addSequence);
   finishBtn.addEventListener("click", finishTagging);
 
+  // Keyboard shortcuts: Space = play/pause, S = mark start, E = mark end,
+  // Enter = add sequence. Ignored while typing in inputs and when this tab
+  // is hidden (all tabs stay mounted).
+  document.addEventListener("keydown", (event) => {
+    if (state.tagging) return;
+    const pane = root.closest(".tab-pane");
+    if (!pane || pane.hidden) return;
+    const target = event.target;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" || target.isContentEditable)) return;
+    if (event.key === " ") {
+      event.preventDefault();
+      player.togglePlay();
+    } else if (event.key === "s" || event.key === "S") {
+      event.preventDefault();
+      startTime.setFromSeconds(Math.floor(state.playerPosMs / 1000));
+    } else if (event.key === "e" || event.key === "E") {
+      event.preventDefault();
+      endTime.setFromSeconds(Math.floor(state.playerPosMs / 1000));
+    } else if (event.key === "Enter" && document.activeElement === document.body) {
+      event.preventDefault();
+      addSequence();
+    }
+  });
+
   // ---------- Layout ----------
 
   const videoCard = el("section", { class: "tag-card video-card" }, [
     el("h3", { text: "Select Video" }),
-    el("div", { class: "row upload-row" }, [uploadInput, uploadBtn]),
+    uploadRow,
     videoList.node,
-    confirmBtn,
+    changeBtn,
   ]);
   const wrestlerCard = el("section", { class: "tag-card wrestler-card" }, [
     el("h3", { text: "Wrestler" }),
@@ -503,6 +565,7 @@ export function mountTagFilm(root) {
     el("legend", { text: "Timing" }),
     startTime.node,
     endTime.node,
+    el("p", { class: "shortcut-hint", text: "Space play/pause \u00b7 S start \u00b7 E end \u00b7 Enter add" }),
   ]);
   const detailsCard = el("details", { class: "tag-card", open: "" }, [
     el("summary", { text: "Sequence Details" }),

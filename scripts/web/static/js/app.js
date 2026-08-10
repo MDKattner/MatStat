@@ -6,7 +6,7 @@
  */
 
 import { connectWs, onWs, onWsStatus } from "./ws.js";
-import { el, showModal, showToast } from "./components.js";
+import { confirmModal, el, promptForm, showModal, showToast } from "./components.js";
 import { mountAudit } from "./tabs/audit.js";
 import { mountCombineClips } from "./tabs/combine_clips.js";
 import { mountCompileStats } from "./tabs/compile_stats.js";
@@ -145,7 +145,7 @@ function initAbout() {
 
 /**
  * Generic single-string list editor (Moves / Ties / Wrestlers).
- * Renders `get()` into the list; Add/Edit/Delete use prompt()/confirm().
+ * Renders `get()` into the list; Add/Edit/Delete use styled modal forms.
  * Returns `{ render }` so the caller can refresh after loading new data.
  */
 function bindListEditor({ listId, addId, editId, delId, label, get, set }) {
@@ -160,39 +160,48 @@ function bindListEditor({ listId, addId, editId, delId, label, get, set }) {
     }
   }
 
-  document.getElementById(addId).addEventListener("click", () => {
-    const text = prompt(`New ${label}:`);
-    if (text && text.trim()) {
-      set([...get(), text.trim()]);
+  document.getElementById(addId).addEventListener("click", async () => {
+    const values = await promptForm({
+      title: `New ${label}`,
+      fields: [{ name: "value", label: `${label}:`, required: true }],
+    });
+    if (values && values.value) {
+      set([...get(), values.value]);
       render();
     }
   });
 
-  document.getElementById(editId).addEventListener("click", () => {
+  document.getElementById(editId).addEventListener("click", async () => {
     const active = activeEntry();
     if (!active) {
       showToast("Select an entry to edit.", "info");
       return;
     }
-    const text = prompt(`Edit ${label}:`, active.textContent);
-    if (text && text.trim()) {
-      const idx = get().indexOf(active.textContent);
-      if (idx !== -1) {
-        const next = [...get()];
-        next[idx] = text.trim();
-        set(next);
-        render();
-      }
+    const values = await promptForm({
+      title: `Edit ${label}`,
+      fields: [{ name: "value", label: `${label}:`, value: active.textContent, required: true }],
+    });
+    if (!values || !values.value) return;
+    const idx = get().indexOf(active.textContent);
+    if (idx !== -1) {
+      const next = [...get()];
+      next[idx] = values.value;
+      set(next);
+      render();
     }
   });
 
-  document.getElementById(delId).addEventListener("click", () => {
+  document.getElementById(delId).addEventListener("click", async () => {
     const active = activeEntry();
     if (!active) {
       showToast("Select an entry to delete.", "info");
       return;
     }
-    if (confirm(`Delete '${active.textContent}'?`)) {
+    const confirmed = await confirmModal({
+      title: `Delete ${label}`,
+      message: `Delete '${active.textContent}'?`,
+    });
+    if (confirmed) {
       set(get().filter((item) => item !== active.textContent));
       render();
     }
@@ -211,7 +220,7 @@ function bindListEditor({ listId, addId, editId, delId, label, get, set }) {
 
 /**
  * Team editor: team names with member lists. Members are edited via a
- * comma-separated prompt (normalized: trimmed, deduped, empties dropped).
+ * comma-separated modal textarea (normalized: trimmed, deduped, empties dropped).
  * Returns `{ render }`.
  */
 function bindTeamsEditor({ listId, addId, renameId, delId, membersId, get, set }) {
@@ -238,36 +247,48 @@ function bindTeamsEditor({ listId, addId, renameId, delId, membersId, get, set }
     }
   }
 
-  document.getElementById(addId).addEventListener("click", () => {
-    const name = prompt("New team name:");
-    if (name && name.trim() && !(name.trim() in get())) {
-      set({ ...get(), [name.trim()]: [] });
+  document.getElementById(addId).addEventListener("click", async () => {
+    const values = await promptForm({
+      title: "New team",
+      fields: [{ name: "value", label: "Team name:", required: true }],
+    });
+    const name = values && values.value;
+    if (name && !(name in get())) {
+      set({ ...get(), [name]: [] });
       render();
     }
   });
 
-  document.getElementById(renameId).addEventListener("click", () => {
+  document.getElementById(renameId).addEventListener("click", async () => {
     const oldName = activeName();
     if (!oldName) {
       showToast("Select a team to rename.", "info");
       return;
     }
-    const name = prompt("Rename team:", oldName);
-    if (!name || !name.trim() || name.trim() === oldName) return;
+    const values = await promptForm({
+      title: "Rename team",
+      fields: [{ name: "value", label: "Team name:", value: oldName, required: true }],
+    });
+    const name = values && values.value;
+    if (!name || name === oldName) return;
     const next = { ...get() };
-    next[name.trim()] = next[oldName];
+    next[name] = next[oldName];
     delete next[oldName];
     set(next);
     render();
   });
 
-  document.getElementById(delId).addEventListener("click", () => {
+  document.getElementById(delId).addEventListener("click", async () => {
     const oldName = activeName();
     if (!oldName) {
       showToast("Select a team to delete.", "info");
       return;
     }
-    if (confirm(`Delete team '${oldName}'?`)) {
+    const confirmed = await confirmModal({
+      title: "Delete team",
+      message: `Delete team '${oldName}'?`,
+    });
+    if (confirmed) {
       const next = { ...get() };
       delete next[oldName];
       set(next);
@@ -275,16 +296,24 @@ function bindTeamsEditor({ listId, addId, renameId, delId, membersId, get, set }
     }
   });
 
-  document.getElementById(membersId).addEventListener("click", () => {
+  document.getElementById(membersId).addEventListener("click", async () => {
     const oldName = activeName();
     if (!oldName) {
       showToast("Select a team to edit members.", "info");
       return;
     }
     const current = (get()[oldName] || []).join(", ");
-    const text = prompt(`Members of '${oldName}' (comma-separated):`, current);
-    if (text == null) return;
-    set({ ...get(), [oldName]: normalizeMembers(text) });
+    const values = await promptForm({
+      title: `Members of '${oldName}'`,
+      fields: [{
+        name: "members",
+        label: "Members (comma-separated):",
+        type: "textarea",
+        value: current,
+      }],
+    });
+    if (values == null) return;
+    set({ ...get(), [oldName]: normalizeMembers(values.members) });
     render();
   });
 
@@ -343,20 +372,33 @@ function initConfigEditor() {
     pinPointsInput.value = String(ruleset.pin_points ?? 0);
   }
 
-  function promptOutcome(existing) {
-    const code = prompt("Outcome code:", existing ? existing.code : "");
-    if (!code || !code.trim()) return null;
-    const pointsText = prompt("Points:", existing ? String(existing.points) : "");
-    const points = parseInt(pointsText, 10);
+  async function promptOutcome(existing) {
+    const values = await promptForm({
+      title: existing ? "Edit Outcome" : "Add Outcome",
+      fields: [
+        { name: "code", label: "Code:", value: existing ? existing.code : "", required: true },
+        {
+          name: "points", label: "Points:",
+          value: existing ? String(existing.points) : "",
+          required: true,
+          validate: (v) => (Number.isNaN(parseInt(v, 10)) ? "Points must be a number." : ""),
+        },
+        { name: "description", label: "Description:", value: existing ? existing.description : "" },
+        {
+          name: "counts_as_pin", label: "Counts as pin:", type: "select",
+          options: ["no", "yes"],
+          value: existing ? (existing.counts_as_pin ? "yes" : "no") : "no",
+        },
+      ],
+    });
+    if (!values) return null;
+    const points = parseInt(values.points, 10);
     if (Number.isNaN(points)) return null;
-    const description = prompt("Description:", existing ? existing.description : "") || "";
-    const defaultPin = existing ? (existing.counts_as_pin ? "yes" : "no") : "no";
-    const pinText = prompt("Counts as pin? (yes/no):", defaultPin) || "no";
     return {
-      code: code.trim(),
+      code: values.code,
       points,
-      description: description.trim(),
-      counts_as_pin: /^(y|yes|true|1)$/i.test(pinText.trim()),
+      description: values.description,
+      counts_as_pin: values.counts_as_pin === "yes",
     };
   }
 
@@ -398,13 +440,13 @@ function initConfigEditor() {
     config.active_ruleset = activeRulesetSelect.value;
   });
 
-  document.getElementById("cfg-outcome-add").addEventListener("click", () => {
+  document.getElementById("cfg-outcome-add").addEventListener("click", async () => {
     const ruleset = config.rulesets[rulesetSelect.value];
     if (!ruleset) {
       showToast("No ruleset selected.", "info");
       return;
     }
-    const outcome = promptOutcome(null);
+    const outcome = await promptOutcome(null);
     if (!outcome) return;
     ruleset.outcomes = ruleset.outcomes || {};
     if (outcome.code in ruleset.outcomes) {
@@ -419,7 +461,7 @@ function initConfigEditor() {
     renderOutcomes();
   });
 
-  document.getElementById("cfg-outcome-edit").addEventListener("click", () => {
+  document.getElementById("cfg-outcome-edit").addEventListener("click", async () => {
     const ruleset = config.rulesets[rulesetSelect.value];
     const active = outcomesList.querySelector(".cfg-entry.active");
     if (!ruleset || !active) {
@@ -428,7 +470,7 @@ function initConfigEditor() {
     }
     const code = active.dataset.code;
     const existing = { code, ...(ruleset.outcomes[code] || {}) };
-    const outcome = promptOutcome(existing);
+    const outcome = await promptOutcome(existing);
     if (!outcome) return;
     delete ruleset.outcomes[code];
     ruleset.outcomes[outcome.code] = {
@@ -439,7 +481,7 @@ function initConfigEditor() {
     renderOutcomes();
   });
 
-  document.getElementById("cfg-outcome-del").addEventListener("click", () => {
+  document.getElementById("cfg-outcome-del").addEventListener("click", async () => {
     const ruleset = config.rulesets[rulesetSelect.value];
     const active = outcomesList.querySelector(".cfg-entry.active");
     if (!ruleset || !active) {
@@ -447,7 +489,11 @@ function initConfigEditor() {
       return;
     }
     const code = active.dataset.code;
-    if (confirm(`Delete outcome '${code}'?`)) {
+    const confirmed = await confirmModal({
+      title: "Delete outcome",
+      message: `Delete outcome '${code}'?`,
+    });
+    if (confirmed) {
       delete ruleset.outcomes[code];
       renderOutcomes();
     }
