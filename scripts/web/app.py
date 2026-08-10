@@ -497,7 +497,7 @@ async def team_evaluation() -> dict[str, Any]:
     if not has_data:
         raise HTTPException(
             status_code=404,
-            detail="No wrestler data files found. Run Compile Stats first.",
+            detail="No wrestler data files found. Run Tabulate Sequences first.",
         )
 
     def _run(ctx: JobContext) -> dict[str, Any]:

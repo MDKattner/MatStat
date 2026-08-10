@@ -9,7 +9,6 @@ import { connectWs, onWs, onWsStatus } from "./ws.js";
 import { confirmModal, el, promptForm, showModal, showToast } from "./components.js";
 import { mountAudit } from "./tabs/audit.js";
 import { mountCombineClips } from "./tabs/combine_clips.js";
-import { mountCompileStats } from "./tabs/compile_stats.js";
 import { mountPca } from "./tabs/pca.js";
 import { mountSearch } from "./tabs/search.js";
 import { mountTagFilm } from "./tabs/tag_film.js";
@@ -580,7 +579,6 @@ function boot() {
   safe("initConfigEditor", initConfigEditor);
   safe("mountAudit", () => mountAudit(document.getElementById("audit-root")));
   safe("mountCombineClips", () => mountCombineClips(document.getElementById("combine-clips-root")));
-  safe("mountCompileStats", () => mountCompileStats(document.getElementById("compile-stats-root")));
   safe("mountPca", () => mountPca(document.getElementById("pca-root")));
   safe("mountSearch", () => mountSearch(document.getElementById("search-root")));
   safe("mountTagFilm", () => mountTagFilm(document.getElementById("tag-film-root")));
