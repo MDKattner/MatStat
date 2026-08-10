@@ -14,10 +14,15 @@ Two layouts are supported:
 Review-mandated mitigations:
 - The literal move "nothing" (the config sentinel) is dropped before counting.
 - Rare moves are filtered out: a move must appear in at least
-  max(3, round(0.05 * n_rows)) rows.
-- Only the "matches" layout standardizes (z-scores) the move columns before
-  PCA; the "sequences" layout uses covariance PCA (no z-scoring) because column
-  z-scoring on sparse near-binary rows over-amplifies rare moves.
+  max(3, round(0.05 * n)) distinct rows (sequences) — or distinct matches for
+  the "matches" layout — to be kept.
+- The "matches" layout standardizes (z-scores) the move columns before PCA and
+  averages per match so tagging volume does not dominate; the "sequences"
+  layout row-normalizes (each row divided by its move total) and runs
+  covariance PCA, because column z-scoring on sparse near-binary rows
+  over-amplifies rare moves.
+- Component signs are fixed (largest-magnitude loading positive) and hover
+  shows the top contributing moves per point.
 
 Compiling a PCA reel (POST /api/pca/compile) extracts the selected sequences
 and concatenates them into a highlight clip, mirroring scripts/web/clips.py.
@@ -115,6 +120,31 @@ def _load_scoped_data(scope: PcaScope, name: str) -> pd.DataFrame:
     return data
 
 
+def _top_moves_per_row(
+    loadings: np.ndarray, moves: list[str], matrix: pd.DataFrame, k: int = 3
+) -> list[list[str]]:
+    """Pick the moves that most contribute to each row's first-PC score.
+
+    Contribution is |loading * count| per move (counts from the given matrix).
+
+    Args:
+        loadings: The component's loadings vector (one per move).
+        moves: The move names aligned with ``loadings``.
+        matrix: The move-count matrix whose rows map to points.
+        k: How many moves to report per row.
+
+    Returns:
+        A list (one entry per matrix row) of up to ``k`` move names.
+    """
+    rows: np.ndarray = matrix.to_numpy(dtype=float)
+    out: list[list[str]] = []
+    for row in rows:
+        contrib: np.ndarray = np.abs(loadings) * np.abs(row)
+        order: np.ndarray = np.argsort(contrib)[::-1]
+        out.append([moves[i] for i in order[:k] if contrib[i] > 0])
+    return out
+
+
 def build_pca_figure(scope: PcaScope, name: str, layout: PcaLayout) -> dict[str, Any]:
     """Build the interactive PCA scatter figure for a scope and layout.
 
@@ -137,23 +167,27 @@ def build_pca_figure(scope: PcaScope, name: str, layout: PcaLayout) -> dict[str,
     if df.empty:
         raise ValueError("No sequence data for the selected scope. Run Compile Stats first.")
 
-    # Move filtering happens at the sequence level for both layouts.
-    min_occ: int = _min_occurrences(len(df))
-    off_mat: pd.DataFrame
-    def_mat: pd.DataFrame
-    off_moves: list[str]
-    def_moves: list[str]
-    off_mat, off_moves = GenerateMoveMatrix(df, COL_TEAM_MOVES, min_occ)
-    def_mat, def_moves = GenerateMoveMatrix(df, COL_OPPONENT_MOVES, min_occ)
-
     videos: pd.Series = df.index.to_series().apply(lambda o: str(o).split(":")[0])
 
     if layout == "matches":
-        keys: pd.DataFrame = pd.DataFrame({"wrestler": df["wrestler"], "video": videos})
-        off_mat = off_mat.groupby([keys["wrestler"], keys["video"]], sort=True).sum()
-        def_mat = def_mat.groupby([keys["wrestler"], keys["video"]], sort=True).sum()
+        keys: pd.DataFrame = pd.DataFrame(
+            {"wrestler": df["wrestler"].to_numpy(), "video": videos.to_numpy()},
+            index=df.index,
+        )
+        group_key: list[tuple[str, str]] = list(zip(keys["wrestler"], keys["video"]))
+        n_matches: int = len(pd.unique(pd.Series(group_key)))
+        min_occ: int = _min_occurrences(n_matches)
+        off_mat, off_moves = GenerateMoveMatrix(
+            df, COL_TEAM_MOVES, min_occ, group_key=group_key
+        )
+        def_mat, def_moves = GenerateMoveMatrix(
+            df, COL_OPPONENT_MOVES, min_occ, group_key=group_key
+        )
+        # Per-match means so matches with more tagged sequences do not dominate.
+        off_mat = off_mat.groupby([keys["wrestler"], keys["video"]], sort=True).mean()
+        def_mat = def_mat.groupby([keys["wrestler"], keys["video"]], sort=True).mean()
         net_by_match: pd.Series = (
-            df.groupby([keys["wrestler"], keys["video"]])[COL_ADJUSTED_NET_POINTS].sum()
+            df.groupby([keys["wrestler"], keys["video"]])[COL_ADJUSTED_NET_POINTS].mean()
         )
         start_by_match: pd.Series = (
             df.groupby([keys["wrestler"], keys["video"]])[COL_START_TIME].min()
@@ -170,6 +204,9 @@ def build_pca_figure(scope: PcaScope, name: str, layout: PcaLayout) -> dict[str,
         ends: np.ndarray = end_by_match.to_numpy(dtype=float)
         net_values: np.ndarray = net_by_match.to_numpy(dtype=float)
     else:
+        min_occ = _min_occurrences(len(df))
+        off_mat, off_moves = GenerateMoveMatrix(df, COL_TEAM_MOVES, min_occ)
+        def_mat, def_moves = GenerateMoveMatrix(df, COL_OPPONENT_MOVES, min_occ)
         wrestlers = df["wrestler"].to_numpy()
         video_names = videos.to_numpy()
         starts = df[COL_START_TIME].to_numpy(dtype=float)
@@ -180,17 +217,29 @@ def build_pca_figure(scope: PcaScope, name: str, layout: PcaLayout) -> dict[str,
         raise ValueError("Not enough move variety in the selected scope after filtering.")
 
     standardize: bool = layout == "matches"
+    row_normalize: bool = layout == "sequences"
     off_scores: np.ndarray
     def_scores: np.ndarray
     off_ratio: float
     def_ratio: float
-    off_scores, off_ratio = FirstPrincipalComponent(off_mat, standardize)
-    def_scores, def_ratio = FirstPrincipalComponent(def_mat, standardize)
+    off_loadings: np.ndarray
+    def_loadings: np.ndarray
+    off_scores, off_ratio, off_loadings = FirstPrincipalComponent(
+        off_mat, standardize, row_normalize=row_normalize, return_loadings=True
+    )
+    def_scores, def_ratio, def_loadings = FirstPrincipalComponent(
+        def_mat, standardize, row_normalize=row_normalize, return_loadings=True
+    )
+
+    off_top: list[list[str]] = _top_moves_per_row(off_loadings, off_moves, off_mat)
+    def_top: list[list[str]] = _top_moves_per_row(def_loadings, def_moves, def_mat)
 
     cmax: float = max(1.0, float(np.max(np.abs(net_values))))
     customdata: list[list[Any]] = [
-        [str(w), str(v), float(s), float(e), float(n)]
-        for w, v, s, e, n in zip(wrestlers, video_names, starts, ends, net_values)
+        [str(w), str(v), float(s), float(e), float(n), ", ".join(o), ", ".join(d)]
+        for w, v, s, e, n, o, d in zip(
+            wrestlers, video_names, starts, ends, net_values, off_top, def_top
+        )
     ]
     fig: go.Figure = go.Figure(
         data=[
@@ -211,7 +260,8 @@ def build_pca_figure(scope: PcaScope, name: str, layout: PcaLayout) -> dict[str,
                 },
                 hovertemplate=(
                     "%{customdata[0]}<br>%{customdata[1]}<br>"
-                    "%{customdata[2]}–%{customdata[3]}<br>Adj net: %{customdata[4]}<extra></extra>"
+                    "%{customdata[2]}–%{customdata[3]}<br>Adj net: %{customdata[4]}"
+                    "<br>off.: %{customdata[5]}<br>def.: %{customdata[6]}<extra></extra>"
                 ),
             )
         ]

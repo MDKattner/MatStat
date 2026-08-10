@@ -148,6 +148,44 @@ class TestGenerateMoveMatrix:
         assert moves == sorted(moves)
         assert list(matrix.columns) == moves
 
+    def test_group_key_counts_distinct_groups(self) -> None:
+        df: pd.DataFrame = pd.DataFrame(
+            {COL_TEAM_MOVES: [
+                ["double"], ["double"], ["double", "high crotch"], ["high crotch"],
+            ]},
+            index=pd.Index(
+                ["a.mkv:1", "a.mkv:2", "b.mkv:1", "b.mkv:2"], name=COL_ORIGIN
+            ),
+        )
+        group_key: list[tuple[str, str]] = [
+            ("A", "a.mkv"), ("A", "a.mkv"), ("A", "a.mkv"), ("A", "b.mkv"),
+        ]
+        matrix, moves = GenerateMoveMatrix(
+            df, COL_TEAM_MOVES, min_occurrences=2, group_key=group_key
+        )
+        assert moves == ["high crotch"]  # "double": 1 distinct match; "high crotch": 2
+        assert int(matrix.loc["a.mkv:1", "high crotch"]) == 0
+        assert int(matrix.loc["b.mkv:1", "high crotch"]) == 1
+
+    def test_group_key_differs_from_row_counting(self) -> None:
+        df: pd.DataFrame = pd.DataFrame(
+            {COL_TEAM_MOVES: [
+                ["double"], ["double"], ["double", "high crotch"], ["high crotch"],
+            ]},
+            index=pd.Index(
+                ["a.mkv:1", "a.mkv:2", "b.mkv:1", "b.mkv:2"], name=COL_ORIGIN
+            ),
+        )
+        group_key: list[tuple[str, str]] = [
+            ("A", "a.mkv"), ("A", "a.mkv"), ("A", "a.mkv"), ("A", "b.mkv"),
+        ]
+        _, row_moves = GenerateMoveMatrix(df, COL_TEAM_MOVES, min_occurrences=2)
+        _, group_moves = GenerateMoveMatrix(
+            df, COL_TEAM_MOVES, min_occurrences=2, group_key=group_key
+        )
+        assert row_moves == ["double", "high crotch"]
+        assert group_moves == ["high crotch"]
+
 
 class TestFirstPrincipalComponent:
     """Tests for helpers.FirstPrincipalComponent — SVD-based PCA scores."""
@@ -181,6 +219,40 @@ class TestFirstPrincipalComponent:
         scores, ratio = FirstPrincipalComponent(matrix, standardize=False)
         assert ratio == pytest.approx(1.0)
         assert np.std(scores) > 0.0
+
+    def test_row_normalize_compares_proportions(self) -> None:
+        matrix: pd.DataFrame = pd.DataFrame({
+            "a": [1.0, 0.0, 2.0, 0.0],
+            "b": [0.0, 1.0, 0.0, 2.0],
+        })
+        scores_raw, _ = FirstPrincipalComponent(matrix, standardize=False)
+        scores_norm, _ = FirstPrincipalComponent(matrix, standardize=False, row_normalize=True)
+        assert scores_raw[0] != pytest.approx(scores_raw[2])
+        assert scores_norm[0] == pytest.approx(scores_norm[2])
+        assert scores_norm[1] == pytest.approx(scores_norm[3])
+
+    def test_return_loadings_sign_fixed(self) -> None:
+        matrix: pd.DataFrame = pd.DataFrame({
+            "a": [3.0, 1.0, 4.0, 2.0],
+            "b": [1.0, 3.0, 2.0, 4.0],
+        })
+        scores, ratio, loadings = FirstPrincipalComponent(
+            matrix, standardize=False, return_loadings=True
+        )
+        assert loadings.shape == (2,)
+        assert ratio > 0.0
+        centered: np.ndarray = matrix.to_numpy() - matrix.to_numpy().mean(axis=0)
+        assert np.allclose(scores, centered @ loadings)
+        assert loadings[int(np.argmax(np.abs(loadings)))] >= 0.0
+
+    def test_constant_matrix_returns_zero_loadings(self) -> None:
+        matrix: pd.DataFrame = pd.DataFrame({"m": [5.0, 5.0, 5.0]})
+        scores, ratio, loadings = FirstPrincipalComponent(
+            matrix, standardize=False, return_loadings=True
+        )
+        assert ratio == 0.0
+        assert np.all(scores == 0.0)
+        assert np.all(loadings == 0.0)
 
 
 class TestBuildPcaFigure:

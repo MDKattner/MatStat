@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Literal, overload
 
 import numpy as np
 import pandas as pd
@@ -1286,6 +1286,7 @@ def GenerateMoveMatrix(
     df_in: pd.DataFrame,
     move_column: str,
     min_occurrences: int = 3,
+    group_key: list[Any] | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Build a move-count matrix from a DataFrame of sequence rows.
 
@@ -1293,16 +1294,22 @@ def GenerateMoveMatrix(
     string, e.g. "video.mkv:3"); columns are the kept moves and entries are
     int16 counts of how many times that move appears in that row's move list
     (duplicates within one sequence count). The literal move "nothing" is
-    dropped before counting, and moves appearing fewer than
-    ``min_occurrences`` total times are dropped (the rare-move PCA mitigation).
+    dropped before counting, and moves appearing in fewer than
+    ``min_occurrences`` distinct rows are dropped (the rare-move PCA
+    mitigation). When ``group_key`` is given, filtering counts distinct groups
+    instead of distinct rows — the "matches" PCA layout passes (wrestler,
+    video) keys so a move must appear in enough matches to survive.
 
     Args:
         df_in: The sequence DataFrame; ``df_in[move_column]`` holds lists of
             move names (from MakeFormattedDataFrame).
         move_column: The column holding the move lists (COL_TEAM_MOVES or
             COL_OPPONENT_MOVES).
-        min_occurrences: Minimum number of total occurrences a move must have
-            to be kept as a matrix column.
+        min_occurrences: Minimum number of distinct rows (or groups) a move
+            must appear in to be kept as a matrix column.
+        group_key: Optional group labels aligned by row position (index i of
+            ``df_in`` maps to group_key[i]); when provided the rare-move filter
+            counts distinct group values per move instead of distinct rows.
 
     Returns:
         A (matrix, kept_moves) tuple: the int16 move-count matrix (index = the
@@ -1315,7 +1322,14 @@ def GenerateMoveMatrix(
     tmp: pd.DataFrame = df_in.reset_index(drop=True)
     exploded: pd.Series = tmp[move_column].explode().dropna()
     exploded = exploded[exploded != "nothing"]
-    counts: pd.Series = exploded.value_counts()
+    presence: pd.DataFrame = (
+        pd.get_dummies(exploded).groupby(level=0).max().reindex(index=unique_index, fill_value=0)
+    )
+    if group_key is None:
+        counts: pd.Series = presence.sum(axis=0)
+    else:
+        grouped_index: pd.Index = pd.Index(group_key)[presence.index.to_numpy()]
+        counts = presence.groupby(grouped_index).max().sum(axis=0)
     kept_moves: list[str] = sorted(
         move for move, count in counts.items() if count >= min_occurrences
     )
@@ -1331,10 +1345,30 @@ def GenerateMoveMatrix(
     return (matrix, kept_moves)
 
 
+@overload
 def FirstPrincipalComponent(
     matrix: pd.DataFrame,
     standardize: bool,
-) -> tuple[np.ndarray, float]:
+    row_normalize: bool = ...,
+    return_loadings: Literal[False] = ...,
+) -> tuple[np.ndarray, float]: ...
+
+
+@overload
+def FirstPrincipalComponent(
+    matrix: pd.DataFrame,
+    standardize: bool,
+    row_normalize: bool = ...,
+    return_loadings: Literal[True] = ...,
+) -> tuple[np.ndarray, float, np.ndarray]: ...
+
+
+def FirstPrincipalComponent(
+    matrix: pd.DataFrame,
+    standardize: bool,
+    row_normalize: bool = False,
+    return_loadings: bool = False,
+) -> tuple[np.ndarray, float] | tuple[np.ndarray, float, np.ndarray]:
     """Compute the first principal component scores and explained variance.
 
     Columns are mean-centered before the SVD. When ``standardize`` is True each
@@ -1342,21 +1376,35 @@ def FirstPrincipalComponent(
     columns are left as-is by dividing by 1.0). Standardization is only used for
     the "matches" layout: the "sequences" layout runs covariance PCA (no
     z-scoring) because column z-scoring on sparse near-binary rows over-amplifies
-    rare moves.
+    rare moves. When ``row_normalize`` is True each row is divided by its own
+    sum (zero-sum rows are left as-is) so rows are compared on move mix rather
+    than tagging volume. The component's sign is fixed so the largest-magnitude
+    loading is positive, making scores reproducible across library versions.
 
     Args:
         matrix: The move-count matrix (rows = sequences or matches).
         standardize: Whether to z-score columns before the SVD.
+        row_normalize: Whether to divide each row by its sum before centering.
+        return_loadings: Whether to also return the component's loadings
+            (the first right singular vector).
 
     Returns:
         A (scores, explained_variance_ratio) tuple: scores are the projections
         onto the first principal component (U[:, 0] * s[0], float64) and the
-        ratio is s[0]**2 / sum(s**2). If the total variance is zero, scores are
-        all zeros and the ratio is 0.0.
+        ratio is s[0]**2 / sum(s**2). If ``return_loadings`` is True the
+        loadings vector is returned as a third element. If the total variance is
+        zero, scores are all zeros and the ratio is 0.0.
     """
     x: np.ndarray = matrix.to_numpy(dtype=float)
     if x.shape[0] == 0 or x.shape[1] == 0:
-        return (np.zeros(x.shape[0], dtype=np.float64), 0.0)
+        zeros: np.ndarray = np.zeros(x.shape[0], dtype=np.float64)
+        if return_loadings:
+            return (zeros, 0.0, np.zeros(x.shape[1], dtype=np.float64))
+        return (zeros, 0.0)
+    if row_normalize:
+        row_sums: np.ndarray = x.sum(axis=1)
+        row_sums[row_sums == 0.0] = 1.0
+        x = x / row_sums[:, None]
     x = x - x.mean(axis=0)
     if standardize:
         col_std: np.ndarray = x.std(axis=0)
@@ -1368,8 +1416,17 @@ def FirstPrincipalComponent(
     u, s, vt = np.linalg.svd(x, full_matrices=False)
     total_variance: float = float(np.sum(s**2))
     if total_variance == 0.0:
-        return (np.zeros(x.shape[0], dtype=np.float64), 0.0)
+        zeros = np.zeros(x.shape[0], dtype=np.float64)
+        if return_loadings:
+            return (zeros, 0.0, np.zeros(x.shape[1], dtype=np.float64))
+        return (zeros, 0.0)
     scores: np.ndarray = u[:, 0] * s[0]
+    loadings: np.ndarray = vt[0]
+    if loadings[np.argmax(np.abs(loadings))] < 0:
+        scores = -scores
+        loadings = -loadings
     ratio: float = float(s[0] ** 2 / total_variance)
+    if return_loadings:
+        return (scores, ratio, loadings)
     return (scores, ratio)
 
