@@ -95,13 +95,13 @@ class TestRunTeamEvalJob:
         ws = openpyxl.load_workbook(tmp_path / "eval" / "Team_Stats.xlsx")["Alice"]
         assert ws["A1"].value == "Initiation"
         assert ws["A1"].font.bold is True
-        assert ws["A6"].value == "Defense"
-        assert ws["I6"].value == "Offense"
-        assert ws["Q6"].value == "Raw Data"
+        assert ws["A7"].value == "Defense"
+        assert ws["I7"].value == "Offense"
+        assert ws["Q7"].value == "Raw Data"
         assert ws["A2"].value == "Segment"
-        assert ws["A7"].value == "Move"
-        assert ws["I7"].value == "Move"
-        assert ws["Q7"].value == "Origin"
+        assert ws["A8"].value == "Move"
+        assert ws["I8"].value == "Move"
+        assert ws["Q8"].value == "Origin"
 
     def test_initiation_segments_in_report(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
@@ -119,11 +119,19 @@ class TestRunTeamEvalJob:
         assert ws["A3"].value == "All"
         assert ws["A4"].value == "Wins"
         assert ws["A5"].value == "Losses"
-        # W row is attacking (count 1); L and unrecorded rows are not.
+        assert ws["A6"].value == "Unrecorded"
+        # W row is attacking (count 1); L row is not. "Sequences" is column B,
+        # so "Attack Count" is column C.
         assert ws["B4"].value == 1
-        assert ws["B5"].value == 0
+        assert ws["B5"].value == 1
+        assert ws["B6"].value == 1
+        assert ws["C4"].value == 1
+        assert ws["C5"].value == 0
         # All includes all three rows, two of which attack.
-        assert ws["B3"].value == 2
+        assert ws["B3"].value == 3
+        assert ws["C3"].value == 2
+        # The unrecorded row is attacking (count 1).
+        assert ws["C6"].value == 1
 
     def test_per_file_error_keeps_others(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)

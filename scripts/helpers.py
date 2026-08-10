@@ -1082,8 +1082,47 @@ def PinCount(df_in: pd.DataFrame, column: str) -> int:
     return pins_count
 
 
+def _MoveAttribution(
+    df_in: pd.DataFrame, move_column: str
+) -> dict[str, dict[str, float | int]]:
+    """Accumulate per-move occurrence counts and attributed net points.
+
+    Each sequence's net and adjusted net points are distributed across the
+    moves it lists: a move appearing k times in a sequence with n non-"nothing"
+    moves receives k / n of that sequence's points. The "nothing" sentinel
+    move is excluded entirely, so it never appears in move-level tables.
+
+    Args:
+        df_in: The input DataFrame.
+        move_column: The column containing moves to analyse.
+
+    Returns:
+        A dict mapping each move to {"count", "net", "adjusted"}.
+    """
+    out: dict[str, dict[str, float | int]] = {}
+    for _, row in df_in.iterrows():
+        moves: list[str] = [move for move in row[move_column] if move != "nothing"]
+        if not moves:
+            continue
+        weight: float = 1.0 / len(moves)
+        net: float = float(row[COL_NET_POINTS])
+        adjusted: float = float(row[COL_ADJUSTED_NET_POINTS])
+        for move in moves:
+            entry: dict[str, float | int] = out.setdefault(
+                move, {"count": 0, "net": 0.0, "adjusted": 0.0}
+            )
+            entry["count"] = int(entry["count"]) + 1
+            entry["net"] = float(entry["net"]) + net * weight
+            entry["adjusted"] = float(entry["adjusted"]) + adjusted * weight
+    return out
+
+
 def _GenerateMoveDF(df_in: pd.DataFrame, move_column: str) -> pd.DataFrame:
     """Shared implementation for GenerateOffenseDF and GenerateDefenseDF.
+
+    Points are attributed per move occurrence (see _MoveAttribution), so the
+    net/adjusted sums and their averages share a common occurrence
+    denominator.
 
     Args:
         df_in: The input DataFrame.
@@ -1093,25 +1132,33 @@ def _GenerateMoveDF(df_in: pd.DataFrame, move_column: str) -> pd.DataFrame:
         A DataFrame with move-level statistics.
     """
     header: list[str] = [
-        "Count",
+        "Count (occ.)",
+        "Net Points",
         "Adjusted Net Pts",
+        "Average Net Points",
         "Average Adjusted Net Points",
         "Number of Pins",
         "Times Pinned"
     ]
-    move_list: list[tuple[str, int]] = list(MoveCounts(df_in, move_column).items())
-    move_list.sort(key=lambda x: x[1], reverse=True)
+    attribution: dict[str, dict[str, float | int]] = _MoveAttribution(df_in, move_column)
+    move_list: list[tuple[str, dict[str, float | int]]] = sorted(
+        attribution.items(), key=lambda item: int(item[1]["count"]), reverse=True
+    )
     df_dict: dict[str, list[int | float]] = {}
 
-    for (move, count) in move_list:
+    for (move, agg) in move_list:
         move_frame: pd.DataFrame = df_in.apply(
             _MoveFilter(move, move_column), axis=1, result_type='broadcast'
         ).query(f"`{COL_START_TIME}` >= 0")
-        net_pt_sum: int = int(move_frame[COL_ADJUSTED_NET_POINTS].sum())
+        count: int = int(agg["count"])
+        net_pt_sum: float = float(agg["net"])
+        adjusted_sum: float = float(agg["adjusted"])
         df_dict[move] = [
             count,
             net_pt_sum,
+            adjusted_sum,
             net_pt_sum / count,
+            adjusted_sum / count,
             PinCount(move_frame, COL_TEAM_SCORES),
             PinCount(move_frame, COL_OPPONENT_SCORES),
         ]
@@ -1162,10 +1209,19 @@ def _InitiationStats(df_in: pd.DataFrame) -> dict[str, float | int]:
     net_defend: int = int(defend_df[COL_ADJUSTED_NET_POINTS].sum()) if len(defend_df) > 0 else 0
     avg_attack: float = float(attack_df[COL_ADJUSTED_NET_POINTS].mean()) if attack_count > 0 else 0.0
     avg_defend: float = float(defend_df[COL_ADJUSTED_NET_POINTS].mean()) if len(defend_df) > 0 else 0.0
+    raw_net_attack: int = int(attack_df[COL_NET_POINTS].sum()) if attack_count > 0 else 0
+    raw_net_defend: int = int(defend_df[COL_NET_POINTS].sum()) if len(defend_df) > 0 else 0
+    raw_avg_attack: float = float(attack_df[COL_NET_POINTS].mean()) if attack_count > 0 else 0.0
+    raw_avg_defend: float = float(defend_df[COL_NET_POINTS].mean()) if len(defend_df) > 0 else 0.0
     return {
+        "Sequences": total_count,
         "Attack Count": attack_count,
         "Defense Count": len(defend_df),
         "Attacks / Sequences": attack_ratio,
+        "Net Points Attacking": raw_net_attack,
+        "Net Points Defending": raw_net_defend,
+        "Average Net Points Attacking": raw_avg_attack,
+        "Average Net Points Defending": raw_avg_defend,
         "Adjusted Net Points Attacking": net_attack,
         "Adjusted Net Points Defending": net_defend,
         "Average Adjusted Net Points Attacking": avg_attack,
@@ -1194,25 +1250,30 @@ def GenerateInitiationDFBySegment(df_in: pd.DataFrame) -> pd.DataFrame:
     """Creates an initiation DataFrame split by match result segment.
 
     Rows are bucketed by COL_MATCH_RESULT ("W" / "L"); rows without a result
-    ("" or a legacy CSV without the column) contribute only to the All row.
+    ("" or a legacy CSV without the column) contribute only to the All and
+    Unrecorded rows.
 
     Args:
         df_in: The DataFrame that stats are being extracted from
 
     Returns:
-        A 3-row DataFrame indexed by ["All", "Wins", "Losses"] with the same
-        columns as GenerateInitiationDF
+        A 4-row DataFrame indexed by ["All", "Wins", "Losses", "Unrecorded"]
+        with the same columns as GenerateInitiationDF
     """
     if COL_MATCH_RESULT in df_in.columns:
-        wins_df: pd.DataFrame = df_in[df_in[COL_MATCH_RESULT] == "W"]
-        losses_df: pd.DataFrame = df_in[df_in[COL_MATCH_RESULT] == "L"]
+        result_col: pd.Series = df_in[COL_MATCH_RESULT]
+        wins_df: pd.DataFrame = df_in[result_col == "W"]
+        losses_df: pd.DataFrame = df_in[result_col == "L"]
+        unrecorded_df: pd.DataFrame = df_in[~result_col.isin(["W", "L"])]
     else:
         wins_df = df_in.iloc[0:0]
         losses_df = df_in.iloc[0:0]
+        unrecorded_df = df_in
     segments: dict[str, pd.DataFrame] = {
         "All": df_in,
         "Wins": wins_df,
         "Losses": losses_df,
+        "Unrecorded": unrecorded_df,
     }
     df_out: pd.DataFrame = pd.DataFrame.from_dict(
         {segment: _InitiationStats(subset) for segment, subset in segments.items()},

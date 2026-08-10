@@ -28,9 +28,9 @@ from scripts.web.jobs import JobContext
 
 _SECTION_LABELS: list[tuple[int, int, str]] = [
     (0, 0, "Initiation"),
-    (5, 0, "Defense"),
-    (5, 8, "Offense"),
-    (5, 16, "Raw Data"),
+    (6, 0, "Defense"),
+    (6, 8, "Offense"),
+    (6, 16, "Raw Data"),
 ]
 
 
@@ -97,13 +97,13 @@ def run_team_eval_job(ctx: JobContext) -> dict[str, Any]:
                         writer, sheet_name=sheet_name, startrow=1
                     )
                     GenerateDefenseDF(raw_df).to_excel(
-                        writer, sheet_name=sheet_name, startrow=6
+                        writer, sheet_name=sheet_name, startrow=7
                     )
                     GenerateOffenseDF(raw_df).to_excel(
-                        writer, sheet_name=sheet_name, startrow=6, startcol=8
+                        writer, sheet_name=sheet_name, startrow=7, startcol=8
                     )
                     raw_df.to_excel(
-                        writer, sheet_name=sheet_name, startrow=6, startcol=16
+                        writer, sheet_name=sheet_name, startrow=7, startcol=16
                     )
                     _write_section_labels(writer, sheet_name)
                     processed.append(sheet_name)

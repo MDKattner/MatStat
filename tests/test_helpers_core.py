@@ -187,8 +187,10 @@ class TestGenerateMoveDF:
 
     def test_generates_stats_dataframe(self, sample_df: pd.DataFrame) -> None:
         df = _GenerateMoveDF(sample_df, COL_TEAM_MOVES)
-        assert "Count" in df.columns
+        assert "Count (occ.)" in df.columns
+        assert "Net Points" in df.columns
         assert "Adjusted Net Pts" in df.columns
+        assert "Average Net Points" in df.columns
         assert "Average Adjusted Net Points" in df.columns
         assert "Number of Pins" in df.columns
         assert "Times Pinned" in df.columns
@@ -198,12 +200,12 @@ class TestGenerateMoveDF:
     def test_offense_df(self, sample_df: pd.DataFrame) -> None:
         df = GenerateOffenseDF(sample_df)
         assert len(df) > 0
-        assert "Count" in df.columns
+        assert "Count (occ.)" in df.columns
 
     def test_defense_df(self, sample_df: pd.DataFrame) -> None:
         df = GenerateDefenseDF(sample_df)
         assert len(df) > 0
-        assert "Count" in df.columns
+        assert "Count (occ.)" in df.columns
 
     def test_empty_dataframe(self, empty_df: pd.DataFrame) -> None:
         df = _GenerateMoveDF(empty_df, COL_TEAM_MOVES)
@@ -221,9 +223,46 @@ class TestGenerateMoveDF:
             COL_ADJUSTED_NET_POINTS: [3, -1],
         }, index=pd.Index(["v.mkv:1", "v.mkv:2"], name="Origin"))
         result = _GenerateMoveDF(df, COL_TEAM_MOVES)
-        assert result.loc["double", "Count"] == 2
+        assert result.loc["double", "Count (occ.)"] == 2
+        assert result.loc["double", "Net Points"] == 2
         assert result.loc["double", "Adjusted Net Pts"] == 2
+        assert result.loc["double", "Average Net Points"] == 1.0
         assert result.loc["double", "Average Adjusted Net Points"] == 1.0
+
+    def test_duplicate_move_in_sequence_uses_occurrence_denominator(self) -> None:
+        df = pd.DataFrame({
+            COL_START_TIME: [0, 10],
+            COL_END_TIME: [10, 20],
+            COL_TEAM_MOVES: [["double", "double"], ["double"]],
+            COL_OPPONENT_MOVES: [[], []],
+            COL_TEAM_SCORES: [["T"], []],
+            COL_OPPONENT_SCORES: [[], ["E"]],
+            COL_NET_POINTS: [10, 4],
+            COL_ADJUSTED_NET_POINTS: [10, 4],
+        }, index=pd.Index(["v.mkv:1", "v.mkv:2"], name="Origin"))
+        result = _GenerateMoveDF(df, COL_TEAM_MOVES)
+        # Sequence 1 has 2 occurrences of "double" so its 10 points are split
+        # 5/5 across the occurrences; sequence 2 contributes 4 to its one
+        # occurrence. Average = (5 + 5 + 4) / 3 = 4.667 (not (10 + 4) / 2).
+        assert result.loc["double", "Count (occ.)"] == 3
+        assert result.loc["double", "Net Points"] == 14
+        assert result.loc["double", "Average Net Points"] == pytest.approx(14 / 3)
+
+    def test_nothing_move_is_dropped(self) -> None:
+        df = pd.DataFrame({
+            COL_START_TIME: [0],
+            COL_END_TIME: [10],
+            COL_TEAM_MOVES: [["nothing", "double"]],
+            COL_OPPONENT_MOVES: [[]],
+            COL_TEAM_SCORES: [["T"]],
+            COL_OPPONENT_SCORES: [[]],
+            COL_NET_POINTS: [3],
+            COL_ADJUSTED_NET_POINTS: [3],
+        }, index=pd.Index(["v.mkv:1"], name="Origin"))
+        result = _GenerateMoveDF(df, COL_TEAM_MOVES)
+        assert "nothing" not in result.index
+        assert result.loc["double", "Count (occ.)"] == 1
+        assert result.loc["double", "Net Points"] == 3.0
 
 
 class TestGenerateInitiationDF:
@@ -251,6 +290,12 @@ class TestGenerateInitiationDF:
         df = GenerateInitiationDF(sample_df)
         assert df["Adjusted Net Points Attacking"].iloc[0] == 7  # 4 + 3 + 0
         assert df["Adjusted Net Points Defending"].iloc[0] == -5  # -3 + -2 + 0
+        # sample_df has no pins, so raw net equals adjusted net.
+        assert df["Net Points Attacking"].iloc[0] == 7
+        assert df["Net Points Defending"].iloc[0] == -5
+        assert df["Average Net Points Attacking"].iloc[0] == pytest.approx(7 / 3)
+        assert df["Average Net Points Defending"].iloc[0] == pytest.approx(-5 / 3)
+        assert df["Sequences"].iloc[0] == 6
 
     def test_index_named(self, sample_df: pd.DataFrame) -> None:
         df = GenerateInitiationDF(sample_df)
@@ -270,7 +315,7 @@ class TestGenerateInitiationDFBySegment:
         df = sample_df.copy()
         df[COL_MATCH_RESULT] = ["W", "W", "L", "L", "", ""]
         out = GenerateInitiationDFBySegment(df)
-        assert list(out.index) == ["All", "Wins", "Losses"]
+        assert list(out.index) == ["All", "Wins", "Losses", "Unrecorded"]
         assert out.index.name == "Segment"
         # W rows: 0 (attack, +4) and 1 (defend, -3)
         assert out.loc["Wins", "Attack Count"] == 1
@@ -288,6 +333,11 @@ class TestGenerateInitiationDFBySegment:
         assert out.loc["All", "Adjusted Net Points Defending"] == full[
             "Adjusted Net Points Defending"
         ].iloc[0]
+        # Sequences column reports the per-segment row counts
+        assert out.loc["All", "Sequences"] == 6
+        assert out.loc["Wins", "Sequences"] == 2
+        assert out.loc["Losses", "Sequences"] == 2
+        assert out.loc["Unrecorded", "Sequences"] == 2
 
     def test_unrecorded_rows_only_in_all(self, sample_df: pd.DataFrame) -> None:
         df = sample_df.copy()
@@ -302,6 +352,9 @@ class TestGenerateInitiationDFBySegment:
         # ...while All includes all six rows.
         assert out.loc["All", "Attack Count"] == 3
         assert out.loc["All", "Defense Count"] == 3
+        # The two unrecorded rows land in the Unrecorded segment.
+        assert out.loc["Unrecorded", "Attack Count"] == 1
+        assert out.loc["Unrecorded", "Defense Count"] == 1
 
     def test_missing_result_column(self, sample_df: pd.DataFrame) -> None:
         out = GenerateInitiationDFBySegment(sample_df)
@@ -311,10 +364,11 @@ class TestGenerateInitiationDFBySegment:
         assert out.loc["Losses", "Attack Count"] == 0
         assert out.loc["Wins", "Defense Count"] == 0
         assert out.loc["Losses", "Defense Count"] == 0
+        assert out.loc["Unrecorded", "Sequences"] == 6
 
     def test_empty_dataframe(self, empty_df: pd.DataFrame) -> None:
         out = GenerateInitiationDFBySegment(empty_df)
-        assert list(out.index) == ["All", "Wins", "Losses"]
+        assert list(out.index) == ["All", "Wins", "Losses", "Unrecorded"]
         assert out.index.name == "Segment"
         assert (out == 0).all().all()
 
