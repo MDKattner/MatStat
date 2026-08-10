@@ -205,7 +205,8 @@ class TestRunRetagJob:
             team_scores=["T"], op_scores=["E"],
         )
         result: dict[str, Any] = audit.run_retag_job(
-            FakeContext(), "match.mkv", "Alice", [seq], match_date="2026-08-01"
+            FakeContext(), "match.mkv", "Alice", [seq], match_date="2026-08-01",
+            recompile=True,
         )
 
         assert result["output"] == "match.mkv"
@@ -218,6 +219,32 @@ class TestRunRetagJob:
         assert "A,collar tie,double,sprawl,T,E" in captured["metadata"]
         assert "matchdate=2026-08-01" in captured["metadata"]
         assert result["compile"] is not None
+
+    def test_retag_default_skips_recompile(self, tmp_path, monkeypatch) -> None:
+        dirs = _redirect_dirs(monkeypatch, tmp_path)
+        (dirs["taged"] / "match.mkv").write_bytes(b"old")
+        monkeypatch.setattr(audit, "GetVidDuration", lambda p: 60)
+
+        def fake_ffmpeg(cmd, description="", on_progress=None, cancel_event=None) -> FfmpegResult:
+            Path(cmd[-1]).parent.mkdir(parents=True, exist_ok=True)
+            Path(cmd[-1]).write_bytes(b"new")
+            return FfmpegResult(success=True, message="ok")
+
+        monkeypatch.setattr(audit, "run_ffmpeg", fake_ffmpeg)
+
+        def unexpected_recompile(*args, **kwargs) -> None:
+            raise AssertionError("stats recompile should not run by default")
+
+        monkeypatch.setattr(stats, "run_compile_stats_job", unexpected_recompile)
+
+        seq: TagSequence = TagSequence(start_time=0, end_time=6)
+        result: dict[str, Any] = audit.run_retag_job(
+            FakeContext(), "match.mkv", "Alice", [seq]
+        )
+
+        assert result["output"] == "match.mkv"
+        assert result["compile"] is None
+        assert not (dirs["csv"] / "Alice.csv").exists()
 
     def test_recompile_skipped_without_roster(self, tmp_path, monkeypatch) -> None:
         dirs = _redirect_dirs(monkeypatch, tmp_path)
@@ -234,7 +261,7 @@ class TestRunRetagJob:
 
         seq: TagSequence = TagSequence(start_time=0, end_time=6)
         result: dict[str, Any] = audit.run_retag_job(
-            FakeContext(), "match.mkv", "Alice", [seq]
+            FakeContext(), "match.mkv", "Alice", [seq], recompile=True
         )
 
         assert result["output"] == "match.mkv"
@@ -353,6 +380,7 @@ class TestAuditRoutes:
             "wrestler": "Alice",
             "match_date": "2026-08-01",
             "sequences": [{"start_time": 0, "end_time": 6}],
+            "recompile": True,
         }
         resp = client.post("/api/audit/match.mkv/retag", json=payload)
         assert resp.status_code == 200
@@ -364,6 +392,36 @@ class TestAuditRoutes:
         assert job["result"]["output"] == "match.mkv"
         assert job["result"]["compile"]["videos_processed"] == 1
         assert (dirs["taged"] / "match.mkv").read_bytes() == b"new"
+
+    def test_retag_route_default_skips_recompile(self, client, tmp_path, monkeypatch) -> None:
+        dirs = _redirect_dirs(monkeypatch, tmp_path)
+        (dirs["taged"] / "match.mkv").write_bytes(b"old")
+        monkeypatch.setattr(audit, "GetVidDuration", lambda p: 60)
+
+        def fake_ffmpeg(cmd, description="", on_progress=None, cancel_event=None) -> FfmpegResult:
+            Path(cmd[-1]).parent.mkdir(parents=True, exist_ok=True)
+            Path(cmd[-1]).write_bytes(b"new")
+            return FfmpegResult(success=True, message="ok")
+
+        monkeypatch.setattr(audit, "run_ffmpeg", fake_ffmpeg)
+
+        def unexpected_recompile(*args, **kwargs) -> None:
+            raise AssertionError("stats recompile should not run by default")
+
+        monkeypatch.setattr(stats, "run_compile_stats_job", unexpected_recompile)
+
+        payload: dict[str, Any] = {
+            "wrestler": "Alice",
+            "sequences": [{"start_time": 0, "end_time": 6}],
+        }
+        resp = client.post("/api/audit/match.mkv/retag", json=payload)
+        assert resp.status_code == 200
+
+        job: dict[str, Any] = _wait_for_job(client, resp.json()["job_id"])
+        assert job["status"] == "done"
+        assert job["result"]["output"] == "match.mkv"
+        assert job["result"]["compile"] is None
+        assert not (dirs["csv"] / "Alice.csv").exists()
 
     def test_retag_missing_404(self, client) -> None:
         resp = client.post(

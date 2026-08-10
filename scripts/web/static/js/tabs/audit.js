@@ -179,6 +179,11 @@ export function mountAudit(root) {
   const updateBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Update Sequence", hidden: "" });
   const deleteBtn = el("button", { class: "btn btn-ghost danger", type: "button", text: "Delete Sequence", hidden: "" });
   const retagBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Re-log Match", disabled: "" });
+  const recompileCheck = el("input", { type: "checkbox" });
+  const recompileRow = el("label", { class: "recompile-row" }, [
+    recompileCheck,
+    el("span", { text: "Re-tabulate all sequences after re-logging" }),
+  ]);
   const progress = el("progress", { class: "progress", max: "100", value: "0", hidden: "" });
   const statusLabel = el("p", { class: "status-label", text: "Select a logged video to review." });
 
@@ -492,6 +497,7 @@ export function mountAudit(root) {
         match_result: matchResultValue,
         match_date: matchDateInput.value,
         sequences: state.data.sequences,
+        recompile: recompileCheck.checked,
       };
       const { ok, body } = await fetchJson(`/api/audit/${encodeURIComponent(name)}/retag`, {
         method: "POST",
@@ -504,8 +510,9 @@ export function mountAudit(root) {
         onProgress: (p) => { progress.value = p; },
         onStatus: setStatus,
       });
-      setStatus(`Re-logged: ${job.result.output} (stats recompiled)`);
-      showToast("Match re-logged and stats recompiled.", "success");
+      const recompiled = recompileCheck.checked;
+      setStatus(`Re-logged: ${job.result.output}${recompiled ? " (stats recompiled)" : " (run Tabulate to refresh stats)"}`);
+      showToast(recompiled ? "Match re-logged and stats recompiled." : "Match re-logged.", "success");
       state.data = null;
       opponentList.clear();
       oppTie.clear();
@@ -606,6 +613,7 @@ export function mountAudit(root) {
     el("legend", { text: "Actions" }),
     el("div", { class: "row" }, [addBtn, updateBtn, deleteBtn]),
     el("div", { class: "row" }, [retagBtn]),
+    recompileRow,
     progress,
     statusLabel,
   ]);

@@ -39,6 +39,7 @@ class RetagRequest(BaseModel):
     match_result: str = ""
     match_date: str = ""
     sequences: list[TagSequence] = Field(default_factory=list)
+    recompile: bool = False
 
 
 def _sequence_to_dict(chap: ChapterSequence) -> dict[str, Any]:
@@ -118,12 +119,14 @@ def run_retag_job(
     opponent: str = "",
     match_result: str = "",
     match_date: str = "",
+    recompile: bool = False,
 ) -> dict[str, Any]:
     """Re-embed chapter metadata into an already-tagged video, then recompile.
 
     The tagged file is re-muxed with new metadata (stream copy, so no quality
-    loss); the old chapters are replaced in place. After the re-mux succeeds,
-    compile stats runs over every tagged video so the CSVs reflect the edits.
+    loss); the old chapters are replaced in place. When ``recompile`` is True,
+    compile stats runs over every tagged video so the CSVs reflect the edits;
+    otherwise tabulation is deferred to the Tabulate & Report tab.
 
     Args:
         ctx: Job context for progress reporting.
@@ -133,11 +136,13 @@ def run_retag_job(
         opponent: The opponent's name for dual-wrestler mode, else "".
         match_result: The tagged wrestler's result ("", "W", or "L").
         match_date: The match date ("YYYY-MM-DD" or "").
+        recompile: Whether to re-tabulate all sequences after re-tagging.
 
     Returns:
         A dict describing the result, e.g.
         ``{"output": "match.mkv", "compile": {...}}`` (``compile`` is None when
-        no roster is configured to recompile against).
+        recompiling is skipped — either not requested or no roster is
+        configured).
 
     Raises:
         ValueError: If the payload is invalid (missing name/sequences, bad times, overlaps).
@@ -198,15 +203,17 @@ def run_retag_job(
 
     tmp_output.replace(output_path)
 
-    ctx.report(90, "Recompiling stats...")
-    wrestler_names: list[str] = []
-    try:
-        wrestler_names = configs.load_wrestler_names()
-    except Exception as e:
-        logging.warning(f"Could not load wrestler roster for recompile: {e}")
-    compile_result: dict[str, Any] | None = (
-        stats.run_compile_stats_job(ctx, wrestler_names) if wrestler_names else None
-    )
+    compile_result: dict[str, Any] | None = None
+    if recompile:
+        ctx.report(90, "Recompiling stats...")
+        wrestler_names: list[str] = []
+        try:
+            wrestler_names = configs.load_wrestler_names()
+        except Exception as e:
+            logging.warning(f"Could not load wrestler roster for recompile: {e}")
+        compile_result = (
+            stats.run_compile_stats_job(ctx, wrestler_names) if wrestler_names else None
+        )
 
     ctx.report(100, f"Re-tagged {video}")
     logging.info(f"Re-tagged '{video}' for {wrestler_clean} -> {output_path}")

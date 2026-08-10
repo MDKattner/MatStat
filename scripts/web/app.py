@@ -451,7 +451,7 @@ async def audit_retag(file_name: str, req: audit.RetagRequest) -> dict[str, Any]
         return audit.run_retag_job(
             ctx, video, req.wrestler, req.sequences,
             opponent=req.opponent, match_result=req.match_result,
-            match_date=req.match_date,
+            match_date=req.match_date, recompile=req.recompile,
         )
 
     job_id: str = job_manager.submit(

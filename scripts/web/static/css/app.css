@@ -634,6 +634,15 @@ fieldset.tag-card { margin: 0; }
   gap: 8px;
 }
 
+.recompile-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
 details.tag-card summary {
   cursor: pointer;
   list-style: none;
