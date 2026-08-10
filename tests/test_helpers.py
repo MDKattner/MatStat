@@ -179,3 +179,31 @@ class TestHelpers:
         from scripts.helpers import SwapPerspectiveCSV
 
         assert SwapPerspectiveCSV("bad,row") == "bad,row"
+
+    def test_swap_perspective_csv_keeps_match_date(self) -> None:
+        from scripts.helpers import SwapPerspectiveCSV
+
+        data: str = (
+            "a.mkv:1,0,6,A,collar tie:underhook,double,nothing,T,None,3,3,W,2026-08-01\n"
+            "a.mkv:2,6,12,D,standing:front headlock,sprawl,single,E,None,-1,-1,L,"
+        )
+        lines: list[str] = SwapPerspectiveCSV(data).splitlines()
+        assert lines[0] == (
+            "a.mkv:1,0,6,D,underhook:collar tie,nothing,double,None,T,-3,-3,L,2026-08-01"
+        )
+        # An empty match date is not re-appended, so the row stays 12 fields.
+        assert lines[1] == (
+            "a.mkv:2,6,12,A,front headlock:standing,single,sprawl,None,E,1,1,W"
+        )
+
+    def test_validate_match_date(self) -> None:
+        from scripts.helpers import ValidateMatchDate
+
+        assert ValidateMatchDate("") == ""
+        assert ValidateMatchDate("  ") == ""
+        assert ValidateMatchDate("2026-08-01") == "2026-08-01"
+        assert ValidateMatchDate(" 2026-08-01 ") == "2026-08-01"
+        with pytest.raises(ValueError, match="match date"):
+            ValidateMatchDate("08/01/2026")
+        with pytest.raises(ValueError, match="match date"):
+            ValidateMatchDate("2026-8-1")

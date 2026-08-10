@@ -59,10 +59,12 @@ def _redirect_dirs(monkeypatch, tmp_path: Path) -> dict[str, Path]:
     return dirs
 
 
-def _mock_make_name_and_csv(monkeypatch, table: dict[str, tuple[str, str]]) -> None:
-    """Stub audit.MakeNameAndCSV with a filename -> (name, data) table."""
+def _mock_make_name_and_csv(
+    monkeypatch, table: dict[str, tuple[str, str, str]]
+) -> None:
+    """Stub audit.MakeNameAndCSV with a filename -> (name, match_date, data) table."""
 
-    def fake(path: Path) -> tuple[str, str]:
+    def fake(path: Path) -> tuple[str, str, str]:
         key: str = Path(path).name
         if key not in table:
             raise RuntimeError(f"no entry for {key}")
@@ -89,7 +91,7 @@ class TestListTaggedVideos:
     def test_lists_videos_with_sequences(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / "match.mkv").write_bytes(b"old")
-        _mock_make_name_and_csv(monkeypatch, {"match.mkv": ("Alice", CSV_DATA)})
+        _mock_make_name_and_csv(monkeypatch, {"match.mkv": ("Alice", "2026-08-01", CSV_DATA)})
 
         videos: list[dict[str, Any]] = audit.list_tagged_videos()
 
@@ -98,6 +100,7 @@ class TestListTaggedVideos:
         assert videos[0]["wrestler"] == "Alice"
         assert videos[0]["opponent"] == ""
         assert videos[0]["result"] == ""
+        assert videos[0]["match_date"] == "2026-08-01"
         assert videos[0]["sequences"] == [
             {
                 "start_time": 0,
@@ -131,7 +134,7 @@ class TestListTaggedVideos:
             'dual.mkv:2,6,12,D,standing:front headlock,sprawl,single,None,E'
         )
         _mock_make_name_and_csv(
-            monkeypatch, {"dual.mkv": ("Alice (W) / Bob Smith", dual_data)}
+            monkeypatch, {"dual.mkv": ("Alice (W) / Bob Smith", "2026-08-01", dual_data)}
         )
 
         videos: list[dict[str, Any]] = audit.list_tagged_videos()
@@ -140,6 +143,7 @@ class TestListTaggedVideos:
         assert videos[0]["wrestler"] == "Alice"
         assert videos[0]["opponent"] == "Bob Smith"
         assert videos[0]["result"] == "W"
+        assert videos[0]["match_date"] == "2026-08-01"
         assert videos[0]["sequences"][0]["tie_up"] == "collar tie"
         assert videos[0]["sequences"][0]["opp_tie"] == "underhook"
         assert videos[0]["sequences"][1]["tie_up"] == "standing"
@@ -149,7 +153,7 @@ class TestListTaggedVideos:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / ".hidden").write_bytes(b"x")
 
-        def unexpected(path: Path) -> tuple[str, str]:
+        def unexpected(path: Path) -> tuple[str, str, str]:
             raise AssertionError(f"Should not probe {path}")
 
         monkeypatch.setattr(audit, "MakeNameAndCSV", unexpected)
@@ -164,7 +168,7 @@ class TestListTaggedVideos:
         (tmp_path / "taged" / "bad.mkv").write_bytes(b"x")
         _mock_make_name_and_csv(
             monkeypatch,
-            {"bad.mkv": ("Alice", "bad.mkv:1,0,0,A,tie,double,sprawl,T,E")},
+            {"bad.mkv": ("Alice", "", "bad.mkv:1,0,0,A,tie,double,sprawl,T,E")},
         )
 
         videos: list[dict[str, Any]] = audit.list_tagged_videos()
@@ -191,7 +195,8 @@ class TestRunRetagJob:
         monkeypatch.setattr(audit, "run_ffmpeg", fake_ffmpeg)
         monkeypatch.setattr(audit.configs, "load_wrestler_names", lambda: ["Alice"])
         monkeypatch.setattr(
-            stats, "MakeNameAndCSV", lambda p: ("Alice", "match.mkv:1,0,6,A,collar tie,double,sprawl,T,E")
+            stats, "MakeNameAndCSV",
+            lambda p: ("Alice", "2026-08-01", "match.mkv:1,0,6,A,collar tie,double,sprawl,T,E"),
         )
 
         seq: TagSequence = TagSequence(
@@ -200,17 +205,18 @@ class TestRunRetagJob:
             team_scores=["T"], op_scores=["E"],
         )
         result: dict[str, Any] = audit.run_retag_job(
-            FakeContext(), "match.mkv", "Alice", [seq]
+            FakeContext(), "match.mkv", "Alice", [seq], match_date="2026-08-01"
         )
 
         assert result["output"] == "match.mkv"
         assert result["compile"]["videos_processed"] == 1
         assert (dirs["taged"] / "match.mkv").read_bytes() == b"new"
         assert (dirs["csv"] / "Alice.csv").is_file()
-        assert "match.mkv:1,0,6,A,collar tie,double,sprawl,T,E" in (
+        assert "match.mkv:1,0,6,A,collar tie,double,sprawl,T,E,2,2,,2026-08-01" in (
             dirs["csv"] / "Alice.csv"
         ).read_text()
         assert "A,collar tie,double,sprawl,T,E" in captured["metadata"]
+        assert "matchdate=2026-08-01" in captured["metadata"]
         assert result["compile"] is not None
 
     def test_recompile_skipped_without_roster(self, tmp_path, monkeypatch) -> None:
@@ -316,13 +322,14 @@ class TestAuditRoutes:
     def test_audit_lists_videos(self, client, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / "match.mkv").write_bytes(b"old")
-        _mock_make_name_and_csv(monkeypatch, {"match.mkv": ("Alice", CSV_DATA)})
+        _mock_make_name_and_csv(monkeypatch, {"match.mkv": ("Alice", "2026-08-01", CSV_DATA)})
 
         resp = client.get("/api/audit")
         assert resp.status_code == 200
         videos: list[dict[str, Any]] = resp.json()["videos"]
         assert videos[0]["name"] == "match.mkv"
         assert videos[0]["wrestler"] == "Alice"
+        assert videos[0]["match_date"] == "2026-08-01"
         assert len(videos[0]["sequences"]) == 2
 
     def test_retag_route_completes(self, client, tmp_path, monkeypatch) -> None:
@@ -338,11 +345,13 @@ class TestAuditRoutes:
         monkeypatch.setattr(audit, "run_ffmpeg", fake_ffmpeg)
         monkeypatch.setattr(audit.configs, "load_wrestler_names", lambda: ["Alice"])
         monkeypatch.setattr(
-            stats, "MakeNameAndCSV", lambda p: ("Alice", "match.mkv:1,0,6,A,collar tie,double,sprawl,T,E")
+            stats, "MakeNameAndCSV",
+            lambda p: ("Alice", "", "match.mkv:1,0,6,A,collar tie,double,sprawl,T,E"),
         )
 
         payload: dict[str, Any] = {
             "wrestler": "Alice",
+            "match_date": "2026-08-01",
             "sequences": [{"start_time": 0, "end_time": 6}],
         }
         resp = client.post("/api/audit/match.mkv/retag", json=payload)

@@ -20,6 +20,7 @@ from scripts.helpers import (
     BuildTieEntry,
     ChapterSequence,
     GetVidDuration,
+    ValidateMatchDate,
     taged_dir,
     tmp_dir,
     untaged_dir,
@@ -49,10 +50,13 @@ class TagRequest(BaseModel):
     wrestler: str
     opponent: str = ""
     match_result: str = ""
+    match_date: str = ""
     sequences: list[TagSequence] = Field(default_factory=list)
 
 
-def build_tag_metadata(chapters: list[ChapterSequence], title: str) -> str:
+def build_tag_metadata(
+    chapters: list[ChapterSequence], title: str, match_date: str = ""
+) -> str:
     """Build the ffmpeg metadata file content for a list of chapters.
 
     Args:
@@ -60,11 +64,15 @@ def build_tag_metadata(chapters: list[ChapterSequence], title: str) -> str:
         title: The embedded title — the wrestler name, or the dual-wrestler
             ``BuildTagTitle`` composite ("wrestler / opponent" with optional
             " (W)" / " (L)" markers).
+        match_date: The match date as "YYYY-MM-DD" ("" to omit).
 
     Returns:
         The metadata file content (``;FFMETADATA1`` header + chapters).
     """
-    content: str = f";FFMETADATA1\ntitle={title.strip()}\n\n"
+    content: str = f";FFMETADATA1\ntitle={title.strip()}\n"
+    if match_date:
+        content += f"matchdate={match_date}\n"
+    content += "\n"
     for chap in chapters:
         content += chap.ToMetadata()
     return content
@@ -161,6 +169,7 @@ def run_tag_job(
     sequences: list[TagSequence],
     opponent: str = "",
     match_result: str = "",
+    match_date: str = "",
 ) -> dict[str, Any]:
     """Tag an untagged video by embedding chapter metadata.
 
@@ -171,6 +180,7 @@ def run_tag_job(
         sequences: The real sequences, in chronological order.
         opponent: The opponent's name for dual-wrestler mode, else "".
         match_result: The tagged wrestler's result ("", "W", or "L").
+        match_date: The match date ("YYYY-MM-DD" or "").
 
     Returns:
         A dict describing the result, e.g. ``{"output": "match.mkv"}``.
@@ -186,6 +196,8 @@ def run_tag_job(
 
     if not sequences:
         raise ValueError("At least one sequence is required")
+
+    date_clean: str = ValidateMatchDate(match_date)
 
     input_path: Path = untaged_dir / video
     if not input_path.is_file():
@@ -204,7 +216,7 @@ def run_tag_job(
     ctx.report(10, "Writing metadata...")
     metadata_path: Path = tmp_dir / f"metadata-{ctx.job_id}.txt"
     try:
-        metadata_path.write_text(build_tag_metadata(chapters, title))
+        metadata_path.write_text(build_tag_metadata(chapters, title, date_clean))
     except OSError as e:
         raise RuntimeError(f"Could not write metadata file: {e}")
 

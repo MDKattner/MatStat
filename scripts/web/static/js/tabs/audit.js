@@ -57,6 +57,7 @@ export function mountAudit(root) {
       wrestlerList.setSelected(data.wrestler || "");
       opponentList.setItems(wrestlerNames.filter((w) => w !== (data.wrestler || "")));
       opponentList.setSelected(data.opponent || "");
+      matchDateInput.value = data.match_date || "";
       oppTie.node.hidden = !data.opponent;
       if (!data.opponent) oppTie.clear();
       setResult(data.result || "");
@@ -100,6 +101,7 @@ export function mountAudit(root) {
   const noResultBtn = el("button", { class: "seg-option active", type: "button", text: "No Result" });
   const winBtn = el("button", { class: "seg-option", type: "button", text: "Win" });
   const lossBtn = el("button", { class: "seg-option", type: "button", text: "Loss" });
+  const matchDateInput = el("input", { type: "date", class: "time-input" });
 
   let matchResultValue = "";
 
@@ -488,6 +490,7 @@ export function mountAudit(root) {
         wrestler,
         opponent: opponentList.selected,
         match_result: matchResultValue,
+        match_date: matchDateInput.value,
         sequences: state.data.sequences,
       };
       const { ok, body } = await fetchJson(`/api/audit/${encodeURIComponent(name)}/retag`, {
@@ -507,6 +510,7 @@ export function mountAudit(root) {
       opponentList.clear();
       oppTie.clear();
       setResult("");
+      matchDateInput.value = "";
       oppTie.node.hidden = true;
       videoList.clear();
       await loadVideos();
@@ -570,6 +574,10 @@ export function mountAudit(root) {
     el("div", { class: "row result-row" }, [
       el("label", { class: "field-label", text: "Result:" }),
       resultRow,
+    ]),
+    el("div", { class: "row result-row" }, [
+      el("label", { class: "field-label", text: "Match date:" }),
+      matchDateInput,
     ]),
     titlePreview,
   ]);

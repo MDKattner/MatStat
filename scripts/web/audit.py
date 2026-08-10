@@ -21,6 +21,7 @@ from scripts.helpers import (
     GetVidDuration,
     MakeNameAndCSV,
     ParseTaggedName,
+    ValidateMatchDate,
     taged_dir,
     tmp_dir,
 )
@@ -36,6 +37,7 @@ class RetagRequest(BaseModel):
     wrestler: str
     opponent: str = ""
     match_result: str = ""
+    match_date: str = ""
     sequences: list[TagSequence] = Field(default_factory=list)
 
 
@@ -70,9 +72,9 @@ def list_tagged_videos() -> list[dict[str, Any]]:
     """List every tagged video with its embedded wrestler and sequences.
 
     Returns:
-        A list of ``{"name", "wrestler", "opponent", "result", "sequences"}``
-        dicts, sorted by video name. Videos that fail to probe are listed with
-        no sequences.
+        A list of ``{"name", "wrestler", "opponent", "result", "match_date",
+        "sequences"}`` dicts, sorted by video name. Videos that fail to probe
+        are listed with no sequences.
     """
     videos: list[dict[str, Any]] = []
     if not taged_dir.exists():
@@ -81,8 +83,9 @@ def list_tagged_videos() -> list[dict[str, Any]]:
         if not video_path.is_file() or video_path.name.startswith("."):
             continue
         name: str
+        match_date: str
         csv_data: str
-        name, csv_data = MakeNameAndCSV(video_path)
+        name, match_date, csv_data = MakeNameAndCSV(video_path)
         wrestler: str
         opponent: str | None
         result: str
@@ -101,6 +104,7 @@ def list_tagged_videos() -> list[dict[str, Any]]:
             "wrestler": wrestler,
             "opponent": opponent or "",
             "result": result,
+            "match_date": match_date,
             "sequences": sequences,
         })
     return videos
@@ -113,6 +117,7 @@ def run_retag_job(
     sequences: list[TagSequence],
     opponent: str = "",
     match_result: str = "",
+    match_date: str = "",
 ) -> dict[str, Any]:
     """Re-embed chapter metadata into an already-tagged video, then recompile.
 
@@ -127,6 +132,7 @@ def run_retag_job(
         sequences: The real sequences, in chronological order.
         opponent: The opponent's name for dual-wrestler mode, else "".
         match_result: The tagged wrestler's result ("", "W", or "L").
+        match_date: The match date ("YYYY-MM-DD" or "").
 
     Returns:
         A dict describing the result, e.g.
@@ -145,6 +151,8 @@ def run_retag_job(
     if not sequences:
         raise ValueError("At least one sequence is required")
 
+    date_clean: str = ValidateMatchDate(match_date)
+
     input_path: Path = taged_dir / video
     if not input_path.is_file():
         raise FileNotFoundError(f"Video not found: {video}")
@@ -162,7 +170,7 @@ def run_retag_job(
     ctx.report(10, "Writing metadata...")
     metadata_path: Path = tmp_dir / f"retag-metadata-{ctx.job_id}.txt"
     try:
-        metadata_path.write_text(tag.build_tag_metadata(chapters, title))
+        metadata_path.write_text(tag.build_tag_metadata(chapters, title, date_clean))
     except OSError as e:
         raise RuntimeError(f"Could not write metadata file: {e}")
 

@@ -19,6 +19,7 @@ from openpyxl.styles import Font
 from scripts.helpers import (
     GenerateDefenseDF,
     GenerateInitiationDFBySegment,
+    GenerateMatchOutcomesDF,
     GenerateOffenseDF,
     GenerateRatesDF,
     GenerateTeamSummaryDF,
@@ -112,6 +113,7 @@ def run_team_eval_job(ctx: JobContext) -> dict[str, Any]:
     try:
         with pd.ExcelWriter(excel_file, engine="openpyxl", mode="w") as writer:
             GenerateTeamSummaryDF(frames).to_excel(writer, sheet_name="Team Summary")
+            GenerateMatchOutcomesDF(frames).to_excel(writer, sheet_name="Match Outcomes")
             for i, (sheet_name, raw_df) in enumerate(frames.items()):
                 try:
                     GenerateInitiationDFBySegment(raw_df).to_excel(

@@ -83,7 +83,7 @@ class TestRunTeamEvalJob:
         report: Path = tmp_path / "eval" / "Team_Stats.xlsx"
         assert report.is_file()
         wb = openpyxl.load_workbook(report)
-        assert wb.sheetnames == ["Team Summary", "Alice", "Bob Smith"]
+        assert wb.sheetnames == ["Team Summary", "Match Outcomes", "Alice", "Bob Smith"]
         assert ctx.reports[-1] == (100, "Report generated: Team_Stats.xlsx")
 
     def test_section_labels_and_layout(self, tmp_path, monkeypatch) -> None:
@@ -153,6 +153,38 @@ class TestRunTeamEvalJob:
         # The unrecorded row is attacking (count 1).
         assert ws["C6"].value == 1
 
+    def test_match_outcomes_sheet(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        content: str = (
+            '"a.mkv:1",0,6,A,collar tie,"double","sprawl","T","E",2,2,W\n'
+            '"a.mkv:2",6,12,D,standing,"sprawl","sweep single","E","T",-2,-2,W\n'
+            '"a.mkv:3",12,18,A,front headlock,"single","whizzer","T","",3,3,L\n'
+            '"a.mkv:4",18,24,D,underhook,"sprawl","double","","E",-1,-1,\n'
+        )
+        _write_csv(tmp_path, "Alice", content=content)
+        _write_csv(tmp_path, "Bob", content='"b.mkv:1",0,6,A,collar tie,"double","sprawl","T","E",2,2,')
+
+        team_eval.run_team_eval_job(FakeContext())
+
+        ws = openpyxl.load_workbook(tmp_path / "eval" / "Team_Stats.xlsx")[
+            "Match Outcomes"
+        ]
+        assert ws["A1"].value == "Wrestler"
+        assert ws["B1"].value == "W"
+        assert ws["C1"].value == "L"
+        assert ws["D1"].value == "Unrecorded"
+        assert ws["E1"].value == "Win Rate"
+        assert ws["A2"].value == "Alice"
+        assert ws["B2"].value == 2
+        assert ws["C2"].value == 1
+        assert ws["D2"].value == 1
+        assert ws["E2"].value == 0.67
+        assert ws["A3"].value == "Bob"
+        assert ws["B3"].value == 0
+        assert ws["C3"].value == 0
+        assert ws["D3"].value == 1
+        assert ws["E3"].value == 0
+
     def test_per_file_error_keeps_others(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         _write_csv(tmp_path, "Alice")
@@ -164,7 +196,7 @@ class TestRunTeamEvalJob:
         assert len(result["errors"]) == 1
         assert "Broken" in result["errors"][0]
         wb = openpyxl.load_workbook(tmp_path / "eval" / "Team_Stats.xlsx")
-        assert wb.sheetnames == ["Team Summary", "Alice"]
+        assert wb.sheetnames == ["Team Summary", "Match Outcomes", "Alice"]
 
     def test_no_csv_files_raises(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)

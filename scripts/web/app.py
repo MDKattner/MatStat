@@ -402,6 +402,10 @@ async def tag_video(req: TagRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Wrestler name is required")
     if req.match_result not in ("", "W", "L"):
         raise HTTPException(status_code=400, detail="Invalid match result")
+    try:
+        tag.ValidateMatchDate(req.match_date)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not req.sequences:
         raise HTTPException(status_code=400, detail="At least one sequence is required")
 
@@ -409,6 +413,7 @@ async def tag_video(req: TagRequest) -> dict[str, Any]:
         result: dict[str, Any] = tag.run_tag_job(
             ctx, file_name, req.wrestler, req.sequences,
             opponent=req.opponent, match_result=req.match_result,
+            match_date=req.match_date,
         )
         _prewarm_tagged_preview(result["output"])
         return result
@@ -435,6 +440,10 @@ async def audit_retag(file_name: str, req: audit.RetagRequest) -> dict[str, Any]
         raise HTTPException(status_code=400, detail="Wrestler name is required")
     if req.match_result not in ("", "W", "L"):
         raise HTTPException(status_code=400, detail="Invalid match result")
+    try:
+        audit.ValidateMatchDate(req.match_date)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not req.sequences:
         raise HTTPException(status_code=400, detail="At least one sequence is required")
 
@@ -442,6 +451,7 @@ async def audit_retag(file_name: str, req: audit.RetagRequest) -> dict[str, Any]
         return audit.run_retag_job(
             ctx, video, req.wrestler, req.sequences,
             opponent=req.opponent, match_result=req.match_result,
+            match_date=req.match_date,
         )
 
     job_id: str = job_manager.submit(

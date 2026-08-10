@@ -19,6 +19,7 @@ from scripts.helpers import (
     _MoveFilter, DidMove, DefendedMove,
     _GenerateMoveDF, GenerateOffenseDF, GenerateDefenseDF, GenerateInitiationDF,
     GenerateInitiationDFBySegment, GenerateRatesDF, GenerateTeamSummaryDF,
+    GenerateMatchOutcomesDF,
 )
 
 
@@ -467,6 +468,62 @@ class TestGenerateTeamSummaryDF:
     def test_empty_frames(self) -> None:
         out = GenerateTeamSummaryDF({})
         assert list(out.index) == ["Team Mean"]
+
+
+class TestGenerateMatchOutcomesDF:
+    """Tests for GenerateMatchOutcomesDF — the consolidated W/L/unrecorded block."""
+
+    def _frames(self) -> dict[str, pd.DataFrame]:
+        alice: pd.DataFrame = pd.DataFrame({
+            COL_START_TIME: [0, 6, 12],
+            COL_END_TIME: [6, 12, 18],
+            COL_ATTACKING: [True, True, True],
+            COL_TIE_UP: ["collar tie", "standing", "front headlock"],
+            COL_TEAM_MOVES: [["double"], ["single"], ["sprawl"]],
+            COL_OPPONENT_MOVES: [["sprawl"], ["whizzer"], ["double"]],
+            COL_TEAM_SCORES: [["T"], ["N2"], [""]],
+            COL_OPPONENT_SCORES: [[], [], []],
+            COL_NET_POINTS: [3, 2, 0],
+            COL_ADJUSTED_NET_POINTS: [3, 2, 0],
+            COL_MATCH_RESULT: ["W", "W", "L"],
+        }, index=pd.Index(["a.mkv:1", "a.mkv:2", "a.mkv:3"], name=COL_ORIGIN))
+        bob: pd.DataFrame = alice.copy()
+        bob.index = pd.Index(["b.mkv:1", "b.mkv:2", "b.mkv:3"], name=COL_ORIGIN)
+        bob[COL_MATCH_RESULT] = ["", "", ""]
+        return {"Alice": alice, "Bob": bob}
+
+    def test_counts_wins_losses_and_unrecorded(self) -> None:
+        out = GenerateMatchOutcomesDF(self._frames())
+        assert list(out.columns) == ["W", "L", "Unrecorded", "Win Rate", "Pins", "Times Pinned"]
+        assert out.index.name == "Wrestler"
+        assert out.loc["Alice", "W"] == 2
+        assert out.loc["Alice", "L"] == 1
+        assert out.loc["Alice", "Unrecorded"] == 0
+        assert out.loc["Alice", "Win Rate"] == 0.67
+        assert out.loc["Bob", "W"] == 0
+        assert out.loc["Bob", "L"] == 0
+        assert out.loc["Bob", "Unrecorded"] == 3
+        assert out.loc["Bob", "Win Rate"] == 0.0
+
+    def test_no_result_column_counts_all_unrecorded(self) -> None:
+        legacy: pd.DataFrame = self._frames()["Alice"].drop(columns=[COL_MATCH_RESULT])
+        out = GenerateMatchOutcomesDF({"Legacy": legacy})
+        assert out.loc["Legacy", "Unrecorded"] == 3
+        assert out.loc["Legacy", "Win Rate"] == 0.0
+
+    def test_counts_pins_and_times_pinned(self) -> None:
+        frames: dict[str, pd.DataFrame] = self._frames()
+        alice: pd.DataFrame = frames["Alice"].copy()
+        alice.loc["a.mkv:1", COL_TEAM_SCORES] = ["PIN"]
+        alice.loc["a.mkv:2", COL_OPPONENT_SCORES] = ["PIN"]
+        out = GenerateMatchOutcomesDF({"Alice": alice})
+        assert out.loc["Alice", "Pins"] == 1
+        assert out.loc["Alice", "Times Pinned"] == 1
+
+    def test_empty_frames(self) -> None:
+        out = GenerateMatchOutcomesDF({})
+        assert list(out.columns) == ["W", "L", "Unrecorded", "Win Rate", "Pins", "Times Pinned"]
+        assert len(out) == 0
 
 
 class TestAdjustedNetPoints:

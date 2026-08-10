@@ -30,30 +30,31 @@ from scripts.helpers import (
 from scripts.web.jobs import JobContext
 
 
-def _process_video_safely(vid_path: Path) -> tuple[str | None, str]:
-    """Extract a wrestler name and CSV data from a tagged video.
+def _process_video_safely(vid_path: Path) -> tuple[str | None, str, str]:
+    """Extract a wrestler name, match date, and CSV data from a tagged video.
 
-    Returns (name, data) on success or (None, error).
+    Returns (name, match_date, data) on success or (None, "", error).
 
     Args:
         vid_path: The path to the tagged video file.
 
     Returns:
-        A (name, data) tuple, or (None, error_message) on failure.
+        A (name, match_date, data) tuple, or (None, "", error_message) on failure.
     """
     try:
         name: str
+        match_date: str
         data: str
-        name, data = MakeNameAndCSV(vid_path)
-        return (name, data)
+        name, match_date, data = MakeNameAndCSV(vid_path)
+        return (name, match_date, data)
     except Exception as e:
         error_msg: str = f"Failed to process video '{vid_path.name}': {e}"
         logging.error(error_msg)
-        return (None, error_msg)
+        return (None, "", error_msg)
 
 
-def _enrich_csv_rows(rows: list[str], result: str = "") -> list[str]:
-    """Append Net Points, Adjusted Net Points, and the match result to rows.
+def _enrich_csv_rows(rows: list[str], result: str = "", match_date: str = "") -> list[str]:
+    """Append Net Points, Adjusted Net Points, match result, and match date.
 
     Rows are parsed with the same 9-field schema MakeFormattedDataFrame reads
     (origin, start, end, attacking, tie, team moves, opponent moves, team
@@ -61,14 +62,16 @@ def _enrich_csv_rows(rows: list[str], result: str = "") -> list[str]:
     unchanged so no data is ever lost. The scoring map is refreshed from the
     active ruleset so the appended values match what MakeFormattedDataFrame
     recomputes on load. ``result`` ("", "W", or "L") is the match result for
-    the video these rows came from, stored as the trailing ``W/L`` column.
+    the video these rows came from, stored as the trailing ``W/L`` column, and
+    ``match_date`` ("YYYY-MM-DD") is stored after it.
 
     Args:
         rows: Raw CSV data rows from MakeNameAndCSV.
         result: The tagged wrestler's match result for this video.
+        match_date: The match date for this video ("YYYY-MM-DD" or "").
 
     Returns:
-        The rows with `,net,adjusted,result` appended where parseable.
+        The rows with `,net,adjusted,result,match_date` appended where parseable.
     """
     ReloadScoringMap()
     enriched: list[str] = []
@@ -83,7 +86,7 @@ def _enrich_csv_rows(rows: list[str], result: str = "") -> list[str]:
         })
         net: np.int16 = CalculateNetPoints(scores)
         adjusted: np.int16 = AdjustedNetPoints(scores)
-        enriched.append(f"{row},{net},{adjusted},{result}")
+        enriched.append(f"{row},{net},{adjusted},{result},{match_date}")
     return enriched
 
 
@@ -95,9 +98,9 @@ def run_compile_stats_job(
 
     Every tagged video is probed for its format title and chapter rows. The
     title is parsed into (wrestler, opponent, result); rows are enriched with
-    the match result and bucketed under the wrestler, and in dual mode a
-    perspective-swapped copy is bucketed under the opponent (when the opponent
-    is also in the roster). Results are written to
+    the match result and match date and bucketed under the wrestler, and in
+    dual mode a perspective-swapped copy is bucketed under the opponent (when
+    the opponent is also in the roster). Results are written to
     stats/wrestler_data/{name}.csv.
 
     Args:
@@ -133,8 +136,9 @@ def run_compile_stats_job(
         if ctx.cancelled:
             return {"videos_processed": i, "wrestlers": {}, "errors": errors}
         name: str | None
+        match_date: str
         data: str
-        name, data = _process_video_safely(vid_path)
+        name, match_date, data = _process_video_safely(vid_path)
         if name is None:
             errors.append(data)
             ctx.report(100.0 * (i + 1) / total, f"Processing {vid_path.name}")
@@ -154,7 +158,7 @@ def run_compile_stats_job(
             continue
         lines: list[str] = data.split("\n") if data else []
         if lines:
-            enriched: list[str] = _enrich_csv_rows(lines, result)
+            enriched: list[str] = _enrich_csv_rows(lines, result, match_date)
             wrestler_to_rows[wrestler].extend(enriched)
             if opponent:
                 if opponent not in wrestler_to_rows:

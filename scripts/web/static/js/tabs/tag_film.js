@@ -42,6 +42,7 @@ export function mountTagFilm(root) {
     wrestler: "",
     opponent: "",
     matchResult: "",
+    matchDate: "",
     sequences: [],
     tagging: false,
     playerPosMs: 0,
@@ -200,6 +201,7 @@ export function mountTagFilm(root) {
   const noResultBtn = el("button", { class: "seg-option active", type: "button", text: "No Result" });
   const winBtn = el("button", { class: "seg-option", type: "button", text: "Win" });
   const lossBtn = el("button", { class: "seg-option", type: "button", text: "Loss" });
+  const matchDateInput = el("input", { type: "date", class: "time-input" });
 
   function setResult(value) {
     noResultRadio.checked = value === "";
@@ -451,6 +453,7 @@ export function mountTagFilm(root) {
         wrestler: state.wrestler,
         opponent: state.opponent,
         match_result: state.matchResult,
+        match_date: matchDateInput.value,
         sequences: state.sequences,
       };
       const { ok, body } = await fetchJson("/api/tag", {
@@ -473,6 +476,7 @@ export function mountTagFilm(root) {
       state.videoConfirmed = false;
       state.opponent = "";
       state.matchResult = "";
+      matchDateInput.value = "";
       opponentList.clear();
       setResult("");
       updateVideoLock();
@@ -554,6 +558,10 @@ export function mountTagFilm(root) {
     el("div", { class: "row result-row" }, [
       el("label", { class: "field-label", text: "Result:" }),
       resultRow,
+    ]),
+    el("div", { class: "row result-row" }, [
+      el("label", { class: "field-label", text: "Match date:" }),
+      matchDateInput,
     ]),
     titlePreview,
   ]);

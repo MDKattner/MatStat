@@ -12,7 +12,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from scripts.helpers import (
     COL_ATTACKING, COL_START_TIME, COL_END_TIME, COL_TIE_UP,
     COL_TEAM_MOVES, COL_OPPONENT_MOVES, COL_TEAM_SCORES, COL_OPPONENT_SCORES,
-    COL_NET_POINTS, COL_ADJUSTED_NET_POINTS, COL_MATCH_RESULT,
+    COL_NET_POINTS, COL_ADJUSTED_NET_POINTS, COL_MATCH_RESULT, COL_MATCH_DATE,
     MakeNameAndCSV, GetVidDuration, NameProbe,
     MakeFormattedDataFrame, LoadAllWrestlerData,
 )
@@ -20,14 +20,19 @@ from scripts.helpers import (
 
 # ---------- MakeNameAndCSV ----------
 
-def _make_fake_ffprobe_output(chapter_lines: list[str], name: str = "Test Wrestler") -> str:
+def _make_fake_ffprobe_output(
+    chapter_lines: list[str], name: str = "Test Wrestler", match_date: str = ""
+) -> str:
     """Build a fake ffprobe -of csv stdout string."""
     lines: list[str] = []
     for i, title in enumerate(chapter_lines, start=1):
         lines.append(
             f"chapter,{i},1/1000000000,0,0.000000,6000000000,6.000000,{title}"
         )
-    lines.append(f"format,{name}")
+    tail: str = f"format,{name}"
+    if match_date:
+        tail += f",{match_date}"
+    lines.append(tail)
     return "\n".join(lines)
 
 
@@ -44,9 +49,24 @@ class TestMakeNameAndCSV:
             return subprocess.CompletedProcess([], 0, FAKE_CHAPTER_CSV, "")
 
         monkeypatch.setattr(subprocess, "run", mock_run)
-        name, data = MakeNameAndCSV(Path("fake.mkv"))
+        name, match_date, data = MakeNameAndCSV(Path("fake.mkv"))
         assert name == "Test Wrestler"
+        assert match_date == ""
         assert "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None" in data
+
+    def test_parses_match_date(self, monkeypatch) -> None:
+        csv_output: str = _make_fake_ffprobe_output([
+            '"A,collar tie,double,nothing,T,None"',
+        ], name="Dated Wrestler", match_date="2026-08-01")
+
+        def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess([], 0, csv_output, "")
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        name, match_date, data = MakeNameAndCSV(Path("dated.mkv"))
+        assert name == "Dated Wrestler"
+        assert match_date == "2026-08-01"
+        assert "dated.mkv:1,0,6,A,collar tie,double,nothing,T,None" in data
 
     def test_multiple_chapters(self, monkeypatch) -> None:
         csv_output: str = _make_fake_ffprobe_output([
@@ -58,8 +78,9 @@ class TestMakeNameAndCSV:
             return subprocess.CompletedProcess([], 0, csv_output, "")
 
         monkeypatch.setattr(subprocess, "run", mock_run)
-        name, data = MakeNameAndCSV(Path("multi.mkv"))
+        name, match_date, data = MakeNameAndCSV(Path("multi.mkv"))
         assert name == "Multi Wrestler"
+        assert match_date == ""
         lines = data.strip().split("\n")
         assert len(lines) == 2
 
@@ -73,7 +94,7 @@ class TestMakeNameAndCSV:
             return subprocess.CompletedProcess([], 0, csv_output, "")
 
         monkeypatch.setattr(subprocess, "run", mock_run)
-        name, data = MakeNameAndCSV(Path("filter.mkv"))
+        name, match_date, data = MakeNameAndCSV(Path("filter.mkv"))
         lines = data.strip().split("\n")
         assert len(lines) == 1
         assert "EMPTY" not in data
@@ -83,8 +104,9 @@ class TestMakeNameAndCSV:
             raise subprocess.CalledProcessError(1, "ffprobe")
 
         monkeypatch.setattr(subprocess, "run", mock_run)
-        name, data = MakeNameAndCSV(Path("fail.mkv"))
+        name, match_date, data = MakeNameAndCSV(Path("fail.mkv"))
         assert name == ""
+        assert match_date == ""
         assert data == ""
 
     def test_empty_output_returns_empty(self, monkeypatch) -> None:
@@ -92,8 +114,9 @@ class TestMakeNameAndCSV:
             return subprocess.CompletedProcess([], 0, "", "")
 
         monkeypatch.setattr(subprocess, "run", mock_run)
-        name, data = MakeNameAndCSV(Path("empty.mkv"))
+        name, match_date, data = MakeNameAndCSV(Path("empty.mkv"))
         assert name == ""
+        assert match_date == ""
         assert data == ""
 
     def test_only_empty_chapters(self, monkeypatch) -> None:
@@ -105,8 +128,9 @@ class TestMakeNameAndCSV:
             return subprocess.CompletedProcess([], 0, csv_output, "")
 
         monkeypatch.setattr(subprocess, "run", mock_run)
-        name, data = MakeNameAndCSV(Path("only_empty.mkv"))
+        name, match_date, data = MakeNameAndCSV(Path("only_empty.mkv"))
         assert name == "Only Empty"
+        assert match_date == ""
         assert data == ""
 
 
@@ -278,6 +302,20 @@ class TestMakeFormattedDataFrame:
         assert COL_NET_POINTS in df.columns
         assert COL_ADJUSTED_NET_POINTS in df.columns
         assert COL_MATCH_RESULT not in df.columns
+
+    CSV_CONTENT_13COL: str = (
+        'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,W,2026-08-01\n'
+        'vid.mkv:2,6,12,D,standing,sprawl,sweep single,None,T,-3,-3,L,'
+    )
+
+    def test_loads_match_date_column(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "dated.csv"
+        csv_file.write_text(self.CSV_CONTENT_13COL)
+
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
+        assert COL_MATCH_DATE in df.columns
+        assert df[COL_MATCH_DATE].iloc[0] == "2026-08-01"
+        assert df[COL_MATCH_DATE].iloc[1] == ""
 
 
 # ---------- LoadAllWrestlerData ----------

@@ -62,10 +62,12 @@ def _write_config(tmp_path: Path, names: list[str] = ("Alice", "Bob Smith")) -> 
     )
 
 
-def _mock_make_name_and_csv(monkeypatch, table: dict[str, tuple[str, str]]) -> None:
-    """Stub stats.MakeNameAndCSV with a filename -> (name, data) table."""
+def _mock_make_name_and_csv(
+    monkeypatch, table: dict[str, tuple[str, str, str]]
+) -> None:
+    """Stub stats.MakeNameAndCSV with a filename -> (name, match_date, data) table."""
 
-    def fake(path: Path) -> tuple[str, str]:
+    def fake(path: Path) -> tuple[str, str, str]:
         key: str = Path(path).name
         if key not in table:
             raise RuntimeError(f"no entry for {key}")
@@ -90,22 +92,26 @@ class TestProcessVideoSafely:
     """Tests for stats._process_video_safely — the per-video wrapper."""
 
     def test_returns_name_and_data(self, monkeypatch) -> None:
-        _mock_make_name_and_csv(monkeypatch, {"match.mkv": ("Alice", "row")})
+        _mock_make_name_and_csv(monkeypatch, {"match.mkv": ("Alice", "2026-08-01", "row")})
         name: str | None
+        match_date: str
         data: str
-        name, data = stats._process_video_safely(Path("match.mkv"))
+        name, match_date, data = stats._process_video_safely(Path("match.mkv"))
         assert name == "Alice"
+        assert match_date == "2026-08-01"
         assert data == "row"
 
     def test_returns_error_on_failure(self, monkeypatch) -> None:
-        def broken(path: Path) -> tuple[str, str]:
+        def broken(path: Path) -> tuple[str, str, str]:
             raise OSError("boom")
 
         monkeypatch.setattr(stats, "MakeNameAndCSV", broken)
         name: str | None
+        match_date: str
         data: str
-        name, data = stats._process_video_safely(Path("broken.mkv"))
+        name, match_date, data = stats._process_video_safely(Path("broken.mkv"))
         assert name is None
+        assert match_date == ""
         assert "broken.mkv" in data
         assert "boom" in data
 
@@ -119,10 +125,13 @@ class TestRunCompileStatsJob:
         (tmp_path / "taged" / "b.mkv").write_bytes(b"x")
         (tmp_path / "taged" / "c.mkv").write_bytes(b"x")
         _mock_make_name_and_csv(monkeypatch, {
-            "a.mkv": ("Alice", "a.mkv:1,0,10,A,collar tie,double,nothing,T,None"),
-            "b.mkv": ("Alice", "b.mkv:1,0,10,A,standing,single,nothing,None,None\n"
+            "a.mkv": ("Alice", "2026-08-01",
+                      "a.mkv:1,0,10,A,collar tie,double,nothing,T,None"),
+            "b.mkv": ("Alice", "",
+                      "b.mkv:1,0,10,A,standing,single,nothing,None,None\n"
                       "b.mkv:2,10,20,D,front headlock,double,whizzer,T,E"),
-            "c.mkv": ("Bob Smith", "c.mkv:1,0,10,A,regular ride,nothing,sprawl,None,T"),
+            "c.mkv": ("Bob Smith", "",
+                      "c.mkv:1,0,10,A,regular ride,nothing,sprawl,None,T"),
         })
 
         result: dict[str, Any] = stats.run_compile_stats_job(
@@ -134,18 +143,18 @@ class TestRunCompileStatsJob:
         assert result["errors"] == []
         assert (tmp_path / "csv" / "Alice.csv").read_text().count("\n") == 2
         assert "b.mkv:2,10,20" in (tmp_path / "csv" / "Alice.csv").read_text()
-        assert "a.mkv:1,0,10,A,collar tie,double,nothing,T,None,3,3," in (
+        assert "a.mkv:1,0,10,A,collar tie,double,nothing,T,None,3,3,,2026-08-01" in (
             (tmp_path / "csv" / "Alice.csv").read_text()
         )
         assert (tmp_path / "csv" / "Bob Smith.csv").read_text() == (
-            "c.mkv:1,0,10,A,regular ride,nothing,sprawl,None,T,-3,-3,"
+            "c.mkv:1,0,10,A,regular ride,nothing,sprawl,None,T,-3,-3,,"
         )
 
     def test_dual_mode_swaps_into_opponent_bucket(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / "d.mkv").write_bytes(b"x")
         _mock_make_name_and_csv(monkeypatch, {
-            "d.mkv": ("Alice (W) / Bob Smith",
+            "d.mkv": ("Alice (W) / Bob Smith", "2026-08-01",
                       "d.mkv:1,0,10,A,collar tie:underhook,double,nothing,T,None"),
         })
 
@@ -156,17 +165,17 @@ class TestRunCompileStatsJob:
         assert result["errors"] == []
         assert result["wrestlers"] == {"Alice": 1, "Bob Smith": 1}
         assert (tmp_path / "csv" / "Alice.csv").read_text() == (
-            "d.mkv:1,0,10,A,collar tie:underhook,double,nothing,T,None,3,3,W"
+            "d.mkv:1,0,10,A,collar tie:underhook,double,nothing,T,None,3,3,W,2026-08-01"
         )
         assert (tmp_path / "csv" / "Bob Smith.csv").read_text() == (
-            "d.mkv:1,0,10,D,underhook:collar tie,nothing,double,None,T,-3,-3,L"
+            "d.mkv:1,0,10,D,underhook:collar tie,nothing,double,None,T,-3,-3,L,2026-08-01"
         )
 
     def test_dual_mode_opponent_not_in_roster_reports_error(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / "e.mkv").write_bytes(b"x")
         _mock_make_name_and_csv(monkeypatch, {
-            "e.mkv": ("Alice / Jane Doe",
+            "e.mkv": ("Alice / Jane Doe", "",
                       "e.mkv:1,0,10,A,collar tie:underhook,double,nothing,T,None"),
         })
 
@@ -181,7 +190,7 @@ class TestRunCompileStatsJob:
     def test_empty_data_skips_file(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / "empty.mkv").write_bytes(b"x")
-        _mock_make_name_and_csv(monkeypatch, {"empty.mkv": ("Alice", "")})
+        _mock_make_name_and_csv(monkeypatch, {"empty.mkv": ("Alice", "", "")})
 
         result: dict[str, Any] = stats.run_compile_stats_job(FakeContext(), ["Alice"])
 
@@ -191,7 +200,7 @@ class TestRunCompileStatsJob:
     def test_unknown_wrestler_reported(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / "guest.mkv").write_bytes(b"x")
-        _mock_make_name_and_csv(monkeypatch, {"guest.mkv": ("Jane Doe", "row")})
+        _mock_make_name_and_csv(monkeypatch, {"guest.mkv": ("Jane Doe", "", "row")})
 
         result: dict[str, Any] = stats.run_compile_stats_job(FakeContext(), ["Alice"])
 
@@ -237,8 +246,8 @@ class TestRunCompileStatsJob:
         (tmp_path / "taged" / "a.mkv").write_bytes(b"x")
         (tmp_path / "taged" / "b.mkv").write_bytes(b"x")
         _mock_make_name_and_csv(monkeypatch, {
-            "a.mkv": ("Alice", "a.mkv:1,0,10,A,collar tie,double,nothing,T,None"),
-            "b.mkv": ("Alice", "b.mkv:1,0,10,A,standing,single,nothing,None,None"),
+            "a.mkv": ("Alice", "", "a.mkv:1,0,10,A,collar tie,double,nothing,T,None"),
+            "b.mkv": ("Alice", "", "b.mkv:1,0,10,A,standing,single,nothing,None,None"),
         })
 
         result: dict[str, Any] = stats.run_compile_stats_job(FlipContext(), ["Alice"])
@@ -255,7 +264,8 @@ class TestCompileStatsRoute:
         _write_config(tmp_path)
         (tmp_path / "taged" / "a.mkv").write_bytes(b"x")
         _mock_make_name_and_csv(monkeypatch, {
-            "a.mkv": ("Alice", "a.mkv:1,0,10,A,collar tie,double,nothing,T,None")
+            "a.mkv": ("Alice", "2026-08-01",
+                      "a.mkv:1,0,10,A,collar tie,double,nothing,T,None")
         })
 
         resp = client.post("/api/compile-stats")
@@ -290,7 +300,7 @@ class TestEnrichCsvRows:
         monkeypatch.setattr(helpers, "active_pin_points", 13)
         rows: list[str] = ["fake.mkv:1,0,6,A,collar tie,double,nothing,T,None"]
         assert stats._enrich_csv_rows(rows) == [
-            "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,"
+            "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,,"
         ]
 
     def test_appends_match_result(self, monkeypatch) -> None:
@@ -300,7 +310,17 @@ class TestEnrichCsvRows:
         monkeypatch.setattr(helpers, "active_pin_points", 13)
         rows: list[str] = ["fake.mkv:1,0,6,A,collar tie,double,nothing,T,None"]
         assert stats._enrich_csv_rows(rows, "L") == [
-            "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,L"
+            "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,L,"
+        ]
+
+    def test_appends_match_date(self, monkeypatch) -> None:
+        monkeypatch.setattr(stats, "ReloadScoringMap", lambda: None)
+        monkeypatch.setattr(helpers, "score_to_pts", {"T": np.int16(3), "None": np.int16(0)})
+        monkeypatch.setattr(helpers, "_ACTIVE_PIN_CODES", frozenset({"PIN"}))
+        monkeypatch.setattr(helpers, "active_pin_points", 13)
+        rows: list[str] = ["fake.mkv:1,0,6,A,collar tie,double,nothing,T,None"]
+        assert stats._enrich_csv_rows(rows, "", "2026-08-01") == [
+            "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,,2026-08-01"
         ]
 
     def test_pin_bonus_applied(self, monkeypatch) -> None:
@@ -310,7 +330,7 @@ class TestEnrichCsvRows:
         monkeypatch.setattr(helpers, "active_pin_points", 13)
         rows: list[str] = ["fake.mkv:2,6,12,D,standing,sprawl,single,PIN,None"]
         assert stats._enrich_csv_rows(rows) == [
-            "fake.mkv:2,6,12,D,standing,sprawl,single,PIN,None,0,13,"
+            "fake.mkv:2,6,12,D,standing,sprawl,single,PIN,None,0,13,,"
         ]
 
     def test_malformed_row_passes_through(self, monkeypatch) -> None:

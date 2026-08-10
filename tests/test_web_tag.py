@@ -59,6 +59,22 @@ class TestBuildTagMetadata:
     def test_header_and_title(self) -> None:
         content: str = tag.build_tag_metadata([], "  Alice Smith  ")
         assert content.startswith(";FFMETADATA1\ntitle=Alice Smith\n\n")
+        assert "matchdate=" not in content
+
+    def test_includes_match_date_between_title_and_chapters(self) -> None:
+        chap: ChapterSequence = ChapterSequence(
+            start_time=10,
+            end_time=20,
+            attack_defend=True,
+            tie_up="collar tie",
+            team_moves=["double"],
+            op_moves=["nothing"],
+            team_scores=["T"],
+            op_scores=["None"],
+        )
+        content: str = tag.build_tag_metadata([chap], "Alice", "2026-08-01")
+        assert content.startswith(";FFMETADATA1\ntitle=Alice\nmatchdate=2026-08-01\n\n")
+        assert "[CHAPTER]" in content
 
     def test_includes_each_chapter_block(self) -> None:
         chap: ChapterSequence = ChapterSequence(
@@ -261,6 +277,37 @@ class TestRunTagJob:
         seqs: list[TagSequence] = [TagSequence(start_time=0, end_time=5)]
         with pytest.raises(ValueError, match="Invalid match result"):
             tag.run_tag_job(FakeContext(), "badresult.mkv", "Alice", seqs, match_result="D")
+
+    def test_match_date_embedded_in_metadata(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        _make_source(tmp_path, "dated.mkv")
+        monkeypatch.setattr(tag, "GetVidDuration", lambda p: 60)
+
+        captured: dict[str, str] = {}
+
+        def fake_ffmpeg(cmd, description="", on_progress=None, cancel_event=None) -> FfmpegResult:
+            captured["metadata"] = Path(cmd[4]).read_text()
+            Path(cmd[-1]).parent.mkdir(parents=True, exist_ok=True)
+            Path(cmd[-1]).write_bytes(b"tagged")
+            return FfmpegResult(success=True, message="ok")
+
+        monkeypatch.setattr(tag, "run_ffmpeg", fake_ffmpeg)
+
+        seqs: list[TagSequence] = [TagSequence(start_time=0, end_time=5)]
+        tag.run_tag_job(
+            FakeContext(), "dated.mkv", "Alice", seqs, match_date="2026-08-01"
+        )
+
+        assert "title=Alice\nmatchdate=2026-08-01" in captured["metadata"]
+
+    def test_invalid_match_date_raises(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        _make_source(tmp_path, "baddate.mkv")
+        monkeypatch.setattr(tag, "GetVidDuration", lambda p: 60)
+
+        seqs: list[TagSequence] = [TagSequence(start_time=0, end_time=5)]
+        with pytest.raises(ValueError, match="match date"):
+            tag.run_tag_job(FakeContext(), "baddate.mkv", "Alice", seqs, match_date="08/01/2026")
 
 
 class TestUploadRoutes:
@@ -578,6 +625,48 @@ class TestTagRoute:
             "video": "match.mkv",
             "wrestler": "Alice",
             "match_result": "D",
+            "sequences": [{"start_time": 0, "end_time": 5}],
+        }
+        resp = client.post("/api/tag", json=payload)
+        assert resp.status_code == 400
+
+    def test_tag_accepts_match_date(self, client, tmp_path, monkeypatch) -> None:
+        (tmp_path / "untaged" / "dated.mkv").write_bytes(b"source")
+        monkeypatch.setattr(tag, "GetVidDuration", lambda p: 60)
+
+        captured: dict[str, str] = {}
+
+        def fake_ffmpeg(cmd, description="", on_progress=None, cancel_event=None) -> FfmpegResult:
+            captured["metadata"] = Path(cmd[4]).read_text()
+            Path(cmd[-1]).parent.mkdir(parents=True, exist_ok=True)
+            Path(cmd[-1]).write_bytes(b"tagged")
+            return FfmpegResult(success=True, message="ok")
+
+        monkeypatch.setattr(tag, "run_ffmpeg", fake_ffmpeg)
+
+        def fake_transcode_hls(src, job_id, on_progress=None, cancel_event=None) -> None:
+            return None
+
+        monkeypatch.setattr(transcode, "transcode_hls", fake_transcode_hls)
+
+        payload: dict[str, Any] = {
+            "video": "dated.mkv",
+            "wrestler": "Alice",
+            "match_date": "2026-08-01",
+            "sequences": [{"start_time": 0, "end_time": 5}],
+        }
+        resp = client.post("/api/tag", json=payload)
+        assert resp.status_code == 200
+        job: dict[str, Any] = self._wait_for_job(client, resp.json()["job_id"])
+        assert job["status"] == "done"
+        assert "matchdate=2026-08-01" in captured["metadata"]
+
+    def test_tag_invalid_match_date_400(self, client, tmp_path) -> None:
+        (tmp_path / "untaged" / "match.mkv").write_bytes(b"x")
+        payload: dict[str, Any] = {
+            "video": "match.mkv",
+            "wrestler": "Alice",
+            "match_date": "08/01/2026",
             "sequences": [{"start_time": 0, "end_time": 5}],
         }
         resp = client.post("/api/tag", json=payload)

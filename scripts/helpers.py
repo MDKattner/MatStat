@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shlex
 import shutil
 import subprocess
@@ -29,6 +30,7 @@ COL_OPPONENT_SCORES: str = "Opponent Scores"
 COL_NET_POINTS: str = "Net Points"
 COL_ADJUSTED_NET_POINTS: str = "Adjusted Net Points"
 COL_MATCH_RESULT: str = "W/L"
+COL_MATCH_DATE: str = "Match Date"
 
 # Title storage conventions for tagged videos. Single mode stores the bare
 # wrestler name (optionally suffixed with " (W)" / " (L)"); dual mode joins the
@@ -660,11 +662,12 @@ def LoadAllWrestlerData(data_dir: Path | None = None) -> dict[str, pd.DataFrame]
     return result
 
 
-def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str]:
-    """Extract wrestler name and chapter data into a CSV string.
+def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str, str]:
+    """Extract wrestler name, match date, and chapter data into a CSV string.
 
-    This function uses ffprobe to get the video's title (wrestler name) and
-    all chapter metadata, formatting the chapter data into a custom CSV string.
+    This function uses ffprobe to get the video's title (wrestler name), the
+    optional ``matchdate`` format tag (YYYY-MM-DD), and all chapter metadata,
+    formatting the chapter data into a custom CSV string.
 
     Args:
         path_to_vid: The path to the video file to process.
@@ -672,10 +675,13 @@ def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str]:
     Returns:
         A tuple containing:
         - The wrestler's name (str).
+        - The embedded match date (str, "YYYY-MM-DD", "" when absent).
         - A multi-line CSV string of the chapter data, suitable for DataFrame loading.
     """
-    # This command outputs the title field of the metadata as the last line
-    ffprobe_command: str = ("ffprobe -v error -show_chapters -show_entries format_tags=title "
+    # This command outputs the title and matchdate fields of the metadata as
+    # the last line: "format,<title>[,<YYYY-MM-DD>]".
+    ffprobe_command: str = ("ffprobe -v error -show_chapters "
+                            "-show_entries format_tags=title:format_tags=matchdate "
                             f"-of csv {shlex.quote(str(path_to_vid))}")
     logging.debug(
         f"Executing ffprobe command for MakeNameAndCSV: {ffprobe_command}")
@@ -690,14 +696,21 @@ def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str]:
         ).stdout.strip().splitlines()
     except subprocess.CalledProcessError as e:
         logging.error(f"MakeNameAndCSV ffprobe failed for '{path_to_vid}': {e}")
-        return ("", "")
+        return ("", "", "")
 
     if not lines:
         logging.warning(f"MakeNameAndCSV: no output from ffprobe for '{path_to_vid}'")
-        return ("", "")
+        return ("", "", "")
 
-    name_out: str = lines.pop().removeprefix("format,")
+    name_line: str = lines.pop().removeprefix("format,")
+    name_out: str = name_line
+    match_date: str = ""
+    date_parts: list[str] = name_line.rsplit(",", 1)
+    if len(date_parts) == 2 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_parts[1]):
+        name_out = date_parts[0]
+        match_date = date_parts[1]
     logging.debug(f"Extracted wrestler name: {name_out}")
+    logging.debug(f"Extracted match date: {match_date}")
 
     csv_rows: list[str] = []
     for line in lines:
@@ -725,7 +738,53 @@ def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str]:
 
     logging.info(
         f"Generated CSV data for '{path_to_vid.name}' with {len(csv_rows)} rows.")
-    return (name_out, "\n".join(csv_rows))
+    return (name_out, match_date, "\n".join(csv_rows))
+
+
+def ValidateMatchDate(match_date: str) -> str:
+    """Validate a match date value, returning it stripped ("" is allowed).
+
+    Args:
+        match_date: The raw match date value ("YYYY-MM-DD" or "").
+
+    Returns:
+        The trimmed match date.
+
+    Raises:
+        ValueError: If the value is neither empty nor a valid YYYY-MM-DD date.
+    """
+    cleaned: str = match_date.strip()
+    if cleaned and re.fullmatch(r"\d{4}-\d{2}-\d{2}", cleaned) is None:
+        raise ValueError(f"Invalid match date: {match_date}")
+    return cleaned
+
+
+def GetMatchDate(path_to_vid: Path) -> str:
+    """Read the embedded match-date format tag from a video.
+
+    Args:
+        path_to_vid: The path to the video file to probe.
+
+    Returns:
+        The match date as "YYYY-MM-DD", or "" when the tag is absent or the
+        probe fails.
+    """
+    ffprobe_command: str = ("ffprobe -v error -show_entries format_tags=matchdate "
+                            f"-of csv {shlex.quote(str(path_to_vid))}")
+    try:
+        output: str = subprocess.run(
+            ffprobe_command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            check=True
+        ).stdout.strip()
+    except subprocess.CalledProcessError as e:
+        logging.warning(f"GetMatchDate ffprobe failed for '{path_to_vid}': {e}")
+        return ""
+    if not output:
+        return ""
+    return output.removeprefix("format,").strip()
 
 
 def MakeFormattedDataFrame(csv_path: Path) -> pd.DataFrame:
@@ -762,6 +821,8 @@ def MakeFormattedDataFrame(csv_path: Path) -> pd.DataFrame:
         column_names = column_names + [COL_NET_POINTS, COL_ADJUSTED_NET_POINTS]
     if n_cols >= 12:
         column_names = column_names + [COL_MATCH_RESULT]
+    if n_cols >= 13:
+        column_names = column_names + [COL_MATCH_DATE]
     df: pd.DataFrame = pd.read_csv(
         csv_path,
         header=None,
@@ -787,6 +848,8 @@ def MakeFormattedDataFrame(csv_path: Path) -> pd.DataFrame:
     df[COL_ATTACKING] = df[COL_ATTACKING] == "A"
     if COL_MATCH_RESULT in df.columns:
         df[COL_MATCH_RESULT] = df[COL_MATCH_RESULT].fillna("").astype(str)
+    if COL_MATCH_DATE in df.columns:
+        df[COL_MATCH_DATE] = df[COL_MATCH_DATE].fillna("").astype(str)
     logging.info(
         f"Successfully loaded DataFrame from '{csv_path}' with shape: {df.shape}")
     ReloadScoringMap()
@@ -892,8 +955,8 @@ def SwapPerspectiveCSV(csv_data: str) -> str:
     Reverses the attacking flag, swaps the team/opponent move and score
     columns, flips the colon-paired tie-up, negates the stored net/adjusted
     points, and inverts the match-result column so the same rows describe the
-    opponent. Rows that do not match the 12-field compiled schema pass through
-    unchanged.
+    opponent. Rows that do not match the 12-field compiled schema (or the
+    13-field schema with a match date) pass through unchanged.
 
     Args:
         csv_data: The multi-line compiled CSV string for a wrestler.
@@ -904,24 +967,26 @@ def SwapPerspectiveCSV(csv_data: str) -> str:
     swapped: list[str] = []
     for line in csv_data.splitlines():
         parts: list[str] = line.split(",")
-        if len(parts) != 12:
+        if len(parts) not in (12, 13):
             swapped.append(line)
             continue
         (origin, start, end, attack, tie, team_moves, op_moves,
-         team_scores, op_scores, net, adjusted, result) = parts
+         team_scores, op_scores, net, adjusted, result) = parts[:12]
+        match_date: str = parts[12] if len(parts) == 13 else ""
         tie_pair: list[str] = tie.split(":")
         new_tie: str = ":".join(reversed(tie_pair)) if len(tie_pair) > 1 else tie
         new_net: str = str(-int(net)) if net else ""
         new_adjusted: str = str(-int(adjusted)) if adjusted else ""
         new_result: str = "L" if result == "W" else ("W" if result == "L" else result)
-        swapped.append(
-            ",".join([
-                origin, start, end,
-                "D" if attack == "A" else "A",
-                new_tie, op_moves, team_moves, op_scores, team_scores,
-                new_net, new_adjusted, new_result,
-            ])
-        )
+        fields: list[str] = [
+            origin, start, end,
+            "D" if attack == "A" else "A",
+            new_tie, op_moves, team_moves, op_scores, team_scores,
+            new_net, new_adjusted, new_result,
+        ]
+        if match_date:
+            fields.append(match_date)
+        swapped.append(",".join(fields))
     return "\n".join(swapped)
 
 
@@ -1382,6 +1447,56 @@ def GenerateTeamSummaryDF(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     }
     out.loc["Team Mean"] = mean_row
     return out
+
+
+def GenerateMatchOutcomesDF(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Build the consolidated Match Outcomes block from per-wrestler frames.
+
+    Each wrestler's rows are bucketed by COL_MATCH_RESULT ("W" / "L" /
+    unrecorded); the win rate is wins / (wins + losses), zero when no outcomes
+    are recorded. Pins and times-pinned count sequences containing a pin.
+
+    Args:
+        frames: A mapping of wrestler name to its formatted sequence DataFrame.
+
+    Returns:
+        A DataFrame indexed by wrestler (index name "Wrestler") with the
+        columns "W", "L", "Unrecorded", "Win Rate", "Pins", and "Times Pinned".
+    """
+    rows: list[dict[str, Any]] = []
+    for name, df_in in frames.items():
+        if COL_MATCH_RESULT in df_in.columns:
+            result_col: pd.Series = df_in[COL_MATCH_RESULT]
+            wins: int = int((result_col == "W").sum())
+            losses: int = int((result_col == "L").sum())
+            unrecorded: int = int((~result_col.isin(["W", "L"])).sum())
+        else:
+            wins = 0
+            losses = 0
+            unrecorded = len(df_in)
+        recorded: int = wins + losses
+        win_rate: float = wins / recorded if recorded > 0 else 0.0
+        rows.append({
+            "Wrestler": name,
+            "W": wins,
+            "L": losses,
+            "Unrecorded": unrecorded,
+            "Win Rate": round(win_rate, 2),
+            "Pins": PinCount(df_in, COL_TEAM_SCORES),
+            "Times Pinned": PinCount(df_in, COL_OPPONENT_SCORES),
+        })
+    out: pd.DataFrame = pd.DataFrame.from_records(rows)
+    if out.empty:
+        out = pd.DataFrame({
+            "Wrestler": [],
+            "W": [],
+            "L": [],
+            "Unrecorded": [],
+            "Win Rate": [],
+            "Pins": [],
+            "Times Pinned": [],
+        })
+    return out.set_index("Wrestler")
 
 def GenerateMoveMatrix(
     df_in: pd.DataFrame,
