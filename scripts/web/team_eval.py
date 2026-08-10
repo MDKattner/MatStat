@@ -1,9 +1,10 @@
 """Team Evaluation job for the web app — generate the multi-sheet Excel report.
 
 Ports ``TeamEvaluationWidget``: each wrestler CSV in stats/wrestler_data/ is
-loaded, its Initiation/Defense/Offense DataFrames are generated, and everything
-is written into a single multi-sheet xlsx at stats/reports/Team_Stats.xlsx.
-Runs inside a JobManager thread; progress is reported via the JobContext.
+loaded, its Initiation/Rates/Defense/Offense DataFrames are generated, and
+everything is written into a single multi-sheet xlsx at stats/reports/
+Team_Stats.xlsx (a cross-wrestler "Team Summary" sheet comes first). Runs
+inside a JobManager thread; progress is reported via the JobContext.
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ from scripts.helpers import (
     GenerateDefenseDF,
     GenerateInitiationDFBySegment,
     GenerateOffenseDF,
+    GenerateRatesDF,
+    GenerateTeamSummaryDF,
     MakeFormattedDataFrame,
     csv_dir,
     eval_dir,
@@ -28,9 +31,10 @@ from scripts.web.jobs import JobContext
 
 _SECTION_LABELS: list[tuple[int, int, str]] = [
     (0, 0, "Initiation"),
-    (6, 0, "Defense"),
-    (6, 8, "Offense"),
-    (6, 16, "Raw Data"),
+    (6, 0, "Rates"),
+    (9, 0, "Defense"),
+    (9, 8, "Offense"),
+    (9, 16, "Raw Data"),
 ]
 
 
@@ -64,7 +68,9 @@ def run_team_eval_job(ctx: JobContext) -> dict[str, Any]:
 
     Returns:
         A dict describing the result: ``{"output": "Team_Stats.xlsx",
-        "processed": [names], "errors": [...]}``.
+        "processed": [names], "errors": [...]}``. The workbook's first sheet is
+        the cross-wrestler "Team Summary"; each wrestler sheet holds the
+        Initiation, Rates, Defense, Offense, and raw blocks.
 
     Raises:
         ValueError: If no wrestler CSV files exist in csv_dir.
@@ -87,23 +93,41 @@ def run_team_eval_job(ctx: JobContext) -> dict[str, Any]:
     except OSError as e:
         raise RuntimeError(f"Could not create report directory: {e}")
 
+    frames: dict[str, pd.DataFrame] = {}
+    for csv_file in csv_files:
+        sheet_name: str = csv_file.stem
+        try:
+            frames[sheet_name] = MakeFormattedDataFrame(csv_file)
+        except Exception as e:
+            error_msg: str = f"Failed to process '{sheet_name}': {e}"
+            logging.error(error_msg)
+            errors.append(error_msg)
+
+    if not frames:
+        raise ValueError(
+            "No wrestler data files found in stats/wrestler_data/. "
+            "Run Compile Stats first."
+        )
+
     try:
         with pd.ExcelWriter(excel_file, engine="openpyxl", mode="w") as writer:
-            for i, csv_file in enumerate(csv_files):
-                sheet_name: str = csv_file.stem
+            GenerateTeamSummaryDF(frames).to_excel(writer, sheet_name="Team Summary")
+            for i, (sheet_name, raw_df) in enumerate(frames.items()):
                 try:
-                    raw_df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
                     GenerateInitiationDFBySegment(raw_df).to_excel(
                         writer, sheet_name=sheet_name, startrow=1
                     )
-                    GenerateDefenseDF(raw_df).to_excel(
+                    GenerateRatesDF(raw_df).to_excel(
                         writer, sheet_name=sheet_name, startrow=7
                     )
+                    GenerateDefenseDF(raw_df).to_excel(
+                        writer, sheet_name=sheet_name, startrow=10
+                    )
                     GenerateOffenseDF(raw_df).to_excel(
-                        writer, sheet_name=sheet_name, startrow=7, startcol=8
+                        writer, sheet_name=sheet_name, startrow=10, startcol=8
                     )
                     raw_df.to_excel(
-                        writer, sheet_name=sheet_name, startrow=7, startcol=16
+                        writer, sheet_name=sheet_name, startrow=10, startcol=16
                     )
                     _write_section_labels(writer, sheet_name)
                     processed.append(sheet_name)

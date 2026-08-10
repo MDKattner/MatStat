@@ -1282,6 +1282,107 @@ def GenerateInitiationDFBySegment(df_in: pd.DataFrame) -> pd.DataFrame:
     df_out.index.name = "Segment"
     return df_out
 
+
+def GenerateRatesDF(df_in: pd.DataFrame) -> pd.DataFrame:
+    """Compute per-match rates for a wrestler's sequence data.
+
+    Matches are the distinct video prefixes of the Origin index (the
+    "video.mkv" part of "video.mkv:chap"). Every rate divides by the match
+    count so wrestlers with more tagged sequences per match are not rewarded.
+    Time-based rates are intentionally omitted because sequence times are not
+    a reliable match-length record.
+
+    Args:
+        df_in: The sequence DataFrame.
+
+    Returns:
+        A single-row DataFrame (index name "Metric") holding the per-match
+        rates as columns.
+    """
+    matches: int = len({str(origin).split(":")[0] for origin in df_in.index})
+    total_count: int = len(df_in)
+    attack_count: int = int(df_in[COL_ATTACKING].sum()) if total_count > 0 else 0
+    divisor: float = float(matches) if matches > 0 else 1.0
+    rates: dict[str, float | int] = {
+        "Matches": matches,
+        "Net Points per Match": round(float(df_in[COL_NET_POINTS].sum()) / divisor, 2),
+        "Adj. Net Points per Match": round(
+            float(df_in[COL_ADJUSTED_NET_POINTS].sum()) / divisor, 2
+        ),
+        "Attacks per Match": round(attack_count / divisor, 2),
+        "Defenses per Match": round((total_count - attack_count) / divisor, 2),
+        "Pins per Match": round(PinCount(df_in, COL_TEAM_SCORES) / divisor, 2),
+        "Times Pinned per Match": round(
+            PinCount(df_in, COL_OPPONENT_SCORES) / divisor, 2
+        ),
+    }
+    df_out: pd.DataFrame = pd.DataFrame.from_dict(
+        {name: [value] for name, value in rates.items()}, orient="columns"
+    )
+    df_out.index.name = "Metric"
+    return df_out
+
+
+def GenerateTeamSummaryDF(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Build the Team Summary block from per-wrestler sequence frames.
+
+    Each wrestler's per-match rates are computed via GenerateRatesDF; the
+    z-score of every rate column (population standard deviation, zeros when a
+    column has no variance) is appended per wrestler, and a final "Team Mean"
+    row holds the team's mean of the base rate columns.
+
+    Args:
+        frames: A mapping of wrestler name to its formatted sequence DataFrame.
+
+    Returns:
+        A DataFrame indexed by wrestler (index name "Wrestler") with the rate
+        columns, their "(z)" z-score columns, and a "Team Mean" row.
+    """
+    rows: list[dict[str, float | int]] = []
+    for name, df_in in frames.items():
+        rates_row: pd.Series = GenerateRatesDF(df_in).iloc[0]
+        rows.append(
+            {
+                column: int(value) if column == "Matches" else float(value)
+                for column, value in rates_row.items()
+            }
+        )
+    if not rows:
+        template: dict[str, float | int] = {
+            "Matches": 0,
+            "Net Points per Match": 0.0,
+            "Adj. Net Points per Match": 0.0,
+            "Attacks per Match": 0.0,
+            "Defenses per Match": 0.0,
+            "Pins per Match": 0.0,
+            "Times Pinned per Match": 0.0,
+        }
+        empty_out: pd.DataFrame = pd.DataFrame(columns=list(template))
+        empty_out.index.name = "Wrestler"
+        empty_out.loc["Team Mean"] = template
+        return empty_out
+    out: pd.DataFrame = pd.DataFrame.from_records(rows)
+    out.insert(0, "Wrestler", list(frames.keys()))
+    out = out.set_index("Wrestler")
+    base_columns: list[str] = [column for column in out.columns if column != "Matches"]
+    for column in base_columns:
+        values: np.ndarray = out[column].to_numpy(dtype=float)
+        column_mean: float = float(values.mean())
+        column_std: float = float(values.std())
+        z_scores: np.ndarray = (
+            np.zeros_like(values)
+            if column_std == 0.0
+            else (values - column_mean) / column_std
+        )
+        out[f"{column} (z)"] = np.round(z_scores, 2)
+    mean_row: dict[str, float] = {
+        column: float(out[column].mean())
+        for column in out.columns
+        if not column.endswith(" (z)")
+    }
+    out.loc["Team Mean"] = mean_row
+    return out
+
 def GenerateMoveMatrix(
     df_in: pd.DataFrame,
     move_column: str,
@@ -1349,6 +1450,7 @@ def GenerateMoveMatrix(
 def FirstPrincipalComponent(
     matrix: pd.DataFrame,
     standardize: bool,
+    *,
     row_normalize: bool = ...,
     return_loadings: Literal[False] = ...,
 ) -> tuple[np.ndarray, float]: ...
@@ -1358,8 +1460,9 @@ def FirstPrincipalComponent(
 def FirstPrincipalComponent(
     matrix: pd.DataFrame,
     standardize: bool,
+    *,
     row_normalize: bool = ...,
-    return_loadings: Literal[True] = ...,
+    return_loadings: Literal[True],
 ) -> tuple[np.ndarray, float, np.ndarray]: ...
 
 

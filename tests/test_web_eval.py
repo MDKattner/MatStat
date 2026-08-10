@@ -83,7 +83,7 @@ class TestRunTeamEvalJob:
         report: Path = tmp_path / "eval" / "Team_Stats.xlsx"
         assert report.is_file()
         wb = openpyxl.load_workbook(report)
-        assert wb.sheetnames == ["Alice", "Bob Smith"]
+        assert wb.sheetnames == ["Team Summary", "Alice", "Bob Smith"]
         assert ctx.reports[-1] == (100, "Report generated: Team_Stats.xlsx")
 
     def test_section_labels_and_layout(self, tmp_path, monkeypatch) -> None:
@@ -95,13 +95,33 @@ class TestRunTeamEvalJob:
         ws = openpyxl.load_workbook(tmp_path / "eval" / "Team_Stats.xlsx")["Alice"]
         assert ws["A1"].value == "Initiation"
         assert ws["A1"].font.bold is True
-        assert ws["A7"].value == "Defense"
-        assert ws["I7"].value == "Offense"
-        assert ws["Q7"].value == "Raw Data"
+        assert ws["A7"].value == "Rates"
+        assert ws["A10"].value == "Defense"
+        assert ws["I10"].value == "Offense"
+        assert ws["Q10"].value == "Raw Data"
         assert ws["A2"].value == "Segment"
-        assert ws["A8"].value == "Move"
-        assert ws["I8"].value == "Move"
-        assert ws["Q8"].value == "Origin"
+        assert ws["A8"].value == "Metric"
+        assert ws["A11"].value == "Move"
+        assert ws["I11"].value == "Move"
+        assert ws["Q11"].value == "Origin"
+
+    def test_team_summary_sheet(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        _write_csv(tmp_path, "Alice")
+        _write_csv(tmp_path, "Bob", content=CSV_ROW2)
+
+        team_eval.run_team_eval_job(FakeContext())
+
+        ws = openpyxl.load_workbook(tmp_path / "eval" / "Team_Stats.xlsx")[
+            "Team Summary"
+        ]
+        assert ws["A1"].value == "Wrestler"
+        assert ws["B1"].value == "Matches"
+        assert ws["C1"].value == "Net Points per Match"
+        assert ws["I1"].value == "Net Points per Match (z)"
+        assert ws["A2"].value == "Alice"
+        assert ws["A3"].value == "Bob"
+        assert ws["A4"].value == "Team Mean"
 
     def test_initiation_segments_in_report(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
@@ -144,7 +164,7 @@ class TestRunTeamEvalJob:
         assert len(result["errors"]) == 1
         assert "Broken" in result["errors"][0]
         wb = openpyxl.load_workbook(tmp_path / "eval" / "Team_Stats.xlsx")
-        assert wb.sheetnames == ["Alice"]
+        assert wb.sheetnames == ["Team Summary", "Alice"]
 
     def test_no_csv_files_raises(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)

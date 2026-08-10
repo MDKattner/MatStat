@@ -11,14 +11,14 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from scripts.helpers import (
     COL_TEAM_MOVES, COL_OPPONENT_MOVES, COL_TEAM_SCORES, COL_OPPONENT_SCORES,
-    COL_START_TIME, COL_END_TIME, COL_ATTACKING, COL_NET_POINTS,
-    COL_ADJUSTED_NET_POINTS, COL_MATCH_RESULT,
+    COL_START_TIME, COL_END_TIME, COL_ATTACKING, COL_TIE_UP, COL_NET_POINTS,
+    COL_ADJUSTED_NET_POINTS, COL_MATCH_RESULT, COL_ORIGIN,
     CalculateNetPoints, TabulateNetPoints, AdjustedNetPoints,
     TabulateAdjustedNetPoints,
     MoveCounts, MoveUsageCounts, MoveDefenseCounts, PinCount,
     _MoveFilter, DidMove, DefendedMove,
     _GenerateMoveDF, GenerateOffenseDF, GenerateDefenseDF, GenerateInitiationDF,
-    GenerateInitiationDFBySegment,
+    GenerateInitiationDFBySegment, GenerateRatesDF, GenerateTeamSummaryDF,
 )
 
 
@@ -371,6 +371,102 @@ class TestGenerateInitiationDFBySegment:
         assert list(out.index) == ["All", "Wins", "Losses", "Unrecorded"]
         assert out.index.name == "Segment"
         assert (out == 0).all().all()
+
+
+class TestGenerateRatesDF:
+    """Tests for GenerateRatesDF — per-match rate metrics."""
+
+    def _rates_frame(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            COL_START_TIME: [0, 6, 12, 18],
+            COL_END_TIME: [6, 12, 18, 24],
+            COL_ATTACKING: [True, False, True, False],
+            COL_TIE_UP: ["collar tie", "standing", "front headlock", "regular ride"],
+            COL_TEAM_MOVES: [["double"], ["sprawl"], ["single"], ["whizzer"]],
+            COL_OPPONENT_MOVES: [["sprawl"], ["sweep single"], ["whizzer"], ["double"]],
+            COL_TEAM_SCORES: [["T"], [], ["PIN"], []],
+            COL_OPPONENT_SCORES: [[], ["T"], [], ["E"]],
+            COL_NET_POINTS: [3, -3, 6, -1],
+            COL_ADJUSTED_NET_POINTS: [3, -3, 6, -1],
+        }, index=pd.Index(
+            ["a.mkv:1", "a.mkv:2", "b.mkv:1", "b.mkv:2"], name=COL_ORIGIN
+        ))
+
+    def test_rates_divide_by_match_count(self) -> None:
+        out = GenerateRatesDF(self._rates_frame())
+        assert out["Matches"].iloc[0] == 2
+        assert out["Net Points per Match"].iloc[0] == 2.5  # (3 - 3 + 6 - 1) / 2
+        assert out["Adj. Net Points per Match"].iloc[0] == 2.5
+        assert out["Attacks per Match"].iloc[0] == 1.0  # 2 attacks / 2 matches
+        assert out["Defenses per Match"].iloc[0] == 1.0
+        assert out["Pins per Match"].iloc[0] == 0.5  # 1 pin / 2 matches
+        assert out["Times Pinned per Match"].iloc[0] == 0.0
+
+    def test_single_video_matches_one(self, sample_df: pd.DataFrame) -> None:
+        out = GenerateRatesDF(sample_df)
+        assert out["Matches"].iloc[0] == 1
+        assert out["Net Points per Match"].iloc[0] == 2.0
+        assert out["Attacks per Match"].iloc[0] == 3.0
+
+    def test_index_named_metric(self, sample_df: pd.DataFrame) -> None:
+        assert GenerateRatesDF(sample_df).index.name == "Metric"
+
+    def test_empty_dataframe(self, empty_df: pd.DataFrame) -> None:
+        out = GenerateRatesDF(empty_df)
+        assert out["Matches"].iloc[0] == 0
+        assert out["Net Points per Match"].iloc[0] == 0.0
+        assert out["Times Pinned per Match"].iloc[0] == 0.0
+
+
+class TestGenerateTeamSummaryDF:
+    """Tests for GenerateTeamSummaryDF — cross-wrestler rates and z-scores."""
+
+    def _frames(self) -> dict[str, pd.DataFrame]:
+        alice: pd.DataFrame = pd.DataFrame({
+            COL_START_TIME: [0, 6],
+            COL_END_TIME: [6, 12],
+            COL_ATTACKING: [True, True],
+            COL_TIE_UP: ["collar tie", "front headlock"],
+            COL_TEAM_MOVES: [["double"], ["single"]],
+            COL_OPPONENT_MOVES: [["sprawl"], ["whizzer"]],
+            COL_TEAM_SCORES: [["T"], ["N2"]],
+            COL_OPPONENT_SCORES: [[], []],
+            COL_NET_POINTS: [3, 2],
+            COL_ADJUSTED_NET_POINTS: [3, 2],
+        }, index=pd.Index(["a.mkv:1", "a.mkv:2"], name=COL_ORIGIN))
+        bob: pd.DataFrame = alice.copy()
+        bob.index = pd.Index(["b.mkv:1", "b.mkv:2"], name=COL_ORIGIN)
+        return {"Alice": alice, "Bob": bob}
+
+    def test_rows_team_mean_and_z_scores(self) -> None:
+        out = GenerateTeamSummaryDF(self._frames())
+        assert list(out.index) == ["Alice", "Bob", "Team Mean"]
+        assert out.index.name == "Wrestler"
+        assert out.loc["Alice", "Matches"] == 1
+        assert out.loc["Bob", "Matches"] == 1
+        assert out.loc["Alice", "Net Points per Match"] == 5.0
+        assert out.loc["Bob", "Net Points per Match"] == 5.0
+        assert out.loc["Alice", "Attacks per Match"] == 2.0
+        assert out.loc["Team Mean", "Net Points per Match"] == 5.0
+        # Identical wrestlers -> no variance -> z-scores are all zero.
+        assert out.loc["Alice", "Net Points per Match (z)"] == 0.0
+        assert out.loc["Bob", "Net Points per Match (z)"] == 0.0
+        # The team mean row has no z-scores.
+        assert pd.isna(out.loc["Team Mean", "Net Points per Match (z)"])
+
+    def test_z_scores_reflect_differences(self) -> None:
+        alice, bob = self._frames().values()
+        bob[COL_NET_POINTS] = [1, 1]
+        bob[COL_ADJUSTED_NET_POINTS] = [1, 1]
+        out = GenerateTeamSummaryDF({"Alice": alice, "Bob": bob})
+        assert out.loc["Alice", "Net Points per Match"] == 5.0
+        assert out.loc["Bob", "Net Points per Match"] == 2.0
+        assert out.loc["Alice", "Net Points per Match (z)"] == pytest.approx(1.0)
+        assert out.loc["Bob", "Net Points per Match (z)"] == pytest.approx(-1.0)
+
+    def test_empty_frames(self) -> None:
+        out = GenerateTeamSummaryDF({})
+        assert list(out.index) == ["Team Mean"]
 
 
 class TestAdjustedNetPoints:
