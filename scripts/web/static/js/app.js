@@ -14,6 +14,7 @@ import { mountPca } from "./tabs/pca.js";
 import { mountSearch } from "./tabs/search.js";
 import { mountTagFilm } from "./tabs/tag_film.js";
 import { mountTeamEval } from "./tabs/team_eval.js";
+import { mountTrend } from "./tabs/trend.js";
 
 const MAX_LOG_LINES = 5000;
 
@@ -583,6 +584,7 @@ function boot() {
   safe("mountSearch", () => mountSearch(document.getElementById("search-root")));
   safe("mountTagFilm", () => mountTagFilm(document.getElementById("tag-film-root")));
   safe("mountTeamEval", () => mountTeamEval(document.getElementById("team-eval-root")));
+  safe("mountTrend", () => mountTrend(document.getElementById("trend-root")));
   connectWs();
 }
 

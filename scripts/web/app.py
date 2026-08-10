@@ -29,7 +29,7 @@ from scripts.helpers import (
     taged_dir,
     untaged_dir,
 )
-from scripts.web import audit, auth, clips, configs, pca, search, stats, tag, team_eval, transcode
+from scripts.web import audit, auth, clips, configs, pca, search, stats, tag, team_eval, transcode, trend
 from scripts.web.auth import LoginRequest
 from scripts.web.clips import BatchRequest, CombineRequest, FindRequest
 from scripts.web.configs import AppConfigUpdate, RosterUpdate
@@ -631,6 +631,28 @@ async def pca_compile(req: PcaCompileRequest) -> dict[str, Any]:
         "pca_compile", _run, message=f"Compiling PCA reel: {req.name}"
     )
     return {"status": "queued", "job_id": job_id}
+
+
+@app.get("/api/trend", response_model=None)
+async def trend_figure(
+    wrestler: str = "",
+    metric: str = "net",
+    window: int = 5,
+) -> dict[str, Any]:
+    """Return the per-match trend figure for a wrestler."""
+    if not wrestler.strip():
+        raise HTTPException(status_code=400, detail="Wrestler is required")
+    if metric not in ("net", "adjusted"):
+        raise HTTPException(status_code=400, detail="Invalid metric")
+    if window < 1:
+        raise HTTPException(status_code=400, detail="Window must be at least 1")
+    try:
+        result: dict[str, Any] = trend.build_trend_figure(
+            wrestler.strip(), metric, window
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
 
 
 @app.get("/api/search/wrestlers")
