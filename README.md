@@ -19,6 +19,7 @@ MatStat provides a FastAPI web app to tag wrestling matches, extract sequence da
 -   **Batch video upload** into the untagged pool (multi-file, with per-file success/conflict/error reporting).
 -   Interactive tagging of sequences with ties/positions, moves, and scoring — each move can be assigned a count for how many times it occurred in a sequence.
 -   **Dual-wrestler mode:** tag both wrestlers in one pass, each with their own ties, plus a match outcome (Win/Loss) recorded as a `(W)` on the winner's name. Per-wrestler stats are derived for both sides automatically.
+-   **Match dates:** record a `YYYY-MM-DD` date per match while tagging (or backfill it in the Auditing tab). The date is embedded in the video and stored as a `Match Date` column in the compiled CSVs, enabling per-match trends over a season.
 -   Embeds chapter data directly into new Matroska (`.mkv`) video files.
 -   Compiles data from multiple tagged videos into wrestler-specific CSV files.
 -   Generates reports on offense, defense, and attack initiation.
@@ -26,6 +27,7 @@ MatStat provides a FastAPI web app to tag wrestling matches, extract sequence da
 -   Generates move and position specific film by combining clips based on wrestler, tie-ups, or moves, with optional fast stream-copy extraction and batch multi-wrestler processing.
 -   Preview your generated highlight reel directly in the browser before saving.
 -   Cross-wrestler search with filterable queries and video preview.
+-   **Trends:** per-match net/adjusted points charted over the season with cumulative and rolling averages (matches with no recorded date are skipped and reported).
 -   Interactive PCA analysis: brush-select sequences or matches on an offense-vs-defense component scatter to preview them or compile them into a highlight reel.
 -   Configuration is done via JSON config files for wrestlers, moves, and scoring outcomes, editable through a built-in Config Editor (header gear button).
 
@@ -34,12 +36,13 @@ MatStat provides a FastAPI web app to tag wrestling matches, extract sequence da
 The data pipelines are as follows:
 
 1.  **Tagging (`Tag Film` tab):** A user uploads raw videos into `vids/untaged/` (batch upload supported), then selects a video. The interface guides the user through creating chapters for each action sequence. A new, tagged `.mkv` video is created in `vids/taged/`, and the original is deleted.
-2.  **Compilation (`Compile Stats` tab):** Processes all tagged videos in `vids/taged/`. It extracts the chapter data and aggregates it, writing one `.csv` file per wrestler into `stats/wrestler_data/`. Each row carries stored Net Points, Adjusted Net Points, and a `W/L` column (the match result, if recorded), and dual-wrestler videos also produce a perspective-swapped CSV for the opponent.
+2.  **Compilation (`Compile Stats` tab):** Processes all tagged videos in `vids/taged/`. It extracts the chapter data and aggregates it, writing one `.csv` file per wrestler into `stats/wrestler_data/`. Each row carries stored Net Points, Adjusted Net Points, a `W/L` column (the match result, if recorded), and a `Match Date` column (the `YYYY-MM-DD` tag date, blank when unrecorded), and dual-wrestler videos also produce a perspective-swapped CSV for the opponent.
 3.  **Data Use:**
-    - **Analysis (`Team Evaluation` tab):** Reads the per-wrestler CSV files, loads them into pandas DataFrames, and calculates a variety of statistics (with the Initiation summary broken out by match result into All / Wins / Losses rows). These stats are then added to wrestler-specific sheets of the `stats/reports/Team_Stats.xlsx` Excel file.
+    - **Analysis (`Team Evaluation` tab):** Reads the per-wrestler CSV files, loads them into pandas DataFrames, and calculates a variety of statistics (with the Initiation summary broken out by match result into All / Wins / Losses rows). These stats are then added to wrestler-specific sheets of the `stats/reports/Team_Stats.xlsx` Excel file, alongside a **Team Summary** sheet of team-wide rates and a **Match Outcomes** sheet consolidating each wrestler's wins/losses, unrecorded matches, win rate, and pins.
     - **Viewing (`Combine Clips` tab):** Lets you filter tagged sequences by wrestler, tie-up, or move, then concatenates matching clips into a single video in `vids/clips/`. The web app provides a live preview of the generated reel.
     - **Search (`Search` tab):** Query across all wrestlers' tagged data with filters for tie-up, moves, scores, and adjusted net points (net points plus the pin bonus). Preview results in the video player and export to CSV.
     - **Analysis (`PCA` tab):** Projects every tagged sequence (or per-wrestler/per-video match aggregates) onto its first offense and defense move components, colored by net points. Brush-select points to preview them in the player or compile them into a highlight reel.
+    - **Trends (`Trends` tab):** Charts a single wrestler's per-match net (or adjusted) points over the season as a scatter of each dated match, with cumulative and rolling averages overlaid. Only matches with a recorded date are plotted; the number of skipped, undated rows is reported so you know how much of the video history is missing from the trend.
 
 ## Dual Wrestler Mode & Match Outcome
 
@@ -149,7 +152,7 @@ Because the app is password-only and single-session, it is meant to sit **behind
 ## Module Overview
 
 -   **`helpers.py`**: Contains shared data classes (`ChapterSequence`) and functions used by the web app for video processing, data formatting, and statistical calculation. Also contains many useful functions for analyzing the csv files in a Jupyter Notebook.
--   **`scripts/web/`**: The FastAPI web app (app.py, ffmpeg.py, jobs.py, ws.py, transcode.py, and the tab modules tag/stats/team_eval/clips/search/pca).
+-   **`scripts/web/`**: The FastAPI web app (app.py, ffmpeg.py, jobs.py, ws.py, transcode.py, and the tab modules tag/stats/team_eval/clips/search/pca/trend/audit).
 
 ## Configuration
 
