@@ -77,8 +77,8 @@ export function mountSearch(root) {
   ]);
 
   const tie = filterList({ label: "Tie Up:", items: [] });
-  const teamMove = el("input", { class: "combo-input", type: "text", placeholder: "e.g. high crotch" });
-  const oppMove = el("input", { class: "combo-input", type: "text", placeholder: "e.g. sprawl" });
+  const teamMove = filterList({ label: "Team Move:", items: [] });
+  const oppMove = filterList({ label: "Opponent Move:", items: [] });
 
   const minPts = el("input", { class: "combo-input pts-input", type: "number", value: "-20", min: "-20", max: "20" });
   const maxPts = el("input", { class: "combo-input pts-input", type: "number", value: "20", min: "-20", max: "20" });
@@ -108,8 +108,8 @@ export function mountSearch(root) {
       wrestler: wrestler.selected,
       attack_mode: attackMode.value,
       tie_up: tie.selected,
-      team_move: teamMove.value,
-      opp_move: oppMove.value,
+      team_move: teamMove.selected,
+      opp_move: oppMove.selected,
       min_points: pointsValue(minPts, -20),
       max_points: pointsValue(maxPts, 20),
     };
@@ -167,8 +167,11 @@ export function mountSearch(root) {
       fetchJson("/api/config"),
     ]);
     const names = wrestlerItems.ok ? wrestlerItems.body.items || [] : [];
+    const moves = config.ok ? config.body.moves || [] : [];
     wrestler.setItems(["All", ...names]);
     tie.setItems(config.ok ? config.body.ties || [] : []);
+    teamMove.setItems(moves);
+    oppMove.setItems(moves);
   }
 
   searchBtn.addEventListener("click", runSearch);
@@ -184,8 +187,8 @@ export function mountSearch(root) {
       el("label", { class: "field-label", text: "Attack/Defense:" }, [attackMode]),
     ]),
     tie.node,
-    el("label", { class: "field-label", text: "Team Move (contains):" }, [teamMove]),
-    el("label", { class: "field-label", text: "Opponent Move (contains):" }, [oppMove]),
+    teamMove.node,
+    oppMove.node,
     el("div", { class: "row filter-row" }, [
       el("label", { class: "field-label", text: "Min Adjusted Net Points:" }, [minPts]),
       el("label", { class: "field-label", text: "Max Adjusted Net Points:" }, [maxPts]),
