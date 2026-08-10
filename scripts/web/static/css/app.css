@@ -398,7 +398,12 @@ fieldset.tag-card { margin: 0; }
 
 .tag-card h3.subhead { margin-top: 12px; font-size: 13px; color: var(--text-dim); }
 
-.tie-row { align-items: flex-start; }
+.tie-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  align-items: flex-start;
+}
 
 .row {
   display: flex;

@@ -274,9 +274,9 @@ export function mountTagFilm(root) {
     if (!dual) oppTie.clear();
     updateTitlePreview();
   }
-  const ourMoves = checkList({ label: "Your Moves", items: [], counts: true });
+  const ourMoves = checkList({ label: "Main Wrestler Moves", items: [], counts: true });
   const oppMoves = checkList({ label: "Opp. Moves", items: [], counts: true });
-  const ourScores = checkList({ label: "Your Scores", items: [], counts: true });
+  const ourScores = checkList({ label: "Main Wrestler Scores", items: [], counts: true });
   const oppScores = checkList({ label: "Opp. Scores", items: [], counts: true });
 
   const addBtn = el("button", { class: "btn", type: "button", text: "Add Sequence", disabled: "" });
@@ -319,6 +319,7 @@ export function mountTagFilm(root) {
       wrestlerList.setItems(wrestlerNames);
       wrestlerList.setTeams(body.teams || {});
       opponentList.setItems(wrestlerNames.filter((w) => w !== state.wrestler));
+      opponentList.setTeams(body.teams || {});
       tie.setItems(body.ties || []);
       oppTie.setItems(body.ties || []);
       ourMoves.setItems(body.moves || []);
@@ -367,9 +368,9 @@ export function mountTagFilm(root) {
       `End Time\t: ${formatClock(seq.end_time)}`,
       `Attacking\t: ${seq.attack_defend}`,
       `Tie/Position\t: ${tieLabel(seq)}`,
-      `Your moves\t: ${seq.team_moves.join(", ")}`,
+      `Main wrestler moves\t: ${seq.team_moves.join(", ")}`,
       `Opponent moves\t: ${seq.op_moves.join(", ")}`,
-      `Your scoring\t: ${seq.team_scores.join(", ")}`,
+      `Main wrestler scoring\t: ${seq.team_scores.join(", ")}`,
       `Opponent scoring\t: ${seq.op_scores.join(", ")}`,
     ].join("\n");
   }
@@ -551,7 +552,7 @@ export function mountTagFilm(root) {
     changeBtn,
   ]);
   const wrestlerCard = el("section", { class: "tag-card wrestler-card" }, [
-    el("h3", { text: "Wrestler" }),
+    el("h3", { text: "Main Wrestler" }),
     wrestlerList.node,
     el("h3", { class: "subhead", text: "Opponent (optional)" }),
     opponentList.node,
