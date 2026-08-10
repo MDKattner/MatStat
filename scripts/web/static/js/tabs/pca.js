@@ -81,7 +81,7 @@ export function mountPca(root) {
     items: [],
     running: false,
     jobId: "",
-    handlersBound: false,
+    loadSeq: 0,
   };
 
   // ---------- Right column: player + plot ----------
@@ -200,6 +200,42 @@ export function mountPca(root) {
   // ---------- Plot ----------
 
   /**
+   * Bind Plotly selection/preview handlers to the plot element.
+   *
+   * Plotly.newPlot purges every listener on the graph div, so these must be
+   * re-bound after each render (never bound once at boot).
+   */
+  function bindPlotHandlers() {
+    plotEl.on("plotly_selected", (event) => {
+      state.items = (event.points || [])
+        .filter((p) => p.customdata)
+        .map((p) => ({
+          wrestler: p.customdata[0],
+          video: p.customdata[1],
+          start_time: p.customdata[2],
+          end_time: p.customdata[3],
+        }));
+      renderSelection();
+    });
+
+    plotEl.on("plotly_click", (event) => {
+      const p = (event.points || [])[0];
+      if (!p || !p.customdata) return;
+      previewItem({
+        wrestler: p.customdata[0],
+        video: p.customdata[1],
+        start_time: p.customdata[2],
+        end_time: p.customdata[3],
+      });
+    });
+
+    plotEl.on("plotly_deselect", () => {
+      state.items = [];
+      renderSelection();
+    });
+  }
+
+  /**
    * Show/hide the team/wrestler selects based on the current scope.
    */
   function updateScopeVisibility() {
@@ -229,6 +265,8 @@ export function mountPca(root) {
       return;
     }
 
+    const seq = ++state.loadSeq;
+
     let url = `/api/pca?scope=${encodeURIComponent(state.scope.toLowerCase())}`;
     const name = scopeName();
     if (name) url += `&name=${encodeURIComponent(name)}`;
@@ -242,41 +280,12 @@ export function mountPca(root) {
       setStatus(message);
       return;
     }
+    if (seq !== state.loadSeq) return;
 
     const fig = JSON.parse(body.fig_json);
-    Plotly.newPlot(plotEl, fig.data, fig.layout, { responsive: true });
-
-    if (!state.handlersBound) {
-      plotEl.on("plotly_selected", (event) => {
-        state.items = (event.points || [])
-          .filter((p) => p.customdata)
-          .map((p) => ({
-            wrestler: p.customdata[0],
-            video: p.customdata[1],
-            start_time: p.customdata[2],
-            end_time: p.customdata[3],
-          }));
-        renderSelection();
-      });
-
-      plotEl.on("plotly_click", (event) => {
-        const p = (event.points || [])[0];
-        if (!p || !p.customdata) return;
-        previewItem({
-          wrestler: p.customdata[0],
-          video: p.customdata[1],
-          start_time: p.customdata[2],
-          end_time: p.customdata[3],
-        });
-      });
-
-      plotEl.on("plotly_deselect", () => {
-        state.items = [];
-        renderSelection();
-      });
-
-      state.handlersBound = true;
-    }
+    await Plotly.newPlot(plotEl, fig.data, fig.layout, { responsive: true });
+    if (seq !== state.loadSeq) return;
+    bindPlotHandlers();
 
     setStatus(
       `Loaded ${body.n_points} points (off. ${(body.off_variance * 100).toFixed(1)}% / def. ${(body.def_variance * 100).toFixed(1)}%)`
@@ -414,5 +423,15 @@ export function mountPca(root) {
   updateScopeVisibility();
   window.addEventListener("configs-updated", loadConfigs);
   loadConfigs();
-  loadPlot();
+
+  // Defer the first plot render until the tab is first shown: rendering while
+  // the pane is hidden produces a zero-width plot and Plotly.newPlot purges
+  // event listeners, so a hidden auto-load would leave the visible plot dead.
+  let plotLoaded = false;
+  window.addEventListener("tab-shown", (event) => {
+    if (!plotLoaded && event.detail && event.detail.tab === "pca") {
+      plotLoaded = true;
+      loadPlot();
+    }
+  });
 }

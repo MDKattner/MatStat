@@ -62,6 +62,7 @@ function selectTab(tabId) {
   for (const pane of document.querySelectorAll(".tab-pane")) {
     pane.hidden = pane.dataset.tab !== tabId;
   }
+  window.dispatchEvent(new CustomEvent("tab-shown", { detail: { tab: tabId } }));
 }
 
 function initTabs() {
