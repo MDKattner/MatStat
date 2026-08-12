@@ -191,9 +191,18 @@ class TestHelpers:
         assert lines[0] == (
             "a.mkv:1,0,6,D,underhook:collar tie,nothing,double,None,T,-3,-3,L,2026-08-01"
         )
-        # An empty match date is not re-appended, so the row stays 12 fields.
+        # An empty match date keeps the row at 13 fields so a mix of dated and
+        # undated rows stays parseable by MakeFormattedDataFrame.
         assert lines[1] == (
-            "a.mkv:2,6,12,A,front headlock:standing,single,sprawl,None,E,1,1,W"
+            "a.mkv:2,6,12,A,front headlock:standing,single,sprawl,None,E,1,1,W,"
+        )
+
+    def test_swap_perspective_csv_keeps_12_field_rows_unchanged(self) -> None:
+        from scripts.helpers import SwapPerspectiveCSV
+
+        data: str = "a.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,W"
+        assert SwapPerspectiveCSV(data) == (
+            "a.mkv:1,0,6,D,collar tie,nothing,double,None,T,-3,-3,L"
         )
 
     def test_validate_match_date(self) -> None:

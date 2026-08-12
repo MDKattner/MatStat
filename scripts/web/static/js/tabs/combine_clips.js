@@ -39,6 +39,7 @@ export function mountCombineClips(root) {
     filterItem: "",
     matches: [],
     running: false,
+    finding: false,
     jobId: "",
   };
 
@@ -52,6 +53,11 @@ export function mountCombineClips(root) {
   function renderMatches() {
     matchesCount.textContent = String(state.matches.length);
     matchesList.replaceChildren();
+    if (state.matches.length === 0) {
+      const empty = el("li", { class: "empty-item", text: "No matching sequences yet." });
+      matchesList.appendChild(empty);
+      return;
+    }
     for (const match of state.matches) {
       const moves = (match.moves || []).slice(0, 2).join(", ");
       const who = match.wrestler ? `${match.wrestler} | ` : "";
@@ -136,7 +142,7 @@ export function mountCombineClips(root) {
     const selected = wrestlers.selected();
     const hasWrestlers = selected.length > 0;
     const hasItem = Boolean(state.filterItem);
-    findBtn.disabled = !hasWrestlers || !hasItem || state.running;
+    findBtn.disabled = !hasWrestlers || !hasItem || state.finding || state.running;
     generateBtn.disabled = !hasWrestlers || !hasItem || state.matches.length === 0 || state.running;
     generateBtn.textContent = selected.length > 1 ? "Batch Generate All" : "Generate Reel";
   }
@@ -149,13 +155,17 @@ export function mountCombineClips(root) {
   }
 
   async function loadConfigs() {
-    const { ok, body } = await fetchJson("/api/config");
-    const config = ok ? body : {};
-    wrestlers.setItems(config.wrestlers || []);
-    wrestlers.setTeams(config.teams || {});
-    state.ties = config.ties || [];
-    state.moves = config.moves || [];
-    swapFilterItems();
+    try {
+      const { ok, body } = await fetchJson("/api/config");
+      const config = ok ? body : {};
+      wrestlers.setItems(config.wrestlers || []);
+      wrestlers.setTeams(config.teams || {});
+      state.ties = config.ties || [];
+      state.moves = config.moves || [];
+      swapFilterItems();
+    } catch (err) {
+      showToast("Could not load config (moves/ties/wrestlers).", "error");
+    }
   }
 
   function swapFilterItems() {
@@ -172,40 +182,49 @@ export function mountCombineClips(root) {
     const selected = wrestlers.selected();
     if (selected.length === 0 || !state.filterItem) return;
 
-    setStatus(`Finding matching sequences for ${selected.length} wrestler(s)...`);
-    const responses = await Promise.all(selected.map((wrestler) =>
-      fetchJson("/api/clips/find", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          wrestler,
-          filter_type: state.filterType,
-          filter_item: state.filterItem,
-        }),
-      })
-    ));
-
-    const merged = [];
-    for (let i = 0; i < selected.length; i++) {
-      const { ok, body } = responses[i];
-      if (!ok) {
-        showToast(body.detail || `Could not find clips for '${selected[i]}'.`, "error");
-        continue;
-      }
-      for (const match of body.matches || []) {
-        merged.push({ ...match, wrestler: selected[i] });
-      }
-    }
-
-    state.matches = merged;
-    renderMatches();
-    if (state.matches.length === 0) {
-      const who = selected.length > 1 ? "the selected wrestlers" : `'${selected[0]}'`;
-      setStatus(`No sequences found for ${who} / ${state.filterType} = '${state.filterItem}'.`);
-    } else {
-      setStatus(`Found ${state.matches.length} matching sequence(s).`);
-    }
+    state.finding = true;
     updateButtons();
+    setStatus(`Finding matching sequences for ${selected.length} wrestler(s)...`);
+    try {
+      const responses = await Promise.all(selected.map((wrestler) =>
+        fetchJson("/api/clips/find", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            wrestler,
+            filter_type: state.filterType,
+            filter_item: state.filterItem,
+          }),
+        })
+      ));
+
+      const merged = [];
+      for (let i = 0; i < selected.length; i++) {
+        const { ok, body } = responses[i];
+        if (!ok) {
+          showToast(body.detail || `Could not find clips for '${selected[i]}'.`, "error");
+          continue;
+        }
+        for (const match of body.matches || []) {
+          merged.push({ ...match, wrestler: selected[i] });
+        }
+      }
+
+      state.matches = merged;
+      renderMatches();
+      if (state.matches.length === 0) {
+        const who = selected.length > 1 ? "the selected wrestlers" : `'${selected[0]}'`;
+        setStatus(`No sequences found for ${who} / ${state.filterType} = '${state.filterItem}'.`);
+      } else {
+        setStatus(`Found ${state.matches.length} matching sequence(s).`);
+      }
+    } catch (err) {
+      showToast("Could not find clips (network error).", "error");
+      setStatus("Could not find clips.");
+    } finally {
+      state.finding = false;
+      updateButtons();
+    }
   }
 
   async function generateReel() {

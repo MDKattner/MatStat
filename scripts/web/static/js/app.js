@@ -510,7 +510,7 @@ function initConfigEditor() {
   document.getElementById("cfg-cancel").addEventListener("click", () => dialog.close());
 
   document.getElementById("cfg-save").addEventListener("click", async () => {
-    const { ok, body } = await fetchJson("/api/config", {
+    const cfgResp = await fetchJson("/api/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -520,8 +520,8 @@ function initConfigEditor() {
         rulesets: config.rulesets,
       }),
     });
-    if (!ok) {
-      showToast(body.detail || "Could not save config.", "error");
+    if (!cfgResp.ok) {
+      showToast(cfgResp.body.detail || "Could not save config.", "error");
       return;
     }
     const wr = await fetchJson("/api/config/wrestlers", {
@@ -530,7 +530,16 @@ function initConfigEditor() {
       body: JSON.stringify({ wrestlers: config.wrestlers, teams: config.teams }),
     });
     if (!wr.ok) {
-      showToast(wr.body.detail || "Could not save wrestlers.", "error");
+      // The main config saved but the roster did not. Re-sync the roster the
+      // editor shows with what is actually on disk so a retry is meaningful.
+      showToast(`${wr.body.detail || "Could not save wrestlers."} Config changes were saved.`, "warning");
+      const fresh = await fetchJson("/api/config");
+      if (fresh.ok) {
+        config.wrestlers = fresh.body.wrestlers || [];
+        config.teams = fresh.body.teams || {};
+        renderAll();
+      }
+      window.dispatchEvent(new CustomEvent("configs-updated"));
       return;
     }
     // Reflect server-side normalization (unassigned team members are dropped).

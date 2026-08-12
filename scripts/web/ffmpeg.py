@@ -4,7 +4,7 @@ import logging
 import re
 import subprocess
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable
 
 # Matches ffmpeg's stderr progress marker: time=00:01:23.45
@@ -17,7 +17,6 @@ class FfmpegResult:
 
     success: bool
     message: str
-    stderr: str = field(default="")
 
 
 class JobCancelledError(Exception):
@@ -115,8 +114,8 @@ def run_ffmpeg(
 
     if exit_code == 0:
         logging.info(f"ffmpeg completed: {description or 'unspecified'}")
-        return FfmpegResult(success=True, message=description or "Completed", stderr=full_stderr)
+        return FfmpegResult(success=True, message=description or "Completed")
 
     error_msg: str = full_stderr.strip() or f"Exit code {exit_code}"
     logging.error(f"ffmpeg failed ({description or 'unspecified'}): {error_msg}")
-    return FfmpegResult(success=False, message=error_msg, stderr=full_stderr)
+    return FfmpegResult(success=False, message=error_msg)

@@ -374,6 +374,35 @@ class TestClipRoutes:
         resp = client.post("/api/combine-clips/batch", json=payload)
         assert resp.status_code == 400
 
+    def test_batch_job_completes(self, client, tmp_path, monkeypatch) -> None:
+        dirs: dict[str, Path] = _redirect_route_dirs(monkeypatch, tmp_path)
+        _write_csv(dirs)
+        (dirs["taged"] / "v.mkv").write_bytes(b"video")
+        _mock_codecs(monkeypatch)
+        _mock_ffmpeg(monkeypatch)
+
+        payload: dict[str, Any] = {
+            "wrestlers": ["Alice"],
+            "filter_type": "Starting Tie",
+            "filter_item": "collar tie",
+        }
+        resp = client.post("/api/combine-clips/batch", json=payload)
+        assert resp.status_code == 200
+        body: dict[str, Any] = resp.json()
+        assert body["status"] == "queued"
+        job: dict[str, Any] = _wait_for_job(client, body["job_id"])
+        assert job["status"] == "done"
+        result: dict[str, Any] = job["result"]
+        assert result["successes"] == 1
+        assert result["failures"] == 0
+        assert result["results"][0]["success"] is True
+        assert result["results"][0]["wrestler"] == "Alice"
+        assert result["results"][0]["message"] == "Created: Alice_Starting_Tie_collar_tie.mkv"
+
+        dl = client.get("/api/clips/Alice_Starting_Tie_collar_tie.mkv")
+        assert dl.status_code == 200
+        assert dl.content == b"ok"
+
     def test_download_missing_clip_404(self, client, tmp_path, monkeypatch) -> None:
         _redirect_route_dirs(monkeypatch, tmp_path)
 

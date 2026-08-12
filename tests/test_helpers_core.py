@@ -15,9 +15,9 @@ from scripts.helpers import (
     COL_ADJUSTED_NET_POINTS, COL_MATCH_RESULT, COL_ORIGIN,
     CalculateNetPoints, TabulateNetPoints, AdjustedNetPoints,
     TabulateAdjustedNetPoints,
-    MoveCounts, MoveUsageCounts, MoveDefenseCounts, PinCount,
-    _MoveFilter, DidMove, DefendedMove,
-    _GenerateMoveDF, GenerateOffenseDF, GenerateDefenseDF, GenerateInitiationDF,
+    PinCount,
+    _MoveFilter,
+    _GenerateMoveDF, GenerateOffenseDF, GenerateDefenseDF,
     GenerateInitiationDFBySegment, GenerateRatesDF, GenerateTeamSummaryDF,
     GenerateMatchOutcomesDF,
 )
@@ -94,35 +94,6 @@ class TestTabulateNetPoints:
         assert len(df) == 0
 
 
-class TestMoveCounts:
-    """Tests for MoveCounts and convenience wrappers."""
-
-    def test_counts_team_moves(self, sample_df: pd.DataFrame) -> None:
-        counts: dict[str, int] = MoveCounts(sample_df, COL_TEAM_MOVES)
-        assert counts.get("double") == 2
-        assert counts.get("sprawl") == 2
-        assert counts.get("high crotch") == 1
-        assert "nonexistent" not in counts
-
-    def test_counts_opponent_moves(self, sample_df: pd.DataFrame) -> None:
-        counts: dict[str, int] = MoveCounts(sample_df, COL_OPPONENT_MOVES)
-        assert counts.get("sweep single") == 2
-        assert counts.get("sprawl") == 2
-        assert "nonexistent" not in counts
-
-    def test_empty_dataframe(self, empty_df: pd.DataFrame) -> None:
-        counts: dict[str, int] = MoveCounts(empty_df, COL_TEAM_MOVES)
-        assert counts == {}
-
-    def test_move_usage_counts(self, sample_df: pd.DataFrame) -> None:
-        counts: dict[str, int] = MoveUsageCounts(sample_df)
-        assert counts.get("double") == 2
-
-    def test_move_defense_counts(self, sample_df: pd.DataFrame) -> None:
-        counts: dict[str, int] = MoveDefenseCounts(sample_df)
-        assert counts.get("sprawl") == 2
-
-
 class TestPinCount:
     """Tests for PinCount."""
 
@@ -163,18 +134,6 @@ class TestMoveFilter:
         result = simple_df.apply(filt, axis=1, result_type="broadcast")
         result = result.dropna(how="all")
         assert len(result) == 0
-
-    def test_did_move(self, simple_df: pd.DataFrame) -> None:
-        filt = DidMove("double")
-        result = simple_df.apply(filt, axis=1, result_type="broadcast")
-        result = result.dropna(how="all")
-        assert len(result) == 1
-
-    def test_defended_move(self, simple_df: pd.DataFrame) -> None:
-        filt = DefendedMove("sweep single")
-        result = simple_df.apply(filt, axis=1, result_type="broadcast")
-        result = result.dropna(how="all")
-        assert len(result) == 1
 
     def test_exact_match_not_substring(self, simple_df: pd.DataFrame) -> None:
         filt = _MoveFilter("single", COL_TEAM_MOVES)
@@ -266,49 +225,6 @@ class TestGenerateMoveDF:
         assert result.loc["double", "Net Points"] == 3.0
 
 
-class TestGenerateInitiationDF:
-    """Tests for GenerateInitiationDF — attack/defense summary."""
-
-    def test_mixed_attack_defend(self, sample_df: pd.DataFrame) -> None:
-        df = GenerateInitiationDF(sample_df)
-        assert df["Attack Count"].iloc[0] == 3
-        assert df["Defense Count"].iloc[0] == 3
-        assert df["Attacks / Sequences"].iloc[0] == 0.5
-
-    def test_all_attack(self, all_attack_df: pd.DataFrame) -> None:
-        df = GenerateInitiationDF(all_attack_df)
-        assert df["Attack Count"].iloc[0] == 2
-        assert df["Defense Count"].iloc[0] == 0
-        assert df["Attacks / Sequences"].iloc[0] == 1.0
-
-    def test_all_defend(self, all_defend_df: pd.DataFrame) -> None:
-        df = GenerateInitiationDF(all_defend_df)
-        assert df["Attack Count"].iloc[0] == 0
-        assert df["Defense Count"].iloc[0] == 2
-        assert df["Attacks / Sequences"].iloc[0] == 0.0
-
-    def test_net_points_computed(self, sample_df: pd.DataFrame) -> None:
-        df = GenerateInitiationDF(sample_df)
-        assert df["Adjusted Net Points Attacking"].iloc[0] == 7  # 4 + 3 + 0
-        assert df["Adjusted Net Points Defending"].iloc[0] == -5  # -3 + -2 + 0
-        # sample_df has no pins, so raw net equals adjusted net.
-        assert df["Net Points Attacking"].iloc[0] == 7
-        assert df["Net Points Defending"].iloc[0] == -5
-        assert df["Average Net Points Attacking"].iloc[0] == pytest.approx(7 / 3)
-        assert df["Average Net Points Defending"].iloc[0] == pytest.approx(-5 / 3)
-        assert df["Sequences"].iloc[0] == 6
-
-    def test_index_named(self, sample_df: pd.DataFrame) -> None:
-        df = GenerateInitiationDF(sample_df)
-        assert df.index.name == "Metric"
-
-    def test_empty_dataframe(self, empty_df: pd.DataFrame) -> None:
-        df = GenerateInitiationDF(empty_df)
-        assert df["Attack Count"].iloc[0] == 0
-        assert df["Defense Count"].iloc[0] == 0
-        assert df["Attacks / Sequences"].iloc[0] == 0.0
-
-
 class TestGenerateInitiationDFBySegment:
     """Tests for GenerateInitiationDFBySegment — W/L split rows."""
 
@@ -320,20 +236,19 @@ class TestGenerateInitiationDFBySegment:
         assert out.index.name == "Segment"
         # W rows: 0 (attack, +4) and 1 (defend, -3)
         assert out.loc["Wins", "Attack Count"] == 1
+        assert out.loc["Wins", "Defense Count"] == 1
         assert out.loc["Wins", "Adjusted Net Points Attacking"] == 4
+        assert out.loc["Wins", "Adjusted Net Points Defending"] == -3
         # L rows: 2 (attack, +3) and 3 (defend, -2)
         assert out.loc["Losses", "Attack Count"] == 1
+        assert out.loc["Losses", "Defense Count"] == 1
         assert out.loc["Losses", "Adjusted Net Points Attacking"] == 3
-        # All matches the full-data single-row table
-        full = GenerateInitiationDF(df)
-        assert out.loc["All", "Attack Count"] == full["Attack Count"].iloc[0]
-        assert out.loc["All", "Defense Count"] == full["Defense Count"].iloc[0]
-        assert out.loc["All", "Adjusted Net Points Attacking"] == full[
-            "Adjusted Net Points Attacking"
-        ].iloc[0]
-        assert out.loc["All", "Adjusted Net Points Defending"] == full[
-            "Adjusted Net Points Defending"
-        ].iloc[0]
+        assert out.loc["Losses", "Adjusted Net Points Defending"] == -2
+        # All covers all six rows: attacks +4, +3, 0; defends -3, -2, 0.
+        assert out.loc["All", "Attack Count"] == 3
+        assert out.loc["All", "Defense Count"] == 3
+        assert out.loc["All", "Adjusted Net Points Attacking"] == 7
+        assert out.loc["All", "Adjusted Net Points Defending"] == -5
         # Sequences column reports the per-segment row counts
         assert out.loc["All", "Sequences"] == 6
         assert out.loc["Wins", "Sequences"] == 2
@@ -359,8 +274,9 @@ class TestGenerateInitiationDFBySegment:
 
     def test_missing_result_column(self, sample_df: pd.DataFrame) -> None:
         out = GenerateInitiationDFBySegment(sample_df)
-        full = GenerateInitiationDF(sample_df)
-        assert out.loc["All", "Attack Count"] == full["Attack Count"].iloc[0]
+        # No result column: everything falls into All/Unrecorded.
+        assert out.loc["All", "Attack Count"] == 3
+        assert out.loc["All", "Defense Count"] == 3
         assert out.loc["Wins", "Attack Count"] == 0
         assert out.loc["Losses", "Attack Count"] == 0
         assert out.loc["Wins", "Defense Count"] == 0
@@ -388,7 +304,7 @@ class TestGenerateRatesDF:
             COL_TEAM_SCORES: [["T"], [], ["PIN"], []],
             COL_OPPONENT_SCORES: [[], ["T"], [], ["E"]],
             COL_NET_POINTS: [3, -3, 6, -1],
-            COL_ADJUSTED_NET_POINTS: [3, -3, 6, -1],
+            COL_ADJUSTED_NET_POINTS: [3, -3, 19, -1],  # PIN row nets 6 + 13 pin bonus
         }, index=pd.Index(
             ["a.mkv:1", "a.mkv:2", "b.mkv:1", "b.mkv:2"], name=COL_ORIGIN
         ))
@@ -397,7 +313,7 @@ class TestGenerateRatesDF:
         out = GenerateRatesDF(self._rates_frame())
         assert out["Matches"].iloc[0] == 2
         assert out["Net Points per Match"].iloc[0] == 2.5  # (3 - 3 + 6 - 1) / 2
-        assert out["Adj. Net Points per Match"].iloc[0] == 2.5
+        assert out["Adj. Net Points per Match"].iloc[0] == 9.0  # (3 - 3 + 19 - 1) / 2
         assert out["Attacks per Match"].iloc[0] == 1.0  # 2 attacks / 2 matches
         assert out["Defenses per Match"].iloc[0] == 1.0
         assert out["Pins per Match"].iloc[0] == 0.5  # 1 pin / 2 matches

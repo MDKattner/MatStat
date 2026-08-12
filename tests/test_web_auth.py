@@ -73,6 +73,24 @@ class TestLogin:
         resp2 = auth_client.post("/api/auth/login", json={"password": "test-secret"})
         assert resp2.status_code == 200
 
+    def test_logout_without_session_cannot_kill_active_session(self, auth_client) -> None:
+        auth_client.post("/api/auth/login", json={"password": "test-secret"})
+        auth_client.cookies.delete(auth_module.COOKIE_NAME)
+        resp = auth_client.post("/api/auth/logout")
+        assert resp.status_code == 401
+        # The active session survives the unauthenticated logout attempt.
+        assert auth_module._CURRENT_SESSION is not None
+        assert auth_client.get("/api/health").status_code == 401
+
+    def test_login_rate_limited_429(self, auth_client, monkeypatch) -> None:
+        monkeypatch.setattr(auth_module, "_LOGIN_MAX_ATTEMPTS", 3)
+        for _ in range(3):
+            resp = auth_client.post("/api/auth/login", json={"password": "nope"})
+            assert resp.status_code == 401
+        resp = auth_client.post("/api/auth/login", json={"password": "nope"})
+        assert resp.status_code == 429
+        assert "Too many" in resp.json()["detail"]
+
     def test_expired_session_allows_relogin(self, auth_client, monkeypatch) -> None:
         auth_client.post("/api/auth/login", json={"password": "test-secret"})
         monkeypatch.setattr(auth_module, "_CURRENT_SESSION", ("old-id", time.time() - 10))

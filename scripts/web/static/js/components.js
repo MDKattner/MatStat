@@ -295,7 +295,6 @@ export function configCombo({ label = "", items = [] } = {}) {
     input,
     get selected() { return input.value.trim(); },
     setSelected(value) { input.value = value; },
-    clear() { input.value = ""; },
     setItems(items) { rebuild(items); },
   };
 }
@@ -358,8 +357,6 @@ export function checkList({ label = "", items = [], counts = false, onChange = (
     }
   }
 
-  const refresh = () => onChange(selected());
-
   function selected() {
     const result = [];
     for (const entry of entries) {
@@ -372,7 +369,23 @@ export function checkList({ label = "", items = [], counts = false, onChange = (
   }
 
   function clear() {
-    for (const entry of entries) entry.cb.checked = false;
+    for (const entry of entries) {
+      entry.cb.checked = false;
+      if (entry.spin) {
+        entry.spin.value = "1";
+        entry.spin.disabled = true;
+      }
+    }
+  }
+
+  // Check an item and set its count spinner (used when loading a sequence
+  // into an editor so duplicate entries keep their multiplicity).
+  function setCount(item, count) {
+    const entry = entries.find((e) => e.item === item);
+    if (!entry || !entry.spin) return;
+    entry.cb.checked = true;
+    entry.spin.value = String(count);
+    entry.spin.disabled = false;
   }
 
   filter.addEventListener("input", applyFilter);
@@ -407,8 +420,8 @@ export function checkList({ label = "", items = [], counts = false, onChange = (
   return {
     node: box,
     selected,
-    refresh,
     clear,
+    setCount,
     setItems: rebuild,
     setTeams(data) { teamMap = data || {}; renderTeamSelect(); },
   };
@@ -616,6 +629,7 @@ export function videoPlayer({ onPosition = () => {} } = {}) {
           hls.on(Hls.Events.ERROR, (_event, data) => {
             if (data && data.fatal) {
               console.error("HLS error", data);
+              showToast("Video stream failed to load.", "error");
               destroyHls();
             }
           });
@@ -626,8 +640,6 @@ export function videoPlayer({ onPosition = () => {} } = {}) {
       })();
     },
     play() { video.play(); },
-    pause() { video.pause(); },
     togglePlay() { if (video.paused) video.play(); else video.pause(); },
-    get currentPositionMs() { return Math.floor(video.currentTime * 1000); },
   };
 }

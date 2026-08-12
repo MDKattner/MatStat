@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import threading
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from urllib.parse import quote
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 # helpers.py resolves cfg/vids/tmp/stats against the process cwd; pin it to the
 # repo root so config/video paths work regardless of how the server is launched.
@@ -55,7 +57,10 @@ _PREVIEW_DIRS: dict[str, Path] = {
 # Where uploaded videos are saved (the untagged pool).
 _UPLOAD_DIR: Path = untaged_dir
 
-_SAFE_NAME_RE: re.Pattern[str] = re.compile(r"^[^/\\]+$")
+# File/name validation: names must not contain path separators, the CSV /
+# title delimiters (":" and ","), or control characters (which would corrupt
+# generated CSV rows and embedded ffmpeg metadata).
+_SAFE_NAME_RE: re.Pattern[str] = re.compile(r"^[^/\\:,\x00-\x1f\x7f]+$")
 
 # HLS segment files are named seg_00000.ts, seg_00001.ts, ...
 _SEGMENT_RE: re.Pattern[str] = re.compile(r"^seg_\d{5}\.ts$")
@@ -171,6 +176,26 @@ def _resolve_preview_source(dir_name: str, file_name: str) -> Path:
     return source
 
 
+def _require_person_name(name: str, label: str) -> str:
+    """Validate a wrestler/opponent name that will be embedded in ffmpeg metadata.
+
+    Names feed the ffmpeg title tag and generated CSV rows, so they must not
+    contain the CSV/title delimiters (":", ",") or control characters.
+
+    Raises:
+        HTTPException: 400 when the name is empty or contains a bad character.
+    """
+    cleaned: str = name.strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail=f"{label} name is required")
+    if _SAFE_NAME_RE.match(cleaned) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} name must not contain ':', ',', or control characters",
+        )
+    return cleaned
+
+
 def _is_transcoding(source: Path) -> bool:
     """True if a live transcode job is currently producing a preview.
 
@@ -200,12 +225,16 @@ def _ensure_transcode(source: Path) -> None:
         def _transcode(ctx: JobContext) -> None:
             transcode.transcode_hls(source, ctx.job_id, on_progress=ctx.report, cancel_event=ctx.cancel_event)
 
-        job_id: str = job_manager.submit(
+        # Mark in-flight with a pre-generated id before dispatch so a job that
+        # finishes (or fails) instantly cannot leave a stale in-flight entry.
+        job_id: str = uuid.uuid4().hex[:8]
+        transcode.mark_in_flight(source, job_id)
+        job_manager.submit(
             "transcode",
             _transcode,
             message=f"Preparing preview: {source.name}",
+            job_id=job_id,
         )
-        transcode.mark_in_flight(source, job_id)
 
 
 # ---- Routes ----
@@ -226,14 +255,19 @@ async def login_page(request: Request) -> HTMLResponse:
 
 
 @app.post("/api/auth/login", response_model=None)
-async def login(req: LoginRequest, response: Response) -> dict[str, str]:
+async def login(req: LoginRequest, request: Request, response: Response) -> dict[str, str]:
     """Validate the password and mint a single-session cookie."""
     if not auth.enabled():
         return {"status": "ok"}
+    ip: str = request.client.host if request.client else ""
+    if not auth.login_allowed(ip):
+        raise HTTPException(
+            status_code=429, detail="Too many login attempts. Try again later."
+        )
     ok: bool
     detail: str
     cookie_value: str | None
-    ok, detail, cookie_value = auth.login(req.password)
+    ok, detail, cookie_value = auth.login(req.password, ip)
     if not ok:
         raise HTTPException(status_code=401, detail=detail)
     response.set_cookie(
@@ -249,9 +283,14 @@ async def login(req: LoginRequest, response: Response) -> dict[str, str]:
 
 
 @app.post("/api/auth/logout", response_model=None)
-async def logout(response: Response) -> dict[str, str]:
-    """Clear the active session and the session cookie."""
-    auth.logout()
+async def logout(request: Request, response: Response) -> dict[str, str]:
+    """Clear the active session and the session cookie.
+
+    Only the owner of the active session can log out; an unauthenticated
+    caller is rejected so the single-session lock cannot be DoS'd.
+    """
+    if not auth.logout(request.cookies):
+        raise HTTPException(status_code=401, detail="Not authenticated")
     response.delete_cookie(auth.COOKIE_NAME)
     logging.info("MatStat logout.")
     return {"status": "ok"}
@@ -383,6 +422,8 @@ async def update_roster_config(req: RosterUpdate) -> dict[str, object]:
     """Save the wrestler roster, dropping team members not in the wrestler list."""
     try:
         saved: Roster = configs.save_roster(req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Could not write roster: {e}")
 
@@ -398,8 +439,10 @@ async def tag_video(req: TagRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Invalid file name")
     if not (tag.untaged_dir / file_name).is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {file_name}")
-    if not req.wrestler.strip():
-        raise HTTPException(status_code=400, detail="Wrestler name is required")
+    wrestler: str = _require_person_name(req.wrestler, "Wrestler")
+    opponent: str = req.opponent.strip()
+    if opponent:
+        _require_person_name(opponent, "Opponent")
     if req.match_result not in ("", "W", "L"):
         raise HTTPException(status_code=400, detail="Invalid match result")
     try:
@@ -408,11 +451,20 @@ async def tag_video(req: TagRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(e))
     if not req.sequences:
         raise HTTPException(status_code=400, detail="At least one sequence is required")
+    output_name: str = Path(file_name).with_suffix(".mkv").name
+    if (tag.taged_dir / output_name).exists():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Tagged video already exists: {output_name} — "
+                "use the Auditing tab to re-tag it or delete it first"
+            ),
+        )
 
     def _run(ctx: JobContext) -> dict[str, Any]:
         result: dict[str, Any] = tag.run_tag_job(
-            ctx, file_name, req.wrestler, req.sequences,
-            opponent=req.opponent, match_result=req.match_result,
+            ctx, file_name, wrestler, req.sequences,
+            opponent=opponent, match_result=req.match_result,
             match_date=req.match_date,
         )
         _prewarm_tagged_preview(result["output"])
@@ -425,7 +477,7 @@ async def tag_video(req: TagRequest) -> dict[str, Any]:
 @app.get("/api/audit")
 async def audit_videos() -> dict[str, Any]:
     """List tagged videos with their embedded sequences for auditing."""
-    return {"videos": audit.list_tagged_videos()}
+    return {"videos": await run_in_threadpool(audit.list_tagged_videos)}
 
 
 @app.post("/api/audit/{file_name}/retag")
@@ -436,8 +488,10 @@ async def audit_retag(file_name: str, req: audit.RetagRequest) -> dict[str, Any]
         raise HTTPException(status_code=400, detail="Invalid file name")
     if not (audit.taged_dir / video).is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {video}")
-    if not req.wrestler.strip():
-        raise HTTPException(status_code=400, detail="Wrestler name is required")
+    wrestler: str = _require_person_name(req.wrestler, "Wrestler")
+    opponent: str = req.opponent.strip()
+    if opponent:
+        _require_person_name(opponent, "Opponent")
     if req.match_result not in ("", "W", "L"):
         raise HTTPException(status_code=400, detail="Invalid match result")
     try:
@@ -449,8 +503,8 @@ async def audit_retag(file_name: str, req: audit.RetagRequest) -> dict[str, Any]
 
     def _run(ctx: JobContext) -> dict[str, Any]:
         return audit.run_retag_job(
-            ctx, video, req.wrestler, req.sequences,
-            opponent=req.opponent, match_result=req.match_result,
+            ctx, video, wrestler, req.sequences,
+            opponent=opponent, match_result=req.match_result,
             match_date=req.match_date, recompile=req.recompile,
         )
 
@@ -607,7 +661,9 @@ async def pca_figure(
             status_code=400, detail="Name is required for team/wrestler scope"
         )
     try:
-        result: dict[str, Any] = pca.build_pca_figure(scope, name.strip(), layout)
+        result: dict[str, Any] = await run_in_threadpool(
+            pca.build_pca_figure, scope, name.strip(), layout
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return result
@@ -618,6 +674,11 @@ async def pca_compile(req: PcaCompileRequest) -> dict[str, Any]:
     """Queue a job that extracts selected sequences into a PCA highlight reel."""
     if not req.items:
         raise HTTPException(status_code=400, detail="No sequences selected")
+    if req.name.strip() and _SAFE_NAME_RE.match(req.name.strip()) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Reel name must not contain ':', ',', or control characters",
+        )
     for item in req.items:
         if _SAFE_NAME_RE.match(item.video) is None or item.video.startswith("."):
             raise HTTPException(status_code=400, detail="Invalid video name")
@@ -647,8 +708,8 @@ async def trend_figure(
     if window < 1:
         raise HTTPException(status_code=400, detail="Window must be at least 1")
     try:
-        result: dict[str, Any] = trend.build_trend_figure(
-            wrestler.strip(), metric, window
+        result: dict[str, Any] = await run_in_threadpool(
+            trend.build_trend_figure, wrestler.strip(), metric, window
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -664,14 +725,14 @@ async def search_wrestlers() -> dict[str, list[str]]:
 @app.post("/api/search")
 async def search_all(req: SearchQuery) -> dict[str, Any]:
     """Run a filter query across all compiled wrestler data."""
-    matches: list[dict[str, Any]] = search.execute_search(req)
+    matches: list[dict[str, Any]] = await run_in_threadpool(search.execute_search, req)
     return {"count": len(matches), "matches": matches}
 
 
 @app.post("/api/search/export", response_model=None)
 async def search_export(req: SearchQuery) -> Response:
     """Export matching sequences as a downloadable CSV file."""
-    matches: list[dict[str, Any]] = search.execute_search(req)
+    matches: list[dict[str, Any]] = await run_in_threadpool(search.execute_search, req)
     return Response(
         content=search.search_to_csv(matches),
         media_type="text/csv",

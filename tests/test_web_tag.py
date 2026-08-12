@@ -15,7 +15,7 @@ from scripts.helpers import ChapterSequence
 from scripts.web import configs
 from scripts.web import tag
 from scripts.web import transcode
-from scripts.web.ffmpeg import FfmpegResult
+from scripts.web.ffmpeg import FfmpegResult, JobCancelledError
 from scripts.web.tag import TagSequence
 
 
@@ -232,6 +232,39 @@ class TestRunTagJob:
             tag.run_tag_job(FakeContext(), "fail.mkv", "Alice", seqs)
         assert not (tmp_path / "taged" / "fail.mkv").exists()
 
+    def test_cancel_cleans_output_and_metadata(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        source: Path = _make_source(tmp_path, "cancel.mkv")
+        monkeypatch.setattr(tag, "GetVidDuration", lambda p: 60)
+
+        def cancelled_ffmpeg(cmd, description="", on_progress=None, cancel_event=None) -> FfmpegResult:
+            Path(cmd[-1]).parent.mkdir(parents=True, exist_ok=True)
+            Path(cmd[-1]).write_bytes(b"partial")
+            raise JobCancelledError("cancelled")
+
+        monkeypatch.setattr(tag, "run_ffmpeg", cancelled_ffmpeg)
+
+        seqs: list[TagSequence] = [TagSequence(start_time=0, end_time=5)]
+        ctx: FakeContext = FakeContext()
+        with pytest.raises(JobCancelledError):
+            tag.run_tag_job(ctx, "cancel.mkv", "Alice", seqs)
+        assert not (tmp_path / "taged" / "cancel.mkv").exists()
+        assert not list((tmp_path / "tmp").glob("out-*.mkv"))
+        assert not list((tmp_path / "tmp").glob("metadata-*.txt"))
+        assert source.exists()
+
+    def test_rejects_existing_output_collision(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        source: Path = _make_source(tmp_path, "clash.mkv")
+        (tmp_path / "taged" / "clash.mkv").write_bytes(b"existing")
+        monkeypatch.setattr(tag, "GetVidDuration", lambda p: 60)
+
+        seqs: list[TagSequence] = [TagSequence(start_time=0, end_time=5)]
+        with pytest.raises(ValueError, match="already exists"):
+            tag.run_tag_job(FakeContext(), "clash.mkv", "Alice", seqs)
+        assert source.exists()
+        assert (tmp_path / "taged" / "clash.mkv").read_bytes() == b"existing"
+
     def test_zero_duration_raises(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         _make_source(tmp_path, "zero.mkv")
@@ -376,6 +409,17 @@ class TestUploadRoutes:
         body = resp.json()
         assert body["uploaded"] == 0
         assert body["results"][0]["status"] == "error"
+
+    def test_upload_colon_in_name_reports_error(self, client) -> None:
+        resp = client.post(
+            "/api/videos",
+            files={"files": ("match:1.mkv", b"x", "video/x-matroska")},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["uploaded"] == 0
+        assert body["results"][0]["status"] == "error"
+        assert "Invalid file name" in body["results"][0]["detail"]
 
     def test_upload_batch_mixed_results(self, client, tmp_path) -> None:
         (tmp_path / "untaged" / "existing.mkv").write_bytes(b"old")
@@ -527,6 +571,53 @@ class TestConfigWriteRoutes:
         resp = client.put("/api/config", json={"moves": ["double"]})
         assert resp.status_code == 422
 
+    def test_out_of_range_points_400(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(configs, "cfg_dir", tmp_path)
+        resp = client.put(
+            "/api/config",
+            json={
+                "active_ruleset": "Folkstyle",
+                "rulesets": {
+                    "Folkstyle": {
+                        "pin_points": 13,
+                        "outcomes": {"T": {"points": 99999}},
+                    }
+                },
+            },
+        )
+        assert resp.status_code == 400
+
+    def test_out_of_range_pin_points_400(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(configs, "cfg_dir", tmp_path)
+        resp = client.put(
+            "/api/config",
+            json={
+                "active_ruleset": "Folkstyle",
+                "rulesets": {"Folkstyle": {"pin_points": -99999}},
+            },
+        )
+        assert resp.status_code == 400
+
+    def test_colon_in_move_400(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(configs, "cfg_dir", tmp_path)
+        resp = client.put(
+            "/api/config",
+            json={
+                "active_ruleset": "Folkstyle",
+                "moves": ["high crotch:double"],
+                "rulesets": {"Folkstyle": {}},
+            },
+        )
+        assert resp.status_code == 400
+
+    def test_colon_in_wrestler_400(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(configs, "cfg_dir", tmp_path)
+        resp = client.put(
+            "/api/config/wrestlers",
+            json={"wrestlers": ["Bob:1"], "teams": {}},
+        )
+        assert resp.status_code == 400
+
     def test_saves_roster_normalized(self, client, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(configs, "cfg_dir", tmp_path)
         resp = client.put(
@@ -672,6 +763,18 @@ class TestTagRoute:
         resp = client.post("/api/tag", json=payload)
         assert resp.status_code == 400
 
+    def test_tag_existing_output_collision_400(self, client, tmp_path) -> None:
+        (tmp_path / "untaged" / "match.mp4").write_bytes(b"source")
+        (tmp_path / "taged" / "match.mkv").write_bytes(b"existing")
+        payload: dict[str, Any] = {
+            "video": "match.mp4",
+            "wrestler": "Alice",
+            "sequences": [{"start_time": 0, "end_time": 5}],
+        }
+        resp = client.post("/api/tag", json=payload)
+        assert resp.status_code == 400
+        assert "already exists" in resp.json()["detail"]
+
     def test_tag_missing_file_404(self, client) -> None:
         payload: dict[str, Any] = {
             "video": "missing.mkv",
@@ -701,6 +804,27 @@ class TestTagRoute:
         payload: dict[str, Any] = {
             "video": "match.mkv",
             "wrestler": "  ",
+            "sequences": [{"start_time": 0, "end_time": 5}],
+        }
+        resp = client.post("/api/tag", json=payload)
+        assert resp.status_code == 400
+
+    def test_tag_colon_in_wrestler_400(self, client, tmp_path) -> None:
+        (tmp_path / "untaged" / "match.mkv").write_bytes(b"x")
+        payload: dict[str, Any] = {
+            "video": "match.mkv",
+            "wrestler": "Bob:1",
+            "sequences": [{"start_time": 0, "end_time": 5}],
+        }
+        resp = client.post("/api/tag", json=payload)
+        assert resp.status_code == 400
+
+    def test_tag_colon_in_opponent_400(self, client, tmp_path) -> None:
+        (tmp_path / "untaged" / "match.mkv").write_bytes(b"x")
+        payload: dict[str, Any] = {
+            "video": "match.mkv",
+            "wrestler": "Alice",
+            "opponent": "Bob,Smith",
             "sequences": [{"start_time": 0, "end_time": 5}],
         }
         resp = client.post("/api/tag", json=payload)

@@ -7,6 +7,7 @@ import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Literal, overload
 
@@ -173,7 +174,7 @@ def _ParseAppConfig(data: object) -> AppConfig:
                         continue
                     try:
                         points: np.int16 = np.int16(spec["points"])
-                    except (KeyError, TypeError, ValueError):
+                    except (KeyError, TypeError, ValueError, OverflowError):
                         continue
                     outcomes[code_str] = OutcomeSpec(
                         points=points,
@@ -269,21 +270,6 @@ def GetActiveRuleset(config_path: Path | None = None) -> Ruleset:
     """Return the currently active ruleset."""
     cfg: AppConfig = LoadAppConfig(config_path)
     return cfg.rulesets.get(cfg.active_ruleset, next(iter(cfg.rulesets.values())))
-
-
-def GetOutcomeMap(config_path: Path | None = None) -> dict[str, OutcomeSpec]:
-    """Return the active ruleset's outcome map (code -> OutcomeSpec)."""
-    return dict(GetActiveRuleset(config_path).outcomes)
-
-
-def GetMovesList(config_path: Path | None = None) -> list[str]:
-    """Return the shared move list from the app config."""
-    return list(LoadAppConfig(config_path).moves)
-
-
-def GetTiesList(config_path: Path | None = None) -> list[str]:
-    """Return the shared tie/position list from the app config."""
-    return list(LoadAppConfig(config_path).ties)
 
 
 _ACTIVE_PIN_CODES: frozenset[str] = frozenset()
@@ -570,34 +556,6 @@ def GetVidDuration(path_to_vid: Path) -> int:
         return 0
 
 
-def NameProbe(path_to_vid: Path) -> str:
-    """Return the title field of the video file.
-
-    With the formatting enforced by the film tagging process, this title
-    will be the name of the wrestler.
-
-    Args:
-        path_to_vid: The path to the video file.
-
-    Returns:
-        The title string embedded in the video file, or empty string on failure.
-    """
-    ffprobe_cmd: str = f"ffprobe -v error -select_streams v:0 -show_entries format_tags=title -of default=nw=1:nk=1 {shlex.quote(str(path_to_vid))}"
-    logging.debug(f"Executing ffprobe command for name probe: {ffprobe_cmd}")
-    try:
-        name: str = subprocess.run(ffprobe_cmd,
-                                   shell=True,
-                                   capture_output=True,
-                                   text=True,
-                                   check=True
-                                   ).stdout.strip()
-        logging.info(f"Probed name for '{path_to_vid}': {name}")
-        return name
-    except subprocess.CalledProcessError as e:
-        logging.warning(f"NameProbe failed for '{path_to_vid}': {e}")
-        return ""
-
-
 def GetVideoCodecs(path_to_vid: Path) -> dict[str, str]:
     """Probe video and audio codec names from a video file.
 
@@ -731,7 +689,7 @@ def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str, str]:
 
             csv_rows.append(
                 f"{path_to_vid.name}:{chap_id},{start_time},{end_time},{title}")
-        except IndexError:
+        except (IndexError, ValueError, OverflowError):
             logging.warning(
                 f"Could not parse the following line properly: {line}")
             continue
@@ -754,37 +712,14 @@ def ValidateMatchDate(match_date: str) -> str:
         ValueError: If the value is neither empty nor a valid YYYY-MM-DD date.
     """
     cleaned: str = match_date.strip()
-    if cleaned and re.fullmatch(r"\d{4}-\d{2}-\d{2}", cleaned) is None:
-        raise ValueError(f"Invalid match date: {match_date}")
+    if cleaned:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", cleaned) is None:
+            raise ValueError(f"Invalid match date: {match_date}")
+        try:
+            datetime.strptime(cleaned, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError(f"Invalid match date: {match_date}")
     return cleaned
-
-
-def GetMatchDate(path_to_vid: Path) -> str:
-    """Read the embedded match-date format tag from a video.
-
-    Args:
-        path_to_vid: The path to the video file to probe.
-
-    Returns:
-        The match date as "YYYY-MM-DD", or "" when the tag is absent or the
-        probe fails.
-    """
-    ffprobe_command: str = ("ffprobe -v error -show_entries format_tags=matchdate "
-                            f"-of csv {shlex.quote(str(path_to_vid))}")
-    try:
-        output: str = subprocess.run(
-            ffprobe_command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            check=True
-        ).stdout.strip()
-    except subprocess.CalledProcessError as e:
-        logging.warning(f"GetMatchDate ffprobe failed for '{path_to_vid}': {e}")
-        return ""
-    if not output:
-        return ""
-    return output.removeprefix("format,").strip()
 
 
 def MakeFormattedDataFrame(csv_path: Path) -> pd.DataFrame:
@@ -816,7 +751,15 @@ def MakeFormattedDataFrame(csv_path: Path) -> pd.DataFrame:
     first_lines: list[str] = [
         line for line in csv_path.read_text().splitlines() if line.strip()
     ]
-    n_cols: int = first_lines[0].count(",") + 1 if first_lines else 9
+    n_cols: int = max(
+        (line.count(",") + 1 for line in first_lines),
+        default=9,
+    )
+    if n_cols not in (9, 11, 12, 13):
+        raise ValueError(
+            f"Unsupported CSV width for '{csv_path}': {n_cols} columns "
+            f"(expected 9, 11, 12, or 13)"
+        )
     if n_cols >= 11:
         column_names = column_names + [COL_NET_POINTS, COL_ADJUSTED_NET_POINTS]
     if n_cols >= 12:
@@ -956,7 +899,9 @@ def SwapPerspectiveCSV(csv_data: str) -> str:
     columns, flips the colon-paired tie-up, negates the stored net/adjusted
     points, and inverts the match-result column so the same rows describe the
     opponent. Rows that do not match the 12-field compiled schema (or the
-    13-field schema with a match date) pass through unchanged.
+    13-field schema with a match date) pass through unchanged. A 13-field row
+    keeps its width even when the match date is empty, so a mixed set of dated
+    and undated rows stays parseable.
 
     Args:
         csv_data: The multi-line compiled CSV string for a wrestler.
@@ -984,7 +929,7 @@ def SwapPerspectiveCSV(csv_data: str) -> str:
             new_tie, op_moves, team_moves, op_scores, team_scores,
             new_net, new_adjusted, new_result,
         ]
-        if match_date:
+        if len(parts) == 13:
             fields.append(match_date)
         swapped.append(",".join(fields))
     return "\n".join(swapped)
@@ -1081,45 +1026,6 @@ def _MoveFilter(move: str, column: str) -> Callable[[pd.Series], pd.Series | Non
         A function suitable for use with `DataFrame.apply(axis=1)`.
     """
     return lambda row: row if move in row[column] else None
-
-
-def DidMove(move: str) -> Callable[[pd.Series], pd.Series | None]:
-    """Convenience wrapper around _MoveFilter for team moves."""
-    return _MoveFilter(move, COL_TEAM_MOVES)
-
-
-def DefendedMove(move: str) -> Callable[[pd.Series], pd.Series | None]:
-    """Convenience wrapper around _MoveFilter for opponent moves."""
-    return _MoveFilter(move, COL_OPPONENT_MOVES)
-
-
-def MoveCounts(df_in: pd.DataFrame, column: str) -> dict[str, int]:
-    """Returns a dictionary from move names to how often they appear in `column`.
-    Unused moves are not included as keys.
-
-    Args:
-        df_in: The DataFrame the moves are being counted from.
-        column: The column to count from (e.g. COL_TEAM_MOVES or COL_OPPONENT_MOVES).
-
-    Returns:
-        The dictionary of moves and frequencies.
-    """
-    dict_out: dict[str, int] = {}
-    for move_list in df_in[column]:
-        for move in move_list:
-            dict_out.setdefault(move, 0)
-            dict_out[move] += 1
-    return dict_out
-
-
-def MoveUsageCounts(df_in: pd.DataFrame) -> dict[str, int]:
-    """Convenience wrapper around MoveCounts for team moves."""
-    return MoveCounts(df_in, COL_TEAM_MOVES)
-
-
-def MoveDefenseCounts(df_in: pd.DataFrame) -> dict[str, int]:
-    """Convenience wrapper around MoveCounts for opponent moves."""
-    return MoveCounts(df_in, COL_OPPONENT_MOVES)
 
 
 def PinCount(df_in: pd.DataFrame, column: str) -> int:
@@ -1294,23 +1200,6 @@ def _InitiationStats(df_in: pd.DataFrame) -> dict[str, float | int]:
     }
 
 
-def GenerateInitiationDF(df_in: pd.DataFrame) -> pd.DataFrame:
-    """Creates a DataFrame with stats based on initiation, ie. who starts an attack.
-
-    Args:
-        df_in: The DataFrame that stats are being extracted from
-
-    Returns:
-        The DataFrame with the relevant stats
-    """
-    stats: dict[str, float | int] = _InitiationStats(df_in)
-    df_out: pd.DataFrame = pd.DataFrame.from_dict(
-        {name: [value] for name, value in stats.items()}, orient="columns"
-    )
-    df_out.index.name = "Metric"
-    return df_out
-
-
 def GenerateInitiationDFBySegment(df_in: pd.DataFrame) -> pd.DataFrame:
     """Creates an initiation DataFrame split by match result segment.
 
@@ -1323,7 +1212,7 @@ def GenerateInitiationDFBySegment(df_in: pd.DataFrame) -> pd.DataFrame:
 
     Returns:
         A 4-row DataFrame indexed by ["All", "Wins", "Losses", "Unrecorded"]
-        with the same columns as GenerateInitiationDF
+        with the initiation metric columns from _InitiationStats
     """
     if COL_MATCH_RESULT in df_in.columns:
         result_col: pd.Series = df_in[COL_MATCH_RESULT]

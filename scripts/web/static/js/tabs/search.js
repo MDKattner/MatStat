@@ -45,6 +45,11 @@ export function mountSearch(root) {
   function renderMatches() {
     resultCount.textContent = `Results: ${state.matches.length}`;
     resultsList.replaceChildren();
+    if (state.matches.length === 0) {
+      const empty = el("li", { class: "empty-item", text: "No matches found yet." });
+      resultsList.appendChild(empty);
+      return;
+    }
     for (const match of state.matches) {
       const label = `${match.wrestler} | ${match.video} [${formatClock(match.start_time)}-${formatClock(match.end_time)}] ` +
         `${match.attacking} | ${match.tie_up} | ${match.team_moves}`;
@@ -162,16 +167,20 @@ export function mountSearch(root) {
   }
 
   async function loadOptions() {
-    const [wrestlerItems, config] = await Promise.all([
-      fetchJson("/api/search/wrestlers"),
-      fetchJson("/api/config"),
-    ]);
-    const names = wrestlerItems.ok ? wrestlerItems.body.items || [] : [];
-    const moves = config.ok ? config.body.moves || [] : [];
-    wrestler.setItems(["All", ...names]);
-    tie.setItems(config.ok ? config.body.ties || [] : []);
-    teamMove.setItems(moves);
-    oppMove.setItems(moves);
+    try {
+      const [wrestlerItems, config] = await Promise.all([
+        fetchJson("/api/search/wrestlers"),
+        fetchJson("/api/config"),
+      ]);
+      const names = wrestlerItems.ok ? wrestlerItems.body.items || [] : [];
+      const moves = config.ok ? config.body.moves || [] : [];
+      wrestler.setItems(["All", ...names]);
+      tie.setItems(config.ok ? config.body.ties || [] : []);
+      teamMove.setItems(moves);
+      oppMove.setItems(moves);
+    } catch (err) {
+      showToast("Could not load search options (network error).", "error");
+    }
   }
 
   searchBtn.addEventListener("click", runSearch);

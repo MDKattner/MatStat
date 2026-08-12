@@ -93,15 +93,16 @@ PY
     matstat-stats () {
       python3 - "$@" <<'PY'
 import sys
+from collections import Counter
 from pathlib import Path
 
 from scripts.helpers import (
+    COL_OPPONENT_MOVES,
     COL_OPPONENT_SCORES,
+    COL_TEAM_MOVES,
     COL_TEAM_SCORES,
     GenerateInitiationDFBySegment,
     MakeFormattedDataFrame,
-    MoveDefenseCounts,
-    MoveUsageCounts,
     PinCount,
 )
 
@@ -112,8 +113,8 @@ for arg in sys.argv[1:]:
         continue
     df = MakeFormattedDataFrame(path)
     print(f"== {path} ==")
-    print("  offense (top 8):", dict(list(MoveUsageCounts(df).items())[:8]))
-    print("  defense (top 8):", dict(list(MoveDefenseCounts(df).items())[:8]))
+    print("  offense (top 8):", dict(Counter(m for ml in df[COL_TEAM_MOVES] for m in ml).most_common(8)))
+    print("  defense (top 8):", dict(Counter(m for ml in df[COL_OPPONENT_MOVES] for m in ml).most_common(8)))
     print(f"  pins (team): {PinCount(df, COL_TEAM_SCORES)}  (opp): {PinCount(df, COL_OPPONENT_SCORES)}")
     print(GenerateInitiationDFBySegment(df).to_string())
     print()

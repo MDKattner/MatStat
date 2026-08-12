@@ -64,6 +64,24 @@ class TestVideoListing:
         resp = client.get("/api/videos/nope")
         assert resp.status_code == 404
 
+    def test_lists_taged_and_clips(self, client, tmp_path) -> None:
+        (tmp_path / "taged" / "wrestler_match.mkv").write_bytes(b"x")
+        (tmp_path / "clips" / "reel.mkv").write_bytes(b"x")
+
+        taged_resp = client.get("/api/videos/taged")
+        assert taged_resp.status_code == 200
+        assert taged_resp.json() == {"files": ["wrestler_match.mkv"]}
+
+        clips_resp = client.get("/api/videos/clips")
+        assert clips_resp.status_code == 200
+        assert clips_resp.json() == {"files": ["reel.mkv"]}
+
+    def test_missing_taged_dir_empty(self, client, tmp_path) -> None:
+        (tmp_path / "untaged").mkdir(parents=True, exist_ok=True)
+        resp = client.get("/api/videos/clips")
+        assert resp.status_code == 200
+        assert resp.json() == {"files": []}
+
 
 class TestPreviewFlow:
     """Tests for the progressive HLS preview endpoints."""
@@ -138,8 +156,10 @@ class TestPreviewFlow:
         # Hold the transcode "running" so we can verify dedup while in flight
         # (avoids running real ffmpeg/ffprobe in the job thread).
         release: threading.Event = threading.Event()
+        started_jobs: list[str] = []
 
         def fake_transcode_hls(src, job_id, on_progress=None, cancel_event=None) -> None:
+            started_jobs.append(job_id)
             release.wait(timeout=5.0)
 
         monkeypatch.setattr(transcode, "transcode_hls", fake_transcode_hls)
@@ -159,10 +179,10 @@ class TestPreviewFlow:
         assert resp2.status_code == 200
         assert resp2.json()["status"] == "ready"
 
-        transcode_jobs: list[Job] = [
-            job for job in web_app.job_manager.list() if job.kind == "transcode"
-        ]
-        assert len(transcode_jobs) == 1
+        assert len(started_jobs) == 1
+        transcode_job: Job | None = web_app.job_manager.get(started_jobs[0])
+        assert transcode_job is not None
+        assert transcode_job.kind == "transcode"
 
         release.set()
 
@@ -193,6 +213,26 @@ class TestJobRoutes:
     def test_cancel_unknown_job_404(self, client) -> None:
         resp = client.post("/api/jobs/missing/cancel")
         assert resp.status_code == 404
+
+    def test_cancel_job_returns_200(self, client) -> None:
+        job_id: str = web_app.job_manager.submit(
+            "test", lambda ctx: ctx.cancel_event.wait(5.0)
+        )
+        resp = client.post(f"/api/jobs/{job_id}/cancel")
+        assert resp.status_code == 200
+        assert resp.json() == {"cancelled": True}
+
+        deadline: float = time.monotonic() + 5.0
+        job: Job | None = None
+        while time.monotonic() < deadline:
+            job = web_app.job_manager.get(job_id)
+            assert job is not None
+            if job.status == "cancelled":
+                break
+            time.sleep(0.01)
+
+        assert job is not None
+        assert job.status == "cancelled"
 
 
 class TestWebSocket:

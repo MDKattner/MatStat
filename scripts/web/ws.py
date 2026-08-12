@@ -10,6 +10,10 @@ from typing import Any
 #   {"type": "job_progress", "id", "progress", "message"}
 #   {"type": "job_finished", "id", "status", "message", "error"}
 
+# Bounded per-client event queue; a throttled client drops the oldest events
+# rather than accumulating them forever.
+_QUEUE_MAXSIZE: int = 64
+
 
 class EventHub:
     """Fan-out hub that publishes event dicts to subscribed asyncio queues.
@@ -29,8 +33,13 @@ class EventHub:
         self._loop = loop
 
     def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
-        """Register a new client queue and return it."""
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        """Register a new client queue and return it.
+
+        The queue is bounded so a slow or disconnected client cannot grow
+        memory without limit; ``_dispatch`` drops the oldest event when a
+        queue is full.
+        """
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
         self._queues.add(queue)
         return queue
 

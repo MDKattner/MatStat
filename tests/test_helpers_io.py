@@ -13,7 +13,7 @@ from scripts.helpers import (
     COL_ATTACKING, COL_START_TIME, COL_END_TIME, COL_TIE_UP,
     COL_TEAM_MOVES, COL_OPPONENT_MOVES, COL_TEAM_SCORES, COL_OPPONENT_SCORES,
     COL_NET_POINTS, COL_ADJUSTED_NET_POINTS, COL_MATCH_RESULT, COL_MATCH_DATE,
-    MakeNameAndCSV, GetVidDuration, NameProbe,
+    MakeNameAndCSV, GetVidDuration,
     MakeFormattedDataFrame, LoadAllWrestlerData,
 )
 
@@ -172,28 +172,6 @@ class TestGetVidDuration:
         assert result == 0
 
 
-# ---------- NameProbe ----------
-
-class TestNameProbe:
-    """Tests for NameProbe — ffprobe title extraction."""
-
-    def test_returns_name(self, monkeypatch) -> None:
-        def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
-            return subprocess.CompletedProcess([], 0, "John Smith", "")
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-        result: str = NameProbe(Path("fake.mkv"))
-        assert result == "John Smith"
-
-    def test_failure_returns_empty(self, monkeypatch) -> None:
-        def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
-            raise subprocess.CalledProcessError(1, "ffprobe")
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-        result: str = NameProbe(Path("fake.mkv"))
-        assert result == ""
-
-
 # ---------- MakeFormattedDataFrame ----------
 
 class TestMakeFormattedDataFrame:
@@ -316,6 +294,25 @@ class TestMakeFormattedDataFrame:
         assert COL_MATCH_DATE in df.columns
         assert df[COL_MATCH_DATE].iloc[0] == "2026-08-01"
         assert df[COL_MATCH_DATE].iloc[1] == ""
+
+    def test_mixed_12_and_13_col_rows_loads(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "mixed.csv"
+        csv_file.write_text(
+            "vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,W\n"
+            "vid.mkv:2,6,12,D,standing,sprawl,sweep single,None,T,-3,-3,L,2026-08-01"
+        )
+
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
+        assert COL_MATCH_DATE in df.columns
+        assert df[COL_MATCH_DATE].iloc[0] == ""
+        assert df[COL_MATCH_DATE].iloc[1] == "2026-08-01"
+
+    def test_unexpected_width_raises_clear_error(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "weird.csv"
+        csv_file.write_text("a,b,c,d,e,f,g,h,i,j")
+
+        with pytest.raises(ValueError, match="column"):
+            MakeFormattedDataFrame(csv_file)
 
 
 # ---------- LoadAllWrestlerData ----------

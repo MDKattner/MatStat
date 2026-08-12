@@ -104,13 +104,6 @@ class TestJobManager:
         manager: JobManager = JobManager()
         assert manager.get("missing") is None
 
-    def test_list_returns_all_jobs(self) -> None:
-        manager: JobManager = JobManager()
-        id_a: str = manager.submit("test", lambda ctx: 1)
-        id_b: str = manager.submit("test", lambda ctx: 2)
-        ids: set[str] = {j.id for j in manager.list()}
-        assert ids == {id_a, id_b}
-
     def test_publish_defaults_to_noop(self) -> None:
         manager: JobManager = JobManager()
         job_id: str = manager.submit("test", lambda ctx: "ok")

@@ -75,18 +75,28 @@ class JobManager:
         self._cancel_events: dict[str, threading.Event] = {}
         self._lock: threading.Lock = threading.Lock()
 
-    def submit(self, kind: str, fn: Callable[[JobContext], Any], message: str = "") -> str:
+    def submit(
+        self,
+        kind: str,
+        fn: Callable[[JobContext], Any],
+        message: str = "",
+        job_id: str | None = None,
+    ) -> str:
         """Queue a job that runs ``fn(ctx)`` in a worker thread.
 
         Args:
             kind: A stable machine-readable label (e.g. "transcode", "compile_stats").
             fn: The job body; receives a JobContext for progress/cancellation.
             message: Initial status message.
+            job_id: Optional pre-generated job id. Lets the caller coordinate
+                external state (e.g. the transcode in-flight map) *before* the
+                worker can start, closing the race where a fast job finishes
+                before the id is recorded.
 
         Returns:
             The job id (short hex), used to poll or cancel the job.
         """
-        job_id: str = uuid.uuid4().hex[:8]
+        job_id = job_id or uuid.uuid4().hex[:8]
         job: Job = Job(id=job_id, kind=kind, message=message)
         with self._lock:
             self._jobs[job_id] = job
@@ -121,10 +131,6 @@ class JobManager:
     def get(self, job_id: str) -> Job | None:
         with self._lock:
             return self._jobs.get(job_id)
-
-    def list(self) -> list[Job]:
-        with self._lock:
-            return list(self._jobs.values())
 
     def cancel(self, job_id: str) -> bool:
         """Request cancellation of a running/queued job."""

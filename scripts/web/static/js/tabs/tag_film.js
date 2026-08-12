@@ -144,12 +144,16 @@ export function mountTagFilm(root) {
   });
 
   async function loadVideos() {
-    const { ok, body } = await fetchJson("/api/videos/untaged");
-    if (!ok) {
-      showToast("Could not load video list.", "error");
-      return;
+    try {
+      const { ok, body } = await fetchJson("/api/videos/untaged");
+      if (!ok) {
+        showToast("Could not load video list.", "error");
+        return;
+      }
+      videoList.setItems(body.files || []);
+    } catch (err) {
+      showToast("Could not load the video list (network error).", "error");
     }
-    videoList.setItems(body.files || []);
   }
 
   async function loadPreview(fileName) {
@@ -177,6 +181,7 @@ export function mountTagFilm(root) {
       if (state.opponent === name) {
         state.opponent = "";
         opponentList.clear();
+        updateDualMode();
       }
       opponentList.setItems(wrestlerNames.filter((w) => w !== name));
       updateTitlePreview();
@@ -479,6 +484,7 @@ export function mountTagFilm(root) {
       state.matchResult = "";
       matchDateInput.value = "";
       opponentList.clear();
+      updateDualMode();
       setResult("");
       updateVideoLock();
       await loadVideos();

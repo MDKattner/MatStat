@@ -23,10 +23,12 @@ def _make_test_client(tmp_path, monkeypatch, logging_enabled: bool, auth_enabled
     session; ``auth_enabled=True`` (used by the auth tests) enables it with a
     known test password.
     """
+    from scripts import helpers as helpers_module
     from scripts.web import app as web_app
     from scripts.web import tag as tag_module
     from scripts.web import transcode as transcode_module
     from scripts.web import auth as auth_module
+    from scripts.web import configs as configs_module
 
     preview_dirs: dict[str, Path] = {
         "untaged": tmp_path / "untaged",
@@ -37,12 +39,18 @@ def _make_test_client(tmp_path, monkeypatch, logging_enabled: bool, auth_enabled
         directory.mkdir(parents=True, exist_ok=True)
     (tmp_path / "tmp").mkdir(parents=True, exist_ok=True)
 
+    cfg_tmp: Path = tmp_path / "cfg"
+    cfg_tmp.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(helpers_module, "cfg_dir", cfg_tmp)
+    monkeypatch.setattr(configs_module, "cfg_dir", cfg_tmp)
+
     monkeypatch.setattr(web_app, "_PREVIEW_DIRS", preview_dirs)
     monkeypatch.setattr(web_app, "_UPLOAD_DIR", preview_dirs["untaged"])
     monkeypatch.setattr(web_app, "_VISIBLE_LOGGING", logging_enabled)
     monkeypatch.setattr(auth_module, "_AUTH_OFF", not auth_enabled)
     monkeypatch.setattr(auth_module, "_PASSWORD", "test-secret" if auth_enabled else None)
     monkeypatch.setattr(auth_module, "_CURRENT_SESSION", None)
+    monkeypatch.setattr(auth_module, "_LOGIN_ATTEMPTS", {})
     monkeypatch.setattr(tag_module, "untaged_dir", preview_dirs["untaged"])
     monkeypatch.setattr(tag_module, "taged_dir", preview_dirs["taged"])
     monkeypatch.setattr(tag_module, "tmp_dir", tmp_path / "tmp")

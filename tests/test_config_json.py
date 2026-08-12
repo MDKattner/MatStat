@@ -151,18 +151,15 @@ def _parse_via_disk(data: dict[str, object]) -> AppConfig:
 
 
 class TestActiveRulesetAccessors:
-    """Tests for GetActiveRuleset / GetOutcomeMap / GetMovesList / GetTiesList."""
+    """Tests for GetActiveRuleset."""
 
-    def test_outcome_map_uses_active_ruleset(self, tmp_path) -> None:
+    def test_returns_active_ruleset(self, tmp_path) -> None:
         path: Path = tmp_path / "config.json"
         SaveAppConfig(_minimal_cfg(active="Alt"), path)
 
         active: Ruleset = helpers.GetActiveRuleset(path)
         assert active.name == "Alt"
-        outcome_map: dict[str, OutcomeSpec] = helpers.GetOutcomeMap(path)
-        assert set(outcome_map) == {"X", "FALL"}
-        assert helpers.GetMovesList(path) == ["high crotch", "double"]
-        assert helpers.GetTiesList(path) == ["collar tie"]
+        assert set(active.outcomes) == {"X", "FALL"}
 
 
 class TestReloadScoringMap:

@@ -103,6 +103,11 @@ export function mountTrend(root) {
 
   // ---------- Plot ----------
 
+  // Monotonic load token: only the latest request may render, so a slow
+  // response cannot overwrite a newer chart (or stale results after the
+  // wrestler/metric/window changed mid-flight).
+  let loadSeq = 0;
+
   /**
    * Fetch and render the trend figure for the current controls.
    */
@@ -111,6 +116,7 @@ export function mountTrend(root) {
       setStatus("Select a wrestler.");
       return;
     }
+    const seq = ++loadSeq;
     let Plotly;
     try {
       Plotly = await ensurePlotly();
@@ -128,6 +134,7 @@ export function mountTrend(root) {
 
     setStatus("Loading chart...");
     const { ok, body } = await fetchJson(url);
+    if (seq !== loadSeq) return;
     if (!ok) {
       const message = body.detail || "Could not load chart.";
       showToast(message, "error");
@@ -135,8 +142,14 @@ export function mountTrend(root) {
       return;
     }
 
-    const fig = JSON.parse(body.fig_json);
-    Plotly.newPlot(plotEl, fig.data, fig.layout, { responsive: true });
+    try {
+      const fig = JSON.parse(body.fig_json);
+      Plotly.newPlot(plotEl, fig.data, fig.layout, { responsive: true });
+    } catch (err) {
+      showToast("Could not render the chart.", "error");
+      setStatus("Could not render the chart.");
+      return;
+    }
 
     const skipped =
       body.skipped_rows > 0 ? ` (${body.skipped_rows} rows without a date skipped)` : "";
@@ -162,16 +175,21 @@ export function mountTrend(root) {
    * Populate the wrestler select from the compiled-data listing.
    */
   async function loadWrestlers() {
-    const { ok, body } = await fetchJson("/api/search/wrestlers");
-    if (!ok) return;
-    wrestlerSelect.replaceChildren();
-    for (const name of body.items || []) {
-      wrestlerSelect.appendChild(el("option", { value: name, text: name }));
-    }
-    if (body.items && body.items.length > 0) {
-      state.wrestler = body.items[0];
-      wrestlerSelect.value = state.wrestler;
-      loadPlot();
+    try {
+      const { ok, body } = await fetchJson("/api/search/wrestlers");
+      if (!ok) return;
+      wrestlerSelect.replaceChildren();
+      for (const name of body.items || []) {
+        wrestlerSelect.appendChild(el("option", { value: name, text: name }));
+      }
+      if (body.items && body.items.length > 0) {
+        state.wrestler = body.items[0];
+        wrestlerSelect.value = state.wrestler;
+        loadPlot();
+      }
+    } catch (err) {
+      showToast("Could not load the wrestler list.", "error");
+      setStatus("Could not load the wrestler list.");
     }
   }
 

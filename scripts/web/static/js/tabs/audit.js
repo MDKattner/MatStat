@@ -77,7 +77,11 @@ export function mountAudit(root) {
   const wrestlerList = filterList({
     placeholder: "Type to filter wrestlers...",
     onChange: (name) => {
-      if (name && name === opponentList.selected) opponentList.clear();
+      if (name && name === opponentList.selected) {
+        opponentList.clear();
+        oppTie.clear();
+        oppTie.node.hidden = true;
+      }
       opponentList.setItems(wrestlerNames.filter((w) => w !== name));
       updateTitlePreview();
       updateButtons();
@@ -242,24 +246,23 @@ export function mountAudit(root) {
     oppMoves.clear();
     ourScores.clear();
     oppScores.clear();
-    for (const move of seq.team_moves || []) {
-      if (move !== "nothing") setChecked(ourMoves, move);
-    }
-    for (const move of seq.op_moves || []) {
-      if (move !== "nothing") setChecked(oppMoves, move);
-    }
-    for (const score of seq.team_scores || []) {
-      if (score !== "None") setChecked(ourScores, score);
-    }
-    for (const score of seq.op_scores || []) {
-      if (score !== "None") setChecked(oppScores, score);
-    }
+    setCounted(ourMoves, seq.team_moves || [], "nothing");
+    setCounted(oppMoves, seq.op_moves || [], "nothing");
+    setCounted(ourScores, seq.team_scores || [], "None");
+    setCounted(oppScores, seq.op_scores || [], "None");
   }
 
-  function setChecked(list, value) {
-    const label = list.node.querySelector(`label.check-label:has(input[value="${CSS.escape(value)}"])`);
-    const box = label && label.querySelector("input[type=checkbox]");
-    if (box) box.checked = true;
+  // Check each value, counting duplicates so repeated moves/scores are not
+  // collapsed into a single entry when the sequence is re-tagged.
+  function setCounted(list, values, skip) {
+    const counts = {};
+    for (const value of values) {
+      if (value === skip) continue;
+      counts[value] = (counts[value] || 0) + 1;
+    }
+    for (const [value, count] of Object.entries(counts)) {
+      list.setCount(value, count);
+    }
   }
 
   function currentSequence() {
@@ -417,19 +420,23 @@ export function mountAudit(root) {
   // ---------- Preview + re-tag ----------
 
   async function loadVideos() {
-    const { ok, body } = await fetchJson("/api/audit");
-    if (!ok) {
-      showToast("Could not load logged videos.", "error");
-      return;
+    try {
+      const { ok, body } = await fetchJson("/api/audit");
+      if (!ok) {
+        showToast("Could not load logged videos.", "error");
+        return;
+      }
+      state.videos = body.videos || [];
+      videoList.setItems(state.videos.map((v) => v.name));
+      if (state.data) {
+        const fresh = state.videos.find((v) => v.name === state.data.name);
+        state.data = fresh || null;
+        if (state.data) renderSequences();
+      }
+      setStatus(`${state.videos.length} logged video(s).`);
+    } catch (err) {
+      showToast("Could not load logged videos (network error).", "error");
     }
-    state.videos = body.videos || [];
-    videoList.setItems(state.videos.map((v) => v.name));
-    if (state.data) {
-      const fresh = state.videos.find((v) => v.name === state.data.name);
-      state.data = fresh || null;
-      if (state.data) renderSequences();
-    }
-    setStatus(`${state.videos.length} logged video(s).`);
   }
 
   async function loadPreview(fileName) {

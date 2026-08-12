@@ -74,13 +74,6 @@ export function onWsStatus(callback) {
   statusCallback = callback;
 }
 
-/** Send a message to the server (e.g. a job cancellation). */
-export function sendWs(payload) {
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(payload));
-  }
-}
-
 export function connectWs() {
   open();
 }

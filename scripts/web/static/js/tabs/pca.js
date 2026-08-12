@@ -174,6 +174,10 @@ export function mountPca(root) {
   function renderSelection() {
     selectionCount.textContent = String(state.items.length);
     selectionList.replaceChildren();
+    if (state.items.length === 0) {
+      const empty = el("li", { class: "empty-item", text: "Brush a region on the plot to select sequences." });
+      selectionList.appendChild(empty);
+    }
     for (const item of state.items) {
       const label = `${item.video}  [${formatClock(item.start_time)}-${formatClock(item.end_time)}]`;
       const btn = el("button", { class: "video-item", type: "button", text: label });
@@ -376,15 +380,19 @@ export function mountPca(root) {
    * Populate the team/wrestler selects from the shared config.
    */
   async function loadConfigs() {
-    const { ok, body } = await fetchJson("/api/config");
-    if (!ok) return;
-    teamSelect.replaceChildren();
-    for (const name of Object.keys(body.teams || {})) {
-      teamSelect.appendChild(el("option", { value: name, text: name }));
-    }
-    wrestlerSelect.replaceChildren();
-    for (const name of body.wrestlers || []) {
-      wrestlerSelect.appendChild(el("option", { value: name, text: name }));
+    try {
+      const { ok, body } = await fetchJson("/api/config");
+      if (!ok) return;
+      teamSelect.replaceChildren();
+      for (const name of Object.keys(body.teams || {})) {
+        teamSelect.appendChild(el("option", { value: name, text: name }));
+      }
+      wrestlerSelect.replaceChildren();
+      for (const name of body.wrestlers || []) {
+        wrestlerSelect.appendChild(el("option", { value: name, text: name }));
+      }
+    } catch (err) {
+      showToast("Could not load config (teams/wrestlers).", "error");
     }
   }
 

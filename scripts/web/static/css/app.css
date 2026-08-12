@@ -117,11 +117,11 @@ html, body {
   padding: 16px;
 }
 
-.placeholder {
+.empty-item {
   color: var(--text-dim);
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  padding: 24px;
+  padding: 8px 12px;
+  list-style: none;
+  font-style: italic;
 }
 
 /* ---------- Status bar + log dock ---------- */

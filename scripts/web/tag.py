@@ -222,6 +222,13 @@ def run_tag_job(
 
     output_name: str = Path(video).with_suffix(".mkv").name
     output_path: Path = taged_dir / output_name
+    if output_path.exists():
+        raise ValueError(
+            f"Tagged video already exists: {output_name} — "
+            "use the Auditing tab to re-tag it or delete it first"
+        )
+
+    tmp_output: Path = tmp_dir / f"out-{ctx.job_id}.mkv"
 
     ctx.report(50, "Tagging video...")
 
@@ -229,19 +236,24 @@ def run_tag_job(
         pct: float = min(99.0, 50.0 + 49.0 * elapsed / max(1, duration))
         ctx.report(pct, desc)
 
-    result: FfmpegResult = run_ffmpeg(
-        build_tag_cmd(input_path, metadata_path, output_path),
-        description=f"Tagging {video}",
-        on_progress=_on_progress,
-        cancel_event=ctx.cancel_event,
-    )
+    try:
+        result: FfmpegResult = run_ffmpeg(
+            build_tag_cmd(input_path, metadata_path, tmp_output),
+            description=f"Tagging {video}",
+            on_progress=_on_progress,
+            cancel_event=ctx.cancel_event,
+        )
+    except Exception:
+        tmp_output.unlink(missing_ok=True)
+        raise
+    finally:
+        metadata_path.unlink(missing_ok=True)
 
-    metadata_path.unlink(missing_ok=True)
-
-    if not result.success or not output_path.exists():
-        output_path.unlink(missing_ok=True)
+    if not result.success or not tmp_output.exists():
+        tmp_output.unlink(missing_ok=True)
         raise RuntimeError(f"Tagging failed: {result.message}")
 
+    tmp_output.replace(output_path)
     input_path.unlink(missing_ok=True)
 
     ctx.report(100, f"Tagged {output_name}")
