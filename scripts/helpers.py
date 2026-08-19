@@ -275,15 +275,25 @@ def GetActiveRuleset(config_path: Path | None = None) -> Ruleset:
 _ACTIVE_PIN_CODES: frozenset[str] = frozenset()
 score_to_pts: dict[str, np.int16] = {}
 active_pin_points: int = 0
+_last_scoring_mtime: float = 0.0
 
 
 def ReloadScoringMap() -> None:
     """Refresh the module-level scoring map from the active ruleset.
 
     Called at import time and before tabulating net points so CSV loads reflect
-    the currently selected ruleset.
+    the currently selected ruleset. Skips the disk read when config.json
+    hasn't changed since the last reload.
     """
-    global score_to_pts, _ACTIVE_PIN_CODES, active_pin_points
+    global score_to_pts, _ACTIVE_PIN_CODES, active_pin_points, _last_scoring_mtime
+    config_path: Path = cfg_dir / "config.json"
+    try:
+        mtime: float = config_path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    if mtime == _last_scoring_mtime and score_to_pts:
+        return
+    _last_scoring_mtime = mtime
     active: Ruleset = GetActiveRuleset()
     score_to_pts = {code: spec.points for code, spec in active.outcomes.items()}
     _ACTIVE_PIN_CODES = frozenset(
