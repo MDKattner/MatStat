@@ -17,7 +17,6 @@ pkgs.mkShell {
 
     # ── Python dev / test ──
     python3Packages.pytest
-    python3Packages.pytest-mock
     pipenv
 
     # ── System tools ──
