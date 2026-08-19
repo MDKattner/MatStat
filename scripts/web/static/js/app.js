@@ -105,9 +105,11 @@ function initLogDock() {
   toggle.addEventListener("click", () => {
     setLogVisible(dock.hidden);
   });
-  document.getElementById("log-close").addEventListener("click", () => setLogVisible(false));
-  document.getElementById("log-clear").addEventListener("click", () => {
-    document.getElementById("log-view").replaceChildren();
+  const logClose = document.getElementById("log-close");
+  const logClear = document.getElementById("log-clear");
+  if (logClose) logClose.addEventListener("click", () => setLogVisible(false));
+  if (logClear) logClear.addEventListener("click", () => {
+    document.getElementById("log-view")?.replaceChildren();
   });
 
   onWs("log", (event) => appendLog(event.message, event.level));
