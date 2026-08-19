@@ -578,27 +578,22 @@ def GetVideoCodecs(path_to_vid: Path) -> dict[str, str]:
     """
     result: dict[str, str] = {}
     try:
-        vcodec_cmd: str = (
-            "ffprobe -v error -select_streams v:0 -show_entries "
-            "stream=codec_name -of default=nw=1:nk=1 "
+        cmd: str = (
+            "ffprobe -v error -show_entries stream=index,codec_name "
+            "-of csv=nw=1:nk=1 "
             f"{shlex.quote(str(path_to_vid))}"
         )
-        vcodec: str = subprocess.run(
-            vcodec_cmd, shell=True, capture_output=True, text=True, check=True
+        output: str = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, check=True
         ).stdout.strip()
-        if vcodec:
-            result['video'] = vcodec
-
-        acodec_cmd: str = (
-            "ffprobe -v error -select_streams a:0 -show_entries "
-            "stream=codec_name -of default=nw=1:nk=1 "
-            f"{shlex.quote(str(path_to_vid))}"
-        )
-        acodec: str = subprocess.run(
-            acodec_cmd, shell=True, capture_output=True, text=True, check=True
-        ).stdout.strip()
-        if acodec:
-            result['audio'] = acodec
+        for line in output.splitlines():
+            parts: list[str] = line.split(",")
+            if len(parts) == 2:
+                idx, codec = parts
+                if idx == "0":
+                    result["video"] = codec
+                elif idx == "1":
+                    result["audio"] = codec
     except (subprocess.CalledProcessError, OSError) as e:
         logging.warning(f"GetVideoCodecs failed for '{path_to_vid}': {e}")
 
