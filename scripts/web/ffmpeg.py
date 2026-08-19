@@ -74,7 +74,7 @@ def run_ffmpeg(
 
     proc: subprocess.Popen[bytes] = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
 
@@ -107,7 +107,7 @@ def run_ffmpeg(
                 reader.join(timeout=1.0)
                 raise JobCancelledError(description or "ffmpeg cancelled")
 
-    reader.join(timeout=1.0)
+    reader.join(timeout=3.0)
 
     with stderr_lock:
         full_stderr: str = "\n".join(stderr_lines)
