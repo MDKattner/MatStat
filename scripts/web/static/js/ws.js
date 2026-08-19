@@ -9,11 +9,13 @@
  * The module is a singleton; import `connectWs` from anywhere.
  */
 
-const RECONNECT_DELAY_MS = 2000;
+const INITIAL_RECONNECT_MS = 2000;
+const MAX_RECONNECT_MS = 30000;
 
 let socket = null;
 let handlers = {};
 let statusCallback = null;
+let reconnectDelay = INITIAL_RECONNECT_MS;
 
 function wsUrl() {
   const proto = window.location.protocol === "https:" ? "wss" : "ws";
@@ -35,6 +37,7 @@ function open() {
   socket = new WebSocket(wsUrl());
 
   socket.addEventListener("open", () => {
+    reconnectDelay = INITIAL_RECONNECT_MS;
     if (statusCallback) statusCallback("online");
   });
 
@@ -53,7 +56,8 @@ function open() {
       return;
     }
     if (statusCallback) statusCallback("offline");
-    setTimeout(open, RECONNECT_DELAY_MS);
+    setTimeout(open, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 1.5, MAX_RECONNECT_MS);
   });
 
   socket.addEventListener("error", () => {
