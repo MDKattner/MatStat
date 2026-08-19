@@ -35,6 +35,7 @@ _LOGIN_MAX_ATTEMPTS: int = 10
 _LOGIN_WINDOW_SECONDS: float = 300.0
 _LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 _LOGIN_LOCK: threading.Lock = threading.Lock()
+_SESSION_LOCK: threading.Lock = threading.Lock()
 
 # Config is read once at import from the environment; tests monkeypatch these
 # module globals per-test (see tests/conftest.py).
@@ -114,11 +115,12 @@ def login(password: str, ip: str = "") -> tuple[bool, str, str | None]:
     if not hmac.compare_digest(password, _PASSWORD or ""):
         record_login_attempt(ip)
         return False, "Incorrect password", None
-    if _CURRENT_SESSION is not None and time.time() < _CURRENT_SESSION[1]:
-        return False, "Another session is already active. Log out first.", None
     record_login_attempt(ip)
-    session_id: str = secrets.token_urlsafe(32)
-    _CURRENT_SESSION = (session_id, time.time() + SESSION_TTL)
+    with _SESSION_LOCK:
+        if _CURRENT_SESSION is not None and time.time() < _CURRENT_SESSION[1]:
+            return False, "Another session is already active. Log out first.", None
+        session_id: str = secrets.token_urlsafe(32)
+        _CURRENT_SESSION = (session_id, time.time() + SESSION_TTL)
     logging.info("MatStat session started.")
     return True, "ok", f"{session_id}.{_sign(session_id)}"
 
@@ -162,8 +164,9 @@ def logout(cookies: dict[str, str]) -> bool:
     session_id: str | None = _valid(cookies.get(COOKIE_NAME, ""))
     if session_id is None:
         return False
-    if _CURRENT_SESSION is None or _CURRENT_SESSION[0] != session_id:
-        return False
-    _CURRENT_SESSION = None
+    with _SESSION_LOCK:
+        if _CURRENT_SESSION is None or _CURRENT_SESSION[0] != session_id:
+            return False
+        _CURRENT_SESSION = None
     logging.info("MatStat session ended by logout.")
     return True
