@@ -214,3 +214,301 @@ class TestHelpers:
             ValidateMatchDate("08/01/2026")
         with pytest.raises(ValueError, match="match date"):
             ValidateMatchDate("2026-8-1")
+
+
+class TestQueryBuilder:
+    """Tests for the QueryBuilder class."""
+
+    @staticmethod
+    def _make_df() -> DataFrame:
+        """Build a small DataFrame covering every column the QueryBuilder uses."""
+        from scripts.helpers import (
+            COL_ORIGIN, COL_START_TIME, COL_END_TIME, COL_ATTACKING,
+            COL_TIE_UP, COL_TEAM_MOVES, COL_OPPONENT_MOVES,
+            COL_NET_POINTS, COL_ADJUSTED_NET_POINTS,
+            COL_MATCH_RESULT, COL_MATCH_DATE,
+        )
+        return DataFrame({
+            COL_ORIGIN: ["v1.mkv:1", "v1.mkv:2", "v2.mkv:1", "v3.mkv:1", "v3.mkv:2"],
+            COL_START_TIME: [0, 30, 0, 10, 50],
+            COL_END_TIME:   [15, 60, 20, 25, 70],
+            COL_ATTACKING:  [True, False, True, True, False],
+            COL_TIE_UP:     ["front headlock", "collar tie:underhook",
+                             "front headlock", "standing", "collar tie:underhook"],
+            COL_TEAM_MOVES: [["half nelson", "tilt"], ["single leg"],
+                             ["half nelson"], ["high crotch"], ["single leg", "dump"]],
+            COL_OPPONENT_MOVES: [["sprawl"], ["front headlock", "whizzer"],
+                                 ["whizzer"], ["sprawl"], ["front headlock"]],
+            COL_NET_POINTS: [3, -1, 2, 5, -2],
+            COL_ADJUSTED_NET_POINTS: [5, -1, 2, 5, -3],
+            COL_MATCH_RESULT: ["W", "L", "W", "W", "L"],
+            COL_MATCH_DATE: ["2025-01-10", "2025-02-15", "2025-03-01", "2025-01-20", "2025-04-01"],
+        })
+
+    # -- attack_filter --
+
+    def test_attack_filter_all(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).attack_filter("All").apply()
+        assert len(result) == 5
+
+    def test_attack_filter_attacking(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).attack_filter("Attacking").apply()
+        assert len(result) == 3
+        assert all(result["Attacking"])
+
+    def test_attack_filter_defending(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).attack_filter("Defending").apply()
+        assert len(result) == 2
+        assert not any(result["Attacking"])
+
+    # -- tie_filter --
+
+    def test_tie_filter_matches(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).tie_filter("front headlock").apply()
+        assert len(result) == 2
+
+    def test_tie_filter_no_match(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).tie_filter("standing").apply()
+        assert len(result) == 1
+
+    def test_tie_filter_empty_is_noop(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).tie_filter("").apply()
+        assert len(result) == 5
+
+    def test_tie_filter_whitespace_is_noop(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).tie_filter("   ").apply()
+        assert len(result) == 5
+
+    # -- opp_tie_filter --
+
+    def test_opp_tie_filter_matches(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).opp_tie_filter("underhook").apply()
+        assert len(result) == 2
+
+    def test_opp_tie_filter_empty_is_noop(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).opp_tie_filter("").apply()
+        assert len(result) == 5
+
+    # -- team_move_filter --
+
+    def test_team_move_filter_substring(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).team_move_filter("half").apply()
+        assert len(result) == 2
+
+    def test_team_move_filter_exact(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).team_move_filter("single leg", exact=True).apply()
+        assert len(result) == 2
+
+    def test_team_move_filter_exact_no_substring(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).team_move_filter("single", exact=True).apply()
+        assert len(result) == 0
+
+    def test_team_move_filter_empty_is_noop(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).team_move_filter("").apply()
+        assert len(result) == 5
+
+    # -- opp_move_filter --
+
+    def test_opp_move_filter_substring(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).opp_move_filter("sprawl").apply()
+        assert len(result) == 2
+
+    def test_opp_move_filter_exact(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).opp_move_filter("whizzer", exact=True).apply()
+        assert len(result) == 2
+
+    # -- match_result_filter --
+
+    def test_match_result_filter_wins(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).match_result_filter("W").apply()
+        assert len(result) == 3
+
+    def test_match_result_filter_losses(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).match_result_filter("L").apply()
+        assert len(result) == 2
+
+    def test_match_result_filter_empty_is_noop(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).match_result_filter("").apply()
+        assert len(result) == 5
+
+    # -- date_range_filter --
+
+    def test_date_range_filter_min_only(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).date_range_filter(min_date="2025-03-01").apply()
+        assert len(result) == 2
+
+    def test_date_range_filter_max_only(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).date_range_filter(max_date="2025-02-15").apply()
+        assert len(result) == 3
+
+    def test_date_range_filter_both(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).date_range_filter(
+            min_date="2025-01-10", max_date="2025-02-15"
+        ).apply()
+        assert len(result) == 3
+
+    def test_date_range_filter_noop(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).date_range_filter().apply()
+        assert len(result) == 5
+
+    # -- duration_filter --
+
+    def test_duration_filter_min(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).duration_filter(min_seconds=20).apply()
+        assert len(result) == 3
+
+    def test_duration_filter_max(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).duration_filter(max_seconds=15).apply()
+        assert len(result) == 2
+
+    def test_duration_filter_range(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).duration_filter(min_seconds=20, max_seconds=30).apply()
+        assert len(result) == 3
+
+    # -- net_points_filter --
+
+    def test_net_points_filter(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).net_points_filter(min=0, max=3).apply()
+        assert len(result) == 2
+
+    # -- adjusted_net_points_filter --
+
+    def test_adjusted_net_points_filter(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).adjusted_net_points_filter(min=5, max=5).apply()
+        assert len(result) == 2
+
+    # -- apply sort + paginate --
+
+    def test_apply_sort_ascending(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).apply(
+            sort_by="Adjusted Net Points", ascending=True
+        )
+        vals = list(result["Adjusted Net Points"])
+        assert vals == sorted(vals)
+
+    def test_apply_sort_descending(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).apply(
+            sort_by="Adjusted Net Points", ascending=False
+        )
+        vals = list(result["Adjusted Net Points"])
+        assert vals == sorted(vals, reverse=True)
+
+    def test_apply_limit(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).apply(limit=2)
+        assert len(result) == 2
+
+    def test_apply_offset(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        all_rows = QueryBuilder(df).apply()
+        offset_rows = QueryBuilder(df).apply(offset=3)
+        assert len(offset_rows) == 2
+        assert list(offset_rows.index) == list(all_rows.index[3:])
+
+    def test_apply_limit_and_offset(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).apply(limit=2, offset=1)
+        assert len(result) == 2
+
+    def test_apply_sort_nonexistent_column_is_noop(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = QueryBuilder(df).apply(sort_by="nonexistent")
+        assert len(result) == 5
+
+    # -- chaining --
+
+    def test_chained_filters(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = (
+            QueryBuilder(df)
+            .attack_filter("Attacking")
+            .tie_filter("front headlock")
+            .team_move_filter("half")
+            .apply()
+        )
+        assert len(result) == 2
+
+    def test_chained_filters_with_sort_and_limit(self) -> None:
+        from scripts.helpers import QueryBuilder
+        df = self._make_df()
+        result = (
+            QueryBuilder(df)
+            .attack_filter("Attacking")
+            .adjusted_net_points_filter(min=0)
+            .apply(sort_by="Net Points", ascending=False, limit=2)
+        )
+        assert len(result) == 2
+        vals = list(result["Net Points"])
+        assert vals == sorted(vals, reverse=True)
+
+    # -- duration column --
+
+    def test_duration_column_computed(self) -> None:
+        from scripts.helpers import QueryBuilder, COL_MATCH_DURATION
+        df = self._make_df()
+        result = QueryBuilder(df).duration_filter(min_seconds=0).apply()
+        assert COL_MATCH_DURATION in result.columns
+        assert list(result[COL_MATCH_DURATION]) == [15, 30, 20, 15, 20]

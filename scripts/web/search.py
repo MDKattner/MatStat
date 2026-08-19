@@ -1,9 +1,8 @@
 """Search job for the web app — query all wrestler tagged data.
 
 Every wrestler's
-compiled CSV is loaded via ``LoadAllWrestlerData`` and filtered by wrestler,
-attack/defense mode, starting tie-up, team/opponent move substrings, and an
-adjusted net points range. The matching sequences are returned as JSON or
+compiled CSV is loaded via ``LoadAllWrestlerData`` and filtered through a
+``QueryBuilder`` chain. The matching sequences are returned as JSON or
 exported as CSV.
 """
 
@@ -20,12 +19,14 @@ from scripts.helpers import (
     COL_ADJUSTED_NET_POINTS,
     COL_ATTACKING,
     COL_END_TIME,
+    COL_NET_POINTS,
     COL_OPPONENT_MOVES,
     COL_START_TIME,
     COL_TEAM_MOVES,
     COL_TIE_UP,
     LoadAllWrestlerData,
     MakeFormattedDataFrame,
+    QueryBuilder,
     csv_dir,
 )
 
@@ -50,6 +51,7 @@ class SearchQuery(BaseModel):
 
     ``min_points``/``max_points`` bound the adjusted net points range (net
     points plus the pin bonus), matching PCA dot coloring and report stats.
+    ``min_raw_points``/``max_raw_points`` bound the raw net points range.
     """
 
     wrestler: str = ""
@@ -59,6 +61,17 @@ class SearchQuery(BaseModel):
     opp_move: str = ""
     min_points: int = -20
     max_points: int = 20
+    match_result: str = ""
+    min_date: str = ""
+    max_date: str = ""
+    min_raw_points: int = -20
+    max_raw_points: int = 20
+    min_duration: int | None = None
+    max_duration: int | None = None
+    sort_by: str = ""
+    ascending: bool = True
+    limit: int | None = None
+    offset: int = 0
 
 
 def list_wrestlers() -> list[str]:
@@ -77,6 +90,30 @@ def _join_list(value: Any) -> str:
     if isinstance(value, list):
         return ", ".join(str(item) for item in value)
     return ""
+
+
+def _build_query(query: SearchQuery, df: pd.DataFrame) -> pd.DataFrame:
+    """Apply all SearchQuery filters to a single wrestler DataFrame via QueryBuilder."""
+    qb: QueryBuilder = (
+        QueryBuilder(df)
+        .attack_filter(query.attack_mode)
+        .tie_filter(query.tie_up)
+        .team_move_filter(query.team_move)
+        .opp_move_filter(query.opp_move)
+        .match_result_filter(query.match_result)
+        .date_range_filter(query.min_date, query.max_date)
+        .adjusted_net_points_filter(query.min_points, query.max_points)
+        .net_points_filter(query.min_raw_points, query.max_raw_points)
+    )
+    if query.min_duration is not None or query.max_duration is not None:
+        qb.duration_filter(query.min_duration, query.max_duration)
+    sort_col: str = query.sort_by.strip() or None
+    return qb.apply(
+        sort_by=sort_col,
+        ascending=query.ascending,
+        limit=query.limit,
+        offset=query.offset,
+    )
 
 
 def execute_search(query: SearchQuery) -> list[dict[str, Any]]:
@@ -98,40 +135,10 @@ def execute_search(query: SearchQuery) -> list[dict[str, Any]]:
     else:
         all_data = LoadAllWrestlerData(csv_dir)
 
-    team_move: str = query.team_move.strip().lower()
-    opp_move: str = query.opp_move.strip().lower()
     rows: list[dict[str, Any]] = []
 
     for wrestler_name, df in all_data.items():
-        subset: pd.DataFrame = df
-        if query.attack_mode == "Attacking":
-            subset = subset[subset[COL_ATTACKING]]
-        elif query.attack_mode == "Defending":
-            subset = subset[~subset[COL_ATTACKING]]
-
-        if query.tie_up.strip():
-            # Dual-wrestler sequences store the pair "yours:theirs"; match on
-            # the tagged wrestler's own tie (the element before the colon).
-            subset = subset[
-                subset[COL_TIE_UP].str.split(":").str[0] == query.tie_up.strip()
-            ]
-
-        if team_move:
-            subset = subset[subset[COL_TEAM_MOVES].apply(
-                lambda moves: isinstance(moves, list)
-                and any(team_move in str(move).lower() for move in moves)
-            )]
-
-        if opp_move:
-            subset = subset[subset[COL_OPPONENT_MOVES].apply(
-                lambda moves: isinstance(moves, list)
-                and any(opp_move in str(move).lower() for move in moves)
-            )]
-
-        subset = subset[
-            (subset[COL_ADJUSTED_NET_POINTS] >= query.min_points)
-            & (subset[COL_ADJUSTED_NET_POINTS] <= query.max_points)
-        ]
+        subset: pd.DataFrame = _build_query(query, df)
 
         for index, row in subset.iterrows():
             rows.append({

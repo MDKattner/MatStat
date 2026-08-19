@@ -26,6 +26,7 @@ from scripts.helpers import (
     COL_TIE_UP,
     GetVideoCodecs,
     MakeFormattedDataFrame,
+    QueryBuilder,
     clips_dir,
     csv_dir,
     taged_dir,
@@ -161,13 +162,14 @@ def filter_dataframe(
     Returns:
         The filtered DataFrame (possibly empty).
     """
+    qb: QueryBuilder = QueryBuilder(df)
     if filter_type == "Starting Tie":
-        # Dual-wrestler sequences store the pair "yours:theirs"; filter on the
-        # tagged wrestler's own tie (the element before the colon).
-        return df[df[COL_TIE_UP].str.split(":").str[0] == filter_item]
-    if filter_type == "Move Used":
-        return df[df[COL_TEAM_MOVES].apply(lambda moves: filter_item in moves)]
-    return df[df[COL_OPPONENT_MOVES].apply(lambda moves: filter_item in moves)]
+        qb.tie_filter(filter_item)
+    elif filter_type == "Move Used":
+        qb.team_move_filter(filter_item, exact=True)
+    else:
+        qb.opp_move_filter(filter_item, exact=True)
+    return qb.apply()
 
 
 def load_filtered_dataframe(

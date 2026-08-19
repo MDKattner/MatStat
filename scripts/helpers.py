@@ -32,6 +32,7 @@ COL_NET_POINTS: str = "Net Points"
 COL_ADJUSTED_NET_POINTS: str = "Adjusted Net Points"
 COL_MATCH_RESULT: str = "W/L"
 COL_MATCH_DATE: str = "Match Date"
+COL_MATCH_DURATION: str = "Duration"
 
 # Title storage conventions for tagged videos. Single mode stores the bare
 # wrestler name (optionally suffixed with " (W)" / " (L)"); dual mode joins the
@@ -1541,4 +1542,208 @@ def FirstPrincipalComponent(
     if return_loadings:
         return (scores, ratio, loadings)
     return (scores, ratio)
+
+
+# ---- QueryBuilder ----
+
+
+class QueryBuilder:
+    """Chainable filter / sort / paginate interface for wrestler DataFrames.
+
+    Each filter method narrows the internal subset in place and returns
+    ``self`` so calls can be chained::
+
+        df = (
+            QueryBuilder(frame)
+            .attack_filter("Attacking")
+            .tie_filter("front headlock")
+            .team_move_filter("half nelson")
+            .adjusted_net_points_filter(min=-5, max=10)
+            .apply(sort_by="Adjusted Net Points", ascending=False, limit=50)
+        )
+
+    Filters that accept a string value treat an empty string (or whitespace-
+    only) as a no-op, so callers can pass user input directly without
+    checking first.
+    """
+
+    def __init__(self, df: pd.DataFrame) -> None:
+        self._df: pd.DataFrame = df
+        self._duration_computed: bool = False
+
+    # ---- internal helpers ----
+
+    def _ensure_duration(self) -> None:
+        """Add a computed Duration column if not already present."""
+        if self._duration_computed:
+            return
+        if COL_MATCH_DURATION not in self._df.columns:
+            self._df[COL_MATCH_DURATION] = (
+                self._df[COL_END_TIME] - self._df[COL_START_TIME]
+            ).astype("int16")
+        self._duration_computed = True
+
+    # ---- filter methods ----
+
+    def attack_filter(self, mode: str) -> QueryBuilder:
+        """Filter by attack mode: ``"All"``, ``"Attacking"``, or ``"Defending"``."""
+        if mode == "Attacking":
+            self._df = self._df[self._df[COL_ATTACKING]]
+        elif mode == "Defending":
+            self._df = self._df[~self._df[COL_ATTACKING]]
+        return self
+
+    def tie_filter(self, tie: str) -> QueryBuilder:
+        """Filter sequences by the tagged wrestler's starting tie.
+
+        Dual-wrestler sequences store ``"yours:theirs"``; the first element
+        (before the colon) is matched against *tie*.
+        """
+        tie = tie.strip()
+        if tie:
+            self._df = self._df[
+                self._df[COL_TIE_UP].str.split(":").str[0] == tie
+            ]
+        return self
+
+    def opp_tie_filter(self, tie: str) -> QueryBuilder:
+        """Filter sequences by the opponent's starting tie (after the colon)."""
+        tie = tie.strip()
+        if tie:
+            self._df = self._df[
+                self._df[COL_TIE_UP].str.split(":").str[1] == tie
+            ]
+        return self
+
+    def team_move_filter(self, move: str, exact: bool = False) -> QueryBuilder:
+        """Filter sequences by a move the wrestler used.
+
+        Args:
+            move: The move name to search for.
+            exact: When ``True`` the move must match an entire list item
+                exactly; when ``False`` a case-insensitive substring match
+                is used.
+        """
+        move = move.strip()
+        if not move:
+            return self
+        if exact:
+            self._df = self._df[self._df[COL_TEAM_MOVES].apply(
+                lambda moves: isinstance(moves, list) and move in moves
+            )]
+        else:
+            lower: str = move.lower()
+            self._df = self._df[self._df[COL_TEAM_MOVES].apply(
+                lambda moves: isinstance(moves, list)
+                and any(lower in str(m).lower() for m in moves)
+            )]
+        return self
+
+    def opp_move_filter(self, move: str, exact: bool = False) -> QueryBuilder:
+        """Filter sequences by a move the opponent used.
+
+        Args:
+            move: The move name to search for.
+            exact: When ``True`` the move must match an entire list item
+                exactly; when ``False`` a case-insensitive substring match
+                is used.
+        """
+        move = move.strip()
+        if not move:
+            return self
+        if exact:
+            self._df = self._df[self._df[COL_OPPONENT_MOVES].apply(
+                lambda moves: isinstance(moves, list) and move in moves
+            )]
+        else:
+            lower: str = move.lower()
+            self._df = self._df[self._df[COL_OPPONENT_MOVES].apply(
+                lambda moves: isinstance(moves, list)
+                and any(lower in str(m).lower() for m in moves)
+            )]
+        return self
+
+    def match_result_filter(self, result: str) -> QueryBuilder:
+        """Filter by match result: ``"W"``, ``"L"``, or ``""`` (unrecorded).
+
+        An empty or whitespace-only *result* is a no-op.
+        """
+        result = result.strip()
+        if result and COL_MATCH_RESULT in self._df.columns:
+            self._df = self._df[self._df[COL_MATCH_RESULT] == result]
+        return self
+
+    def date_range_filter(
+        self, min_date: str = "", max_date: str = ""
+    ) -> QueryBuilder:
+        """Filter sequences by match date range (inclusive).
+
+        Dates are ``YYYY-MM-DD`` strings; the comparison is lexicographic
+        which is correct for this format.  Empty strings are no-ops.
+        """
+        min_date = min_date.strip()
+        max_date = max_date.strip()
+        if COL_MATCH_DATE not in self._df.columns:
+            return self
+        if min_date:
+            self._df = self._df[self._df[COL_MATCH_DATE] >= min_date]
+        if max_date:
+            self._df = self._df[self._df[COL_MATCH_DATE] <= max_date]
+        return self
+
+    def duration_filter(
+        self, min_seconds: int | None = None, max_seconds: int | None = None
+    ) -> QueryBuilder:
+        """Filter sequences by duration (end_time - start_time) in seconds."""
+        self._ensure_duration()
+        if min_seconds is not None:
+            self._df = self._df[self._df[COL_MATCH_DURATION] >= min_seconds]
+        if max_seconds is not None:
+            self._df = self._df[self._df[COL_MATCH_DURATION] <= max_seconds]
+        return self
+
+    def net_points_filter(
+        self, min: int = -20, max: int = 20
+    ) -> QueryBuilder:
+        """Filter by raw net points range (inclusive)."""
+        col: pd.Series = self._df[COL_NET_POINTS]
+        self._df = self._df[(col >= min) & (col <= max)]
+        return self
+
+    def adjusted_net_points_filter(
+        self, min: int = -20, max: int = 20
+    ) -> QueryBuilder:
+        """Filter by adjusted net points range (inclusive)."""
+        col: pd.Series = self._df[COL_ADJUSTED_NET_POINTS]
+        self._df = self._df[(col >= min) & (col <= max)]
+        return self
+
+    # ---- sort + paginate ----
+
+    def apply(
+        self,
+        sort_by: str | None = None,
+        ascending: bool = True,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> pd.DataFrame:
+        """Apply all pending filters and return the resulting DataFrame.
+
+        Args:
+            sort_by: Optional column name to sort by.
+            ascending: Sort direction (default ``True``).
+            limit: Maximum number of rows to return (``None`` = all).
+            offset: Number of rows to skip before taking *limit*.
+
+        Returns:
+            A new filtered (and optionally sorted / paginated) DataFrame.
+        """
+        result: pd.DataFrame = self._df
+        if sort_by is not None and sort_by in result.columns:
+            result = result.sort_values(sort_by, ascending=ascending, kind="stable")
+        if offset:
+            result = result.iloc[offset:]
+        if limit is not None:
+            result = result.iloc[:limit]
+        return result
 

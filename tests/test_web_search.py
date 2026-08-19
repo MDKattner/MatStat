@@ -151,6 +151,121 @@ class TestExecuteSearch:
         assert len(rows) == 1
         assert rows[0]["origin"] == "bob.mkv:2"
 
+    def test_filters_by_match_result(self, tmp_path, monkeypatch) -> None:
+        csv_path: Path = _redirect_csv_dir(tmp_path)
+        monkeypatch.setattr(search, "csv_dir", csv_path)
+        _write_wrestler_csv(csv_path, "Dave", [
+            "dave.mkv:1,0,10,A,standing,double,sprawl,T,None,3,5,W",
+            "dave.mkv:2,10,20,D,collar tie,single,whizzer,None,T,-1,-2,L",
+            "dave.mkv:3,20,30,A,front headlock,half nelson,sprawl,T,None,2,3,W",
+        ])
+        rows: list[dict[str, Any]] = search.execute_search(
+            SearchQuery(wrestler="Dave", match_result="W")
+        )
+        assert len(rows) == 2
+        assert all(row["origin"].startswith("dave.mkv") for row in rows)
+
+    def test_filters_by_match_result_losses(self, tmp_path, monkeypatch) -> None:
+        csv_path: Path = _redirect_csv_dir(tmp_path)
+        monkeypatch.setattr(search, "csv_dir", csv_path)
+        _write_wrestler_csv(csv_path, "Dave", [
+            "dave.mkv:1,0,10,A,standing,double,sprawl,T,None,3,5,W",
+            "dave.mkv:2,10,20,D,collar tie,single,whizzer,None,T,-1,-2,L",
+        ])
+        rows: list[dict[str, Any]] = search.execute_search(
+            SearchQuery(wrestler="Dave", match_result="L")
+        )
+        assert len(rows) == 1
+        assert rows[0]["origin"] == "dave.mkv:2"
+
+    def test_filters_by_date_range(self, tmp_path, monkeypatch) -> None:
+        csv_path: Path = _redirect_csv_dir(tmp_path)
+        monkeypatch.setattr(search, "csv_dir", csv_path)
+        _write_wrestler_csv(csv_path, "Dave", [
+            "dave.mkv:1,0,10,A,standing,double,sprawl,T,None,3,5,W,2025-01-10",
+            "dave.mkv:2,10,20,D,collar tie,single,whizzer,None,T,-1,-2,L,2025-03-15",
+            "dave.mkv:3,20,30,A,front headlock,half nelson,sprawl,T,None,2,3,W,2025-06-01",
+        ])
+        rows: list[dict[str, Any]] = search.execute_search(
+            SearchQuery(wrestler="Dave", min_date="2025-03-01", max_date="2025-12-31")
+        )
+        assert len(rows) == 2
+        assert {row["origin"] for row in rows} == {"dave.mkv:2", "dave.mkv:3"}
+
+    def test_filters_by_date_range_min_only(self, tmp_path, monkeypatch) -> None:
+        csv_path: Path = _redirect_csv_dir(tmp_path)
+        monkeypatch.setattr(search, "csv_dir", csv_path)
+        _write_wrestler_csv(csv_path, "Dave", [
+            "dave.mkv:1,0,10,A,standing,double,sprawl,T,None,3,5,W,2025-01-10",
+            "dave.mkv:2,10,20,D,collar tie,single,whizzer,None,T,-1,-2,L,2025-03-15",
+        ])
+        rows: list[dict[str, Any]] = search.execute_search(
+            SearchQuery(wrestler="Dave", min_date="2025-03-01")
+        )
+        assert len(rows) == 1
+        assert rows[0]["origin"] == "dave.mkv:2"
+
+    def test_filters_by_raw_net_points(self, tmp_path, monkeypatch) -> None:
+        csv_path: Path = _redirect_csv_dir(tmp_path)
+        monkeypatch.setattr(search, "csv_dir", csv_path)
+        _write_wrestler_csv(csv_path, "Dave", [
+            "dave.mkv:1,0,10,A,standing,double,sprawl,T,None,3,5,W",
+            "dave.mkv:2,10,20,D,collar tie,single,whizzer,None,T,-1,-2,L",
+            "dave.mkv:3,20,30,A,front headlock,half nelson,sprawl,T,None,2,3,W",
+        ])
+        rows: list[dict[str, Any]] = search.execute_search(
+            SearchQuery(wrestler="Dave", min_raw_points=0, max_raw_points=3)
+        )
+        assert len(rows) == 2
+        assert {row["origin"] for row in rows} == {"dave.mkv:1", "dave.mkv:3"}
+
+    def test_filters_by_duration(self, tmp_path, monkeypatch) -> None:
+        csv_path: Path = _redirect_csv_dir(tmp_path)
+        monkeypatch.setattr(search, "csv_dir", csv_path)
+        _write_wrestler_csv(csv_path, "Dave", [
+            "dave.mkv:1,0,15,A,standing,double,sprawl,T,None,3,5,W",
+            "dave.mkv:2,10,60,D,collar tie,single,whizzer,None,T,-1,-2,L",
+            "dave.mkv:3,20,50,A,front headlock,half nelson,sprawl,T,None,2,3,W",
+        ])
+        rows: list[dict[str, Any]] = search.execute_search(
+            SearchQuery(wrestler="Dave", min_duration=20, max_duration=50)
+        )
+        assert len(rows) == 2
+        assert {row["origin"] for row in rows} == {"dave.mkv:2", "dave.mkv:3"}
+
+    def test_sort_by_adjusted_net_points_descending(self, tmp_path, monkeypatch) -> None:
+        csv_path: Path = _redirect_csv_dir(tmp_path)
+        monkeypatch.setattr(search, "csv_dir", csv_path)
+        _write_wrestler_csv(csv_path, "Dave", [
+            "dave.mkv:1,0,10,A,standing,double,sprawl,T,None,3,1,W",
+            "dave.mkv:2,10,20,D,collar tie,single,whizzer,None,T,-1,-1,L",
+            "dave.mkv:3,20,30,A,front headlock,half nelson,sprawl,T,None,2,5,W",
+        ])
+        rows: list[dict[str, Any]] = search.execute_search(
+            SearchQuery(wrestler="Dave", sort_by="Adjusted Net Points", ascending=False)
+        )
+        assert len(rows) == 3
+        pts = [r["adjusted_net_points"] for r in rows]
+        assert pts == sorted(pts, reverse=True)
+
+    def test_limit_and_offset(self, tmp_path, monkeypatch) -> None:
+        csv_path: Path = _redirect_csv_dir(tmp_path)
+        monkeypatch.setattr(search, "csv_dir", csv_path)
+        _write_wrestler_csv(csv_path, "Dave", [
+            "dave.mkv:1,0,10,A,standing,double,sprawl,T,None,3,1,W",
+            "dave.mkv:2,10,20,D,collar tie,single,whizzer,None,T,-1,-1,L",
+            "dave.mkv:3,20,30,A,front headlock,half nelson,sprawl,T,None,2,5,W",
+            "dave.mkv:4,30,40,D,standing,high crotch,whizzer,None,T,0,0",
+        ])
+        all_rows: list[dict[str, Any]] = search.execute_search(
+            SearchQuery(wrestler="Dave")
+        )
+        page: list[dict[str, Any]] = search.execute_search(
+            SearchQuery(wrestler="Dave", limit=2, offset=1)
+        )
+        assert len(page) == 2
+        assert [r["origin"] for r in page] == [r["origin"] for r in all_rows[1:3]]
+
 
 class TestSearchToCsv:
     """Tests for search.search_to_csv — the export serializer."""
