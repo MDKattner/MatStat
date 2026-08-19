@@ -42,10 +42,11 @@ for arg in sys.argv[1:]:
     if not path.is_file():
         print(f"!! not found: {path}")
         continue
-    name, csv_data = MakeNameAndCSV(path)
+    name, match_date, csv_data = MakeNameAndCSV(path)
     wrestler, opponent, result = ParseTaggedName(name)
     print(f"== {path} ==")
     print(f"  title    : {name!r}")
+    print(f"  date     : {match_date!r}")
     print(f"  wrestler : {wrestler!r}  opponent={opponent!r}  result={result!r}")
     rows = [line for line in csv_data.splitlines() if line]
     if not rows:
