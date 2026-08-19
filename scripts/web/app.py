@@ -136,7 +136,7 @@ async def _no_stale_cache(request: Request, call_next) -> Response:
     response: Response = await call_next(request)
     content_type: str = response.headers.get("content-type", "")
     if "video" not in content_type:
-        response.headers.setdefault("Cache-Control", "no-cache")
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 
