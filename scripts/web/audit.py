@@ -188,14 +188,15 @@ def run_retag_job(
         pct: float = min(99.0, 50.0 + 49.0 * elapsed / max(1, duration))
         ctx.report(pct, desc)
 
-    result: FfmpegResult = run_ffmpeg(
-        tag.build_tag_cmd(input_path, metadata_path, tmp_output),
-        description=f"Re-tagging {video}",
-        on_progress=_on_progress,
-        cancel_event=ctx.cancel_event,
-    )
-
-    metadata_path.unlink(missing_ok=True)
+    try:
+        result: FfmpegResult = run_ffmpeg(
+            tag.build_tag_cmd(input_path, metadata_path, tmp_output),
+            description=f"Re-tagging {video}",
+            on_progress=_on_progress,
+            cancel_event=ctx.cancel_event,
+        )
+    finally:
+        metadata_path.unlink(missing_ok=True)
 
     if not result.success or not tmp_output.exists():
         tmp_output.unlink(missing_ok=True)
