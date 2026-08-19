@@ -269,7 +269,7 @@ export function mountTagFilm(root) {
   });
   const attackRow = el("div", { class: "seg-toggle" }, [attackRadio, defendRadio, attackBtn, defendBtn]);
 
-  const tie = filterList({ label: "Starting Tie/Position:", items: [] });
+  const tie = filterList({ label: "Main Tie/Position:", items: [] });
   const oppTie = filterList({ label: "Opponent Tie/Position:", items: [] });
   oppTie.node.hidden = true;
 
@@ -585,8 +585,9 @@ export function mountTagFilm(root) {
   const detailsCard = el("details", { class: "tag-card", open: "" }, [
     el("summary", { text: "Sequence Details" }),
     attackRow,
-    el("div", { class: "row tie-row" }, [tie.node, oppTie.node]),
     el("div", { class: "details-grid" }, [
+      tie.node,
+      oppTie.node,
       ourMoves.node,
       oppMoves.node,
       ourScores.node,
