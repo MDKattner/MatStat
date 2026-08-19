@@ -111,9 +111,7 @@ class TestHelpers:
         from scripts.helpers import GetVideoCodecs
 
         def mock_run(cmd: str, **kwargs) -> subprocess.CompletedProcess:
-            if "select_streams v:0" in cmd:
-                return subprocess.CompletedProcess([], 0, "h264", "")
-            return subprocess.CompletedProcess([], 0, "aac", "")
+            return subprocess.CompletedProcess([], 0, "0,h264\n1,aac", "")
 
         monkeypatch.setattr(subprocess, "run", mock_run)
         result: dict[str, str] = GetVideoCodecs(Path("fake.mkv"))
