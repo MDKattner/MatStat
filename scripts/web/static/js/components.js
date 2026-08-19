@@ -177,7 +177,7 @@ async function waitForPlayable(playlistUrl, timeoutMs = 15000) {
   }
 }
 
-async function fetchJson(url, options) {
+export async function fetchJson(url, options) {
   const resp = await fetch(url, options);
   const body = await resp.json().catch(() => ({}));
   return { ok: resp.ok, status: resp.status, body };
@@ -225,7 +225,7 @@ export async function ensurePreview(dirName, fileName) {
   return body.playlist;
 }
 
-function formatClock(totalSeconds) {
+export function formatClock(totalSeconds) {
   const secs = Math.max(0, Math.floor(totalSeconds));
   return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
 }
@@ -234,6 +234,38 @@ function parseClock(text) {
   const match = /^(\d+):([0-5]\d)$/.exec(text.trim());
   if (!match) return null;
   return parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+}
+
+/**
+ * Ensure the Plotly library is loaded, resolving with the Plotly object.
+ *
+ * Resolves immediately when window.Plotly is already present (the vendored
+ * plotly.min.js referenced by index.html); otherwise injects the CDN build
+ * into the document head and waits for it to load. Rejects after a 15s
+ * timeout or if the CDN script fails to load.
+ */
+export function ensurePlotly() {
+  if (window.Plotly) return Promise.resolve(window.Plotly);
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.plot.ly/plotly-2.35.2.min.js";
+    const onLoad = () => {
+      clearTimeout(timer);
+      resolve(window.Plotly);
+    };
+    const onError = () => {
+      clearTimeout(timer);
+      reject(new Error("Failed to load Plotly from the CDN."));
+    };
+    const timer = setTimeout(() => {
+      script.removeEventListener("load", onLoad);
+      script.removeEventListener("error", onError);
+      reject(new Error("Timed out waiting for Plotly to load."));
+    }, 15000);
+    script.addEventListener("load", onLoad);
+    script.addEventListener("error", onError);
+    document.head.appendChild(script);
+  });
 }
 
 /**

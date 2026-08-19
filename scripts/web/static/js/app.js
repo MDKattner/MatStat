@@ -6,7 +6,7 @@
  */
 
 import { connectWs, onWs, onWsStatus } from "./ws.js";
-import { confirmModal, el, promptForm, showModal, showToast } from "./components.js";
+import { confirmModal, el, fetchJson, promptForm, showModal, showToast } from "./components.js";
 import { mountAudit } from "./tabs/audit.js";
 import { mountCombineClips } from "./tabs/combine_clips.js";
 import { mountPca } from "./tabs/pca.js";
@@ -16,12 +16,6 @@ import { mountTeamEval } from "./tabs/team_eval.js";
 import { mountTrend } from "./tabs/trend.js";
 
 const MAX_LOG_LINES = 5000;
-
-async function fetchJson(url, options) {
-  const resp = await fetch(url, options);
-  const body = await resp.json().catch(() => ({}));
-  return { ok: resp.ok, status: resp.status, body };
-}
 
 // ---------- Authentication ----------
 

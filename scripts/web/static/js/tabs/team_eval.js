@@ -8,13 +8,7 @@
  * polls it, then exposes a download link for /api/reports/Team_Stats.xlsx.
  */
 
-import { el, pollJob, showToast } from "../components.js";
-
-async function fetchJson(url, options) {
-  const resp = await fetch(url, options);
-  const body = await resp.json().catch(() => ({}));
-  return { ok: resp.ok, status: resp.status, body };
-}
+import { el, fetchJson, pollJob, showToast } from "../components.js";
 
 const REPORT_FILE = "Team_Stats.xlsx";
 

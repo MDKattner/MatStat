@@ -12,21 +12,12 @@ import {
   configCombo,
   el,
   ensurePreview,
+  fetchJson,
   filterList,
+  formatClock,
   showToast,
   videoPlayer,
 } from "../components.js";
-
-function formatClock(totalSeconds) {
-  const secs = Math.max(0, Math.floor(totalSeconds));
-  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
-}
-
-async function fetchJson(url, options) {
-  const resp = await fetch(url, options);
-  const body = await resp.json().catch(() => ({}));
-  return { ok: resp.ok, status: resp.status, body };
-}
 
 export function mountSearch(root) {
   if (!root) return;
