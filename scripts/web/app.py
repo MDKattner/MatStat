@@ -305,14 +305,23 @@ def _strip_between(html: str, start_marker: str, end_marker: str) -> str:
     return html[:start] + html[end + len(end_marker):]
 
 
+_CACHED_INDEX: str | None = None
+
+
 def _index_html() -> str:
     """Render the SPA shell HTML with the log/auth UI stripped as needed."""
+    global _CACHED_INDEX
+    if _CACHED_INDEX is not None:
+        return _CACHED_INDEX
     html: str = _INDEX_FILE.read_text(encoding="utf-8")
     if _VISIBLE_LOGGING:
-        return _strip_auth_ui(html)
-    for start_marker, end_marker in _LOG_UI_MARKERS:
-        html = _strip_between(html, start_marker, end_marker)
-    return _strip_auth_ui(html)
+        result = _strip_auth_ui(html)
+    else:
+        for start_marker, end_marker in _LOG_UI_MARKERS:
+            html = _strip_between(html, start_marker, end_marker)
+        result = _strip_auth_ui(html)
+    _CACHED_INDEX = result
+    return result
 
 
 def _strip_auth_ui(html: str) -> str:
