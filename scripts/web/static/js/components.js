@@ -333,6 +333,7 @@ export function checkList({ label = "", items = [], counts = false, onChange = (
         });
         cb.addEventListener("change", () => { spin.disabled = !cb.checked; });
       }
+      cb.addEventListener("change", () => { onChange(item); });
       const li = el("li", { class: "check-item" }, [labelEl, spin]);
       return { item, cb, spin, li };
     });
