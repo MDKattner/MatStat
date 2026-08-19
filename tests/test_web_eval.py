@@ -10,26 +10,13 @@ import pytest
 
 sys.path.append(str(Path(__file__).parent.parent))
 
+from conftest import FakeContext
+
 from scripts.web import app as web_app
 from scripts.web import team_eval
 
 CSV_ROW: str = '"vid.mkv:1",0,6,A,collar tie,"double","sprawl","T","E"'
 CSV_ROW2: str = '"vid.mkv:2",6,12,D,standing,"sprawl","sweep single","E","T"'
-
-
-class FakeContext:
-    """Minimal stand-in for scripts.web.jobs.JobContext."""
-
-    def __init__(self) -> None:
-        self.job_id: str = "testjob"
-        self.reports: list[tuple[float, str]] = []
-
-    def report(self, progress: float, message: str = "") -> None:
-        self.reports.append((progress, message))
-
-    @property
-    def cancelled(self) -> bool:
-        return False
 
 
 def _redirect_dirs(monkeypatch, tmp_path: Path) -> dict[str, Path]:

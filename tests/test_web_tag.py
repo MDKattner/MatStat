@@ -2,7 +2,6 @@
 
 import json
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -11,28 +10,14 @@ import pytest
 
 sys.path.append(str(Path(__file__).parent.parent))
 
+from conftest import FakeContext
+
 from scripts.helpers import ChapterSequence
 from scripts.web import configs
 from scripts.web import tag
 from scripts.web import transcode
 from scripts.web.ffmpeg import FfmpegResult, JobCancelledError
 from scripts.web.tag import TagSequence
-
-
-class FakeContext:
-    """Minimal stand-in for scripts.web.jobs.JobContext."""
-
-    def __init__(self) -> None:
-        self.job_id: str = "testjob"
-        self.cancel_event: threading.Event = threading.Event()
-        self.reports: list[tuple[float, str]] = []
-
-    def report(self, progress: float, message: str = "") -> None:
-        self.reports.append((progress, message))
-
-    @property
-    def cancelled(self) -> bool:
-        return False
 
 
 def _make_source(tmp_path: Path, name: str = "match.mkv") -> Path:

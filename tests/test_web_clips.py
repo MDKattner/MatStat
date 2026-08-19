@@ -1,7 +1,6 @@
 """Tests for the web Combine Clips flow — command builders, jobs, and routes."""
 
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -9,6 +8,8 @@ from typing import Any
 import pytest
 
 sys.path.append(str(Path(__file__).parent.parent))
+
+from conftest import FakeContext
 
 from scripts.helpers import (
     COL_END_TIME,
@@ -20,22 +21,6 @@ from scripts.web import clips
 from scripts.web.ffmpeg import FfmpegResult
 
 CSV_ROW: str = '"v.mkv:1",0,6,A,collar tie,"double","sprawl","T","E"'
-
-
-class FakeContext:
-    """Minimal stand-in for scripts.web.jobs.JobContext."""
-
-    def __init__(self) -> None:
-        self.job_id: str = "testjob"
-        self.cancel_event: threading.Event = threading.Event()
-        self.reports: list[tuple[float, str]] = []
-
-    def report(self, progress: float, message: str = "") -> None:
-        self.reports.append((progress, message))
-
-    @property
-    def cancelled(self) -> bool:
-        return False
 
 
 def _redirect_dirs(monkeypatch, tmp_path: Path) -> dict[str, Path]:

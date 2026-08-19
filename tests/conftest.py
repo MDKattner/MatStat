@@ -1,4 +1,5 @@
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,19 @@ import numpy as np
 import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent))
+
+
+class FakeContext:
+    """Minimal stand-in for scripts.web.jobs.JobContext."""
+
+    def __init__(self, cancelled: bool = False) -> None:
+        self.job_id: str = "testjob"
+        self.cancel_event: threading.Event = threading.Event()
+        self.reports: list[tuple[float, str]] = []
+        self.cancelled: bool = cancelled
+
+    def report(self, progress: float, message: str = "") -> None:
+        self.reports.append((progress, message))
 
 from fastapi.testclient import TestClient
 

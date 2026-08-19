@@ -14,17 +14,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 import scripts.helpers as helpers
 from scripts.web import configs, stats
 
-
-class FakeContext:
-    """Minimal stand-in for scripts.web.jobs.JobContext."""
-
-    def __init__(self, cancelled: bool = False) -> None:
-        self.job_id: str = "testjob"
-        self.reports: list[tuple[float, str]] = []
-        self.cancelled: bool = cancelled
-
-    def report(self, progress: float, message: str = "") -> None:
-        self.reports.append((progress, message))
+from conftest import FakeContext
 
 
 class FlipContext:

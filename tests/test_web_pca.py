@@ -2,7 +2,6 @@
 
 import json
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -12,6 +11,8 @@ import pandas as pd
 import pytest
 
 sys.path.append(str(Path(__file__).parent.parent))
+
+from conftest import FakeContext
 
 from scripts.helpers import (
     COL_ORIGIN,
@@ -33,22 +34,6 @@ BOB_CSV: str = (
     '"b1.mkv:1",1,10,A,collar tie,"double","sprawl","T","None"\n'
     '"b1.mkv:2",11,20,A,standing,"double:high crotch","sprawl","T","None"'
 )
-
-
-class FakeContext:
-    """Minimal stand-in for scripts.web.jobs.JobContext."""
-
-    def __init__(self) -> None:
-        self.job_id: str = "testjob"
-        self.cancel_event: threading.Event = threading.Event()
-        self.reports: list[tuple[float, str]] = []
-
-    def report(self, progress: float, message: str = "") -> None:
-        self.reports.append((progress, message))
-
-    @property
-    def cancelled(self) -> bool:
-        return False
 
 
 def _redirect_dirs(monkeypatch, tmp_path: Path) -> dict[str, Path]:

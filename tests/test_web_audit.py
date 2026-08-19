@@ -1,7 +1,6 @@
 """Tests for the web Auditing flow — the audit listing, retag job, and routes."""
 
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -9,6 +8,8 @@ from typing import Any
 import pytest
 
 sys.path.append(str(Path(__file__).parent.parent))
+
+from conftest import FakeContext
 
 from scripts.web import app as web_app
 from scripts.web import audit
@@ -21,22 +22,6 @@ CSV_DATA: str = (
     'match.mkv:1,0,6,A,collar tie,double:high crotch,sprawl,T,N2\n'
     'match.mkv:2,6,12,D,standing,sprawl,sweep single,E,T'
 )
-
-
-class FakeContext:
-    """Minimal stand-in for scripts.web.jobs.JobContext."""
-
-    def __init__(self) -> None:
-        self.job_id: str = "testjob"
-        self.cancel_event: threading.Event = threading.Event()
-        self.reports: list[tuple[float, str]] = []
-
-    def report(self, progress: float, message: str = "") -> None:
-        self.reports.append((progress, message))
-
-    @property
-    def cancelled(self) -> bool:
-        return False
 
 
 def _redirect_dirs(monkeypatch, tmp_path: Path) -> dict[str, Path]:
