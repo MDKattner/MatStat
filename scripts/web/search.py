@@ -25,6 +25,7 @@ from scripts.helpers import (
     COL_TEAM_MOVES,
     COL_TIE_UP,
     LoadAllWrestlerData,
+    MakeFormattedDataFrame,
     csv_dir,
 )
 
@@ -88,15 +89,20 @@ def execute_search(query: SearchQuery) -> list[dict[str, Any]]:
         A list of match dicts (wrestler, origin, video, times, attacking,
         tie_up, team_moves, opponent_moves, adjusted_net_points).
     """
-    all_data: dict[str, pd.DataFrame] = LoadAllWrestlerData(csv_dir)
+    # Single-wrestler fast path: load only the requested CSV.
+    if query.wrestler and query.wrestler != "All":
+        target = csv_dir / f"{query.wrestler}.csv"
+        all_data: dict[str, pd.DataFrame] = (
+            {query.wrestler: MakeFormattedDataFrame(target)} if target.is_file() else {}
+        )
+    else:
+        all_data = LoadAllWrestlerData(csv_dir)
+
     team_move: str = query.team_move.strip().lower()
     opp_move: str = query.opp_move.strip().lower()
     rows: list[dict[str, Any]] = []
 
     for wrestler_name, df in all_data.items():
-        if query.wrestler and query.wrestler != "All" and wrestler_name != query.wrestler:
-            continue
-
         subset: pd.DataFrame = df
         if query.attack_mode == "Attacking":
             subset = subset[subset[COL_ATTACKING]]

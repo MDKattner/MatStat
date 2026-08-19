@@ -100,6 +100,17 @@ def _load_scoped_data(scope: PcaScope, name: str) -> pd.DataFrame:
         string "video.mkv:chap", with an added "wrestler" column holding the
         CSV stem). May be empty.
     """
+    # Single-wrestler fast path: load only the requested CSV.
+    if scope == "wrestler":
+        wrestler: str = name.strip()
+        target: Path = csv_dir / f"{wrestler}.csv"
+        if target.is_file():
+            data: pd.DataFrame = MakeFormattedDataFrame(target)
+            data["wrestler"] = wrestler
+            return data
+        return pd.DataFrame()
+
+    # All / team scope: load every CSV, then filter.
     frames: list[pd.DataFrame] = []
     for csv_path in sorted(csv_dir.glob("*.csv")):
         if csv_path.name == "UNKNOWN.csv":
@@ -109,11 +120,8 @@ def _load_scoped_data(scope: PcaScope, name: str) -> pd.DataFrame:
         frames.append(df)
     if not frames:
         return pd.DataFrame()
-    data: pd.DataFrame = pd.concat(frames)
-    if scope == "wrestler":
-        wrestler: str = name.strip()
-        data = data[data["wrestler"] == wrestler]
-    elif scope == "team":
+    data = pd.concat(frames)
+    if scope == "team":
         roster: Any = load_roster()
         members: set[str] = set(roster.teams.get(name.strip(), []))
         data = data[data["wrestler"].isin(members)]
