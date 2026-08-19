@@ -36,6 +36,7 @@ _LOGIN_WINDOW_SECONDS: float = 300.0
 _LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 _LOGIN_LOCK: threading.Lock = threading.Lock()
 _SESSION_LOCK: threading.Lock = threading.Lock()
+_last_cleanup: float = 0.0
 
 # Config is read once at import from the environment; tests monkeypatch these
 # module globals per-test (see tests/conftest.py).
@@ -127,10 +128,20 @@ def login(password: str, ip: str = "") -> tuple[bool, str, str | None]:
 
 def login_allowed(ip: str) -> bool:
     """True when the client IP is not over the login attempt limit."""
+    global _last_cleanup
     if not ip:
         return True
     now: float = time.time()
     with _LOGIN_LOCK:
+        # Periodically evict stale IPs to prevent unbounded dict growth.
+        if now - _last_cleanup > _LOGIN_WINDOW_SECONDS:
+            _last_cleanup = now
+            stale_ips: list[str] = [
+                k for k, v in _LOGIN_ATTEMPTS.items()
+                if not v or now - v[-1] >= _LOGIN_WINDOW_SECONDS
+            ]
+            for k in stale_ips:
+                del _LOGIN_ATTEMPTS[k]
         attempts: list[float] = [
             t for t in _LOGIN_ATTEMPTS.get(ip, []) if now - t < _LOGIN_WINDOW_SECONDS
         ]
