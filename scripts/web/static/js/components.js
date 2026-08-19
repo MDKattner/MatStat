@@ -194,7 +194,8 @@ async function fetchJson(url, options) {
  * `onProgress(pct)` and `onStatus(message)` fire on each poll.
  */
 export async function pollJob(jobId, { onProgress = () => {}, onStatus = () => {} } = {}) {
-  for (;;) {
+  const MAX_POLLS = 1500;
+  for (let i = 0; i < MAX_POLLS; i++) {
     await sleep(400);
     const { ok, body } = await fetchJson(`/api/jobs/${jobId}`);
     if (!ok) throw new Error("Job lost");
@@ -205,6 +206,7 @@ export async function pollJob(jobId, { onProgress = () => {}, onStatus = () => {
     if (typeof body.progress === "number") onProgress(body.progress);
     if (body.message) onStatus(body.message);
   }
+  throw new Error("Job timed out");
 }
 
 /**
