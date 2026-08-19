@@ -60,7 +60,6 @@ export function confirmModal({ title = "Confirm", message = "" } = {}) {
     cancelBtn.addEventListener("click", () => finish(false));
     okBtn.addEventListener("click", () => finish(true));
     dialog.addEventListener("cancel", () => finish(false));
-    dialog.addEventListener("close", () => finish(false));
     document.body.appendChild(dialog);
     dialog.showModal();
     okBtn.focus();
@@ -141,10 +140,6 @@ export function promptForm({ title = "", fields = [] } = {}) {
       resolve(null);
     });
     dialog.addEventListener("cancel", () => {
-      dialog.remove();
-      resolve(null);
-    });
-    dialog.addEventListener("close", () => {
       dialog.remove();
       resolve(null);
     });
