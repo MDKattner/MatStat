@@ -286,8 +286,14 @@ export function mountPca(root) {
     }
     if (seq !== state.loadSeq) return;
 
-    const fig = JSON.parse(body.fig_json);
-    await Plotly.newPlot(plotEl, fig.data, fig.layout, { responsive: true });
+    try {
+      const fig = JSON.parse(body.fig_json);
+      await Plotly.newPlot(plotEl, fig.data, fig.layout, { responsive: true });
+    } catch (err) {
+      showToast("Could not render the chart.", "error");
+      setStatus("Could not render the chart.");
+      return;
+    }
     if (seq !== state.loadSeq) return;
     bindPlotHandlers();
 
