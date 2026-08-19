@@ -12,6 +12,11 @@ from scripts.web.ffmpeg import JobCancelledError
 
 JobStatus = Literal["queued", "running", "done", "failed", "cancelled"]
 
+# Finished jobs older than this (seconds) are pruned from memory on the next
+# submit/finish call.  Prevents unbounded growth of _jobs / _cancel_events
+# during long server uptimes.
+_JOB_PRUNE_TTL: float = 300.0
+
 # Event dicts published by the manager (see ws.py for the wire format):
 #   {"type": "job_started", "id", "kind", "status", "message"}
 #   {"type": "job_progress", "id", "progress", "message"}
@@ -96,6 +101,7 @@ class JobManager:
         Returns:
             The job id (short hex), used to poll or cancel the job.
         """
+        self._prune_finished()
         job_id = job_id or uuid.uuid4().hex[:8]
         job: Job = Job(id=job_id, kind=kind, message=message)
         with self._lock:
@@ -153,6 +159,19 @@ class JobManager:
             event = threading.Event()
         return event
 
+    def _prune_finished(self) -> None:
+        """Remove jobs with terminal status older than ``_JOB_PRUNE_TTL``."""
+        now: float = time.time()
+        with self._lock:
+            stale: list[str] = [
+                jid for jid, job in self._jobs.items()
+                if job.status in ("done", "failed", "cancelled")
+                and now - job.created_at > _JOB_PRUNE_TTL
+            ]
+            for jid in stale:
+                del self._jobs[jid]
+                self._cancel_events.pop(jid, None)
+
     def _set(self, job_id: str, **updates: Any) -> None:
         with self._lock:
             job: Job | None = self._jobs.get(job_id)
@@ -190,6 +209,7 @@ class JobManager:
             "message": message,
             "error": error,
         })
+        self._prune_finished()
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
@@ -202,3 +222,6 @@ class JobManager:
         """
         self._executor.shutdown(wait=False, cancel_futures=True)
         self._executor = ThreadPoolExecutor(max_workers=self._max_workers)
+        with self._lock:
+            self._jobs.clear()
+            self._cancel_events.clear()
