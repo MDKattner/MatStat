@@ -573,15 +573,22 @@ async def team_evaluation() -> dict[str, Any]:
 
 @app.post("/api/clips/find")
 async def clips_find(req: FindRequest) -> dict[str, Any]:
-    """Return a wrestler's sequences matching a filter, for previewing."""
+    """Return a wrestler's sequences matching a filter, for previewing.
+
+    When ``filter_item`` is provided, uses the legacy exact-match path.
+    Otherwise applies QueryBuilder filters from the request fields.
+    """
     wrestler: str = req.wrestler.strip()
     if not wrestler:
         raise HTTPException(status_code=400, detail="Wrestler name is required")
-    if not req.filter_item.strip():
-        raise HTTPException(status_code=400, detail="Filter item is required")
 
     try:
-        filtered = clips.load_filtered_dataframe(wrestler, req.filter_type, req.filter_item)
+        if req.filter_item.strip():
+            filtered = clips.load_filtered_dataframe(
+                wrestler, req.filter_type, req.filter_item
+            )
+        else:
+            filtered = clips.find_with_query(req)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:

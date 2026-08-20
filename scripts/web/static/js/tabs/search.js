@@ -1,20 +1,17 @@
 /**
  * Search tab — the web port of the original Qt search widget.
  *
- * Mounts into #search-root. Loads every wrestler's compiled CSV server-side
- * (GET /api/search/wrestlers) and filters it by wrestler, attack/defense mode,
- * starting tie-up, team/opponent move substrings, and a net points range.
- * Matches are listed with click-to-preview, and can be exported as CSV via
- * POST /api/search/export.
+ * Mounts into #search-root. Uses the shared queryPanel for filters and
+ * sends parallel POST /api/search requests per selected wrestler. Matches
+ * are listed with click-to-preview and can be exported as CSV.
  */
 
 import {
-  configCombo,
   el,
   ensurePreview,
   fetchJson,
-  filterList,
   formatClock,
+  queryPanel,
   showToast,
   videoPlayer,
 } from "../components.js";
@@ -37,13 +34,19 @@ export function mountSearch(root) {
     resultCount.textContent = `Results: ${state.matches.length}`;
     resultsList.replaceChildren();
     if (state.matches.length === 0) {
-      const empty = el("li", { class: "empty-item", text: "No matches found yet." });
-      resultsList.appendChild(empty);
+      resultsList.appendChild(
+        el("li", { class: "empty-item", text: "No matches found yet." })
+      );
       return;
     }
     for (const match of state.matches) {
-      const label = `${match.wrestler} | ${match.video} [${formatClock(match.start_time)}-${formatClock(match.end_time)}] ` +
-        `${match.attacking} | ${match.tie_up} | ${match.team_moves}`;
+      const moves = (match.team_moves || "").split(", ").slice(0, 3).join(", ");
+      const pts = match.adjusted_net_points;
+      const ptsStr = pts >= 0 ? `+${pts}` : String(pts);
+      const result = match.match_result || "";
+      const label = `${match.wrestler} | ${match.video} ` +
+        `[${formatClock(match.start_time)}-${formatClock(match.end_time)}] ` +
+        `${match.attacking} | ${match.tie_up} | ${moves} | ${ptsStr} pts | ${result}`;
       const item = el("button", { class: "video-item", type: "button", text: label });
       item.addEventListener("click", () => previewMatch(match));
       resultsList.appendChild(el("li", {}, [item]));
@@ -51,97 +54,61 @@ export function mountSearch(root) {
   }
 
   async function previewMatch(match) {
-    setStatus(`Loading preview: ${match.video}...`);
+    panel.setStatus(`Loading preview: ${match.video}...`);
     try {
       const url = await ensurePreview("taged", match.video);
       player.load(url, match.start_time);
-      setStatus(`Previewing: ${match.video} [${formatClock(match.start_time)}]`);
+      panel.setStatus(`Previewing: ${match.video} [${formatClock(match.start_time)}]`);
     } catch (err) {
       showToast(err.message || "Could not load preview.", "error");
     }
   }
 
-  // ---------- Left column: filters ----------
+  // ---------- Search / Export ----------
 
-  const wrestler = configCombo({ label: "Wrestler:", items: ["All"] });
-  wrestler.setSelected("All");
-
-  const attackMode = el("select", { class: "combo-input" }, [
-    el("option", { value: "All", text: "All" }),
-    el("option", { value: "Attacking", text: "Attacking" }),
-    el("option", { value: "Defending", text: "Defending" }),
-  ]);
-
-  const tie = filterList({ label: "Tie Up:", items: [] });
-  const teamMove = filterList({ label: "Team Move:", items: [] });
-  const oppMove = filterList({ label: "Opponent Move:", items: [] });
-
-  const minPts = el("input", { class: "combo-input pts-input", type: "number", value: "-20", min: "-20", max: "20" });
-  const maxPts = el("input", { class: "combo-input pts-input", type: "number", value: "20", min: "-20", max: "20" });
-
-  const searchBtn = el("button", { class: "btn", type: "button", text: "Search" });
-  const exportBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Export Results as CSV" });
-
-  const statusLabel = el("p", { class: "status-label", text: "Run a search to begin." });
-
-  function setStatus(text) {
-    statusLabel.textContent = text;
-  }
-
-  function setSearching(active) {
-    state.searching = active;
-    searchBtn.disabled = active;
-    exportBtn.disabled = active;
-  }
-
-  function pointsValue(input, fallback) {
-    const n = parseInt(input.value, 10);
-    return Number.isNaN(n) ? fallback : n;
-  }
-
-  function currentQuery() {
-    return {
-      wrestler: wrestler.selected,
-      attack_mode: attackMode.value,
-      tie_up: tie.selected,
-      team_move: teamMove.selected,
-      opp_move: oppMove.selected,
-      min_points: pointsValue(minPts, -20),
-      max_points: pointsValue(maxPts, 20),
-    };
-  }
-
-  async function runSearch() {
-    setSearching(true);
-    setStatus("Searching...");
+  async function runSearch(query) {
+    const selected = query.wrestlers.length > 0 ? query.wrestlers : ["All"];
+    panel.setButtonsEnabled(false);
+    panel.setStatus("Searching...");
+    state.searching = true;
     try {
-      const { ok, body } = await fetchJson("/api/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(currentQuery()),
-      });
-      if (!ok) throw new Error(body.detail || "Search failed");
-      state.matches = body.matches || [];
+      const responses = await Promise.all(selected.map((name) =>
+        fetchJson("/api/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...query, wrestler: name }),
+        })
+      ));
+      const merged = [];
+      for (const { ok, body } of responses) {
+        if (!ok) continue;
+        for (const match of body.matches || []) merged.push(match);
+      }
+      state.matches = merged;
       renderMatches();
-      setStatus(state.matches.length === 0 ? "No matches found." : `Found ${state.matches.length} match(es).`);
+      panel.setStatus(
+        merged.length === 0 ? "No matches found." : `Found ${merged.length} match(es).`
+      );
     } catch (err) {
       showToast(err.message || "Search failed.", "error");
-      setStatus("Search failed.");
+      panel.setStatus("Search failed.");
     } finally {
-      setSearching(false);
+      state.searching = false;
+      panel.setButtonsEnabled(true);
     }
   }
 
-  async function exportResults() {
+  async function exportResults(query) {
     if (state.matches.length === 0) {
       showToast("Run a search first.", "error");
       return;
     }
     try {
+      const name = query.wrestlers.length === 1 ? query.wrestlers[0] : "All";
       const resp = await fetch("/api/search/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(currentQuery()),
+        body: JSON.stringify({ ...query, wrestler: name }),
       });
       if (!resp.ok) throw new Error("Export failed");
       const blob = await resp.blob();
@@ -157,47 +124,34 @@ export function mountSearch(root) {
     }
   }
 
+  // ---------- Config ----------
+
   async function loadOptions() {
     try {
-      const [wrestlerItems, config] = await Promise.all([
+      const [wrestlerResp, configResp] = await Promise.all([
         fetchJson("/api/search/wrestlers"),
         fetchJson("/api/config"),
       ]);
-      const names = wrestlerItems.ok ? wrestlerItems.body.items || [] : [];
-      const moves = config.ok ? config.body.moves || [] : [];
-      wrestler.setItems(["All", ...names]);
-      tie.setItems(config.ok ? config.body.ties || [] : []);
-      teamMove.setItems(moves);
-      oppMove.setItems(moves);
-    } catch (err) {
+      const names = wrestlerResp.ok ? wrestlerResp.body.items || [] : [];
+      const config = configResp.ok ? configResp.body : {};
+      panel.setItems({
+        wrestlers: names,
+        ties: config.ties || [],
+        moves: config.moves || [],
+        teams: config.teams || {},
+      });
+    } catch {
       showToast("Could not load search options (network error).", "error");
     }
   }
 
-  searchBtn.addEventListener("click", runSearch);
-  exportBtn.addEventListener("click", exportResults);
-  window.addEventListener("configs-updated", loadOptions);
+  // ---------- Panel ----------
+
+  const panel = queryPanel({ onSearch: runSearch, onExport: exportResults });
 
   // ---------- Layout ----------
 
-  const filtersCard = el("fieldset", { class: "tag-card" }, [
-    el("legend", { text: "Filters" }),
-    wrestler.node,
-    el("div", { class: "row filter-row" }, [
-      el("label", { class: "field-label", text: "Attack/Defense:" }, [attackMode]),
-    ]),
-    tie.node,
-    teamMove.node,
-    oppMove.node,
-    el("div", { class: "row filter-row" }, [
-      el("label", { class: "field-label", text: "Min Adjusted Net Points:" }, [minPts]),
-      el("label", { class: "field-label", text: "Max Adjusted Net Points:" }, [maxPts]),
-    ]),
-    el("div", { class: "row" }, [searchBtn, exportBtn]),
-    statusLabel,
-  ]);
-  const left = el("div", { class: "tag-left" }, [filtersCard]);
-
+  const left = el("div", { class: "tag-left" }, [panel.node]);
   const playerCard = el("section", { class: "tag-card player-card" }, [player.node]);
   const matchesCard = el("fieldset", { class: "tag-card" }, [
     el("legend", { text: "Matched Sequences" }),
@@ -210,5 +164,6 @@ export function mountSearch(root) {
 
   // ---------- Boot ----------
 
+  window.addEventListener("configs-updated", loadOptions);
   loadOptions();
 }

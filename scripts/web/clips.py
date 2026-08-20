@@ -18,8 +18,11 @@ import pandas as pd
 from pydantic import BaseModel
 
 from scripts.helpers import (
+    COL_ADJUSTED_NET_POINTS,
     COL_ATTACKING,
     COL_END_TIME,
+    COL_MATCH_RESULT,
+    COL_NET_POINTS,
     COL_OPPONENT_MOVES,
     COL_START_TIME,
     COL_TEAM_MOVES,
@@ -49,12 +52,33 @@ _RE_ENCODE_ARGS: list[str] = [
 ]
 
 
+AttackMode = Literal["All", "Attacking", "Defending"]
+
+
 class FindRequest(BaseModel):
-    """Payload for POST /api/clips/find — list matching sequences."""
+    """Payload for POST /api/clips/find — list matching sequences.
+
+    Supports two modes:
+    - Legacy: ``filter_type`` + ``filter_item`` (used by combine-clips).
+    - QueryBuilder: optional filter fields applied via ``QueryBuilder``.
+    """
 
     wrestler: str
-    filter_type: FilterType
-    filter_item: str
+    filter_type: FilterType = "Starting Tie"
+    filter_item: str = ""
+    attack_mode: AttackMode = "All"
+    tie_up: str = ""
+    team_move: str = ""
+    opp_move: str = ""
+    min_points: int = -20
+    max_points: int = 20
+    match_result: str = ""
+    min_date: str = ""
+    max_date: str = ""
+    min_raw_points: int = -20
+    max_raw_points: int = 20
+    min_duration: int | None = None
+    max_duration: int | None = None
 
 
 class CombineRequest(FindRequest):
@@ -203,6 +227,44 @@ def load_filtered_dataframe(
     return filter_dataframe(df, filter_type, filter_item)
 
 
+def find_with_query(req: FindRequest) -> pd.DataFrame:
+    """Load a wrestler's CSV and apply QueryBuilder filters.
+
+    Args:
+        req: The find request with wrestler name and filter fields.
+
+    Returns:
+        The filtered DataFrame (possibly empty).
+
+    Raises:
+        FileNotFoundError: If the wrestler's compiled CSV does not exist.
+        ValueError: If the CSV exists but cannot be parsed.
+    """
+    csv_path: Path = csv_dir / f"{req.wrestler}.csv"
+    if not csv_path.is_file():
+        raise FileNotFoundError(
+            f"No compiled data for {req.wrestler}. Run Compile Stats first."
+        )
+    try:
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_path)
+    except Exception as e:
+        raise ValueError(f"Could not load data for {req.wrestler}: {e}")
+    qb: QueryBuilder = (
+        QueryBuilder(df)
+        .attack_filter(req.attack_mode)
+        .tie_filter(req.tie_up)
+        .team_move_filter(req.team_move)
+        .opp_move_filter(req.opp_move)
+        .match_result_filter(req.match_result)
+        .date_range_filter(req.min_date, req.max_date)
+        .adjusted_net_points_filter(req.min_points, req.max_points)
+        .net_points_filter(req.min_raw_points, req.max_raw_points)
+    )
+    if req.min_duration is not None or req.max_duration is not None:
+        qb.duration_filter(req.min_duration, req.max_duration)
+    return qb.apply()
+
+
 def matches_to_json(filtered: pd.DataFrame) -> list[dict[str, Any]]:
     """Serialize matching sequences for the find endpoint / sequence list.
 
@@ -210,7 +272,8 @@ def matches_to_json(filtered: pd.DataFrame) -> list[dict[str, Any]]:
         filtered: The filtered sequence DataFrame.
 
     Returns:
-        A list of match dicts with video, times, attacking, tie_up, and moves.
+        A list of match dicts with video, times, attacking, tie_up, moves,
+        net_points, adjusted_net_points, and match_result.
     """
     matches: list[dict[str, Any]] = []
     for index, row in filtered.iterrows():
@@ -223,6 +286,9 @@ def matches_to_json(filtered: pd.DataFrame) -> list[dict[str, Any]]:
             "attacking": bool(row[COL_ATTACKING]),
             "tie_up": str(row[COL_TIE_UP]) or "",
             "moves": moves_list,
+            "net_points": int(row[COL_NET_POINTS]),
+            "adjusted_net_points": int(row[COL_ADJUSTED_NET_POINTS]),
+            "match_result": str(row.get(COL_MATCH_RESULT, "")),
         })
     return matches
 

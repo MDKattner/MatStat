@@ -1,20 +1,20 @@
 /**
  * Combine Clips tab — the web port of the original Qt combine clips widget.
  *
- * Mounts into #combine-clips-root. Pick one or more wrestlers and a filter
- * (starting tie-up, move used, or move defended), preview the matching
- * sequences, then generate a highlight reel via POST /api/combine-clips (or a
- * batch of reels via /api/combine-clips/batch), polling the background job.
+ * Mounts into #combine-clips-root. Uses the shared queryPanel for filters.
+ * Pick one or more wrestlers and filters, preview matching sequences, then
+ * generate a highlight reel via POST /api/combine-clips (or batch), polling
+ * the background job.
  */
 
 import {
-  checkList,
   el,
   ensurePreview,
   fetchJson,
   filterList,
   formatClock,
   pollJob,
+  queryPanel,
   showToast,
   videoPlayer,
 } from "../components.js";
@@ -26,18 +26,17 @@ export function mountCombineClips(root) {
   // ---------- State ----------
 
   const state = {
-    filterType: "Starting Tie",
-    filterItem: "",
     matches: [],
     running: false,
     finding: false,
     jobId: "",
+    ties: [],
+    moves: [],
   };
 
   // ---------- Right column: player + matched sequences ----------
 
   const player = videoPlayer({});
-
   const matchesList = el("ul", { class: "results-list" });
   const matchesCount = el("span", { text: "0" });
 
@@ -45,15 +44,21 @@ export function mountCombineClips(root) {
     matchesCount.textContent = String(state.matches.length);
     matchesList.replaceChildren();
     if (state.matches.length === 0) {
-      const empty = el("li", { class: "empty-item", text: "No matching sequences yet." });
-      matchesList.appendChild(empty);
+      matchesList.appendChild(
+        el("li", { class: "empty-item", text: "No matching sequences yet." })
+      );
       return;
     }
     for (const match of state.matches) {
-      const moves = (match.moves || []).slice(0, 2).join(", ");
+      const moves = (match.moves || []).slice(0, 3).join(", ");
       const who = match.wrestler ? `${match.wrestler} | ` : "";
-      const label = `${who}${match.video}  [${formatClock(match.start_time)}-${formatClock(match.end_time)}]  ` +
-        `${match.attacking ? "A" : "D"}  ${match.tie_up}  ${moves}`;
+      const atk = match.attacking ? "A" : "D";
+      const pts = match.adjusted_net_points ?? 0;
+      const ptsStr = pts >= 0 ? `+${pts}` : String(pts);
+      const result = match.match_result || "";
+      const label = `${who}${match.video} ` +
+        `[${formatClock(match.start_time)}-${formatClock(match.end_time)}] ` +
+        `${atk} | ${match.tie_up} | ${moves} | ${ptsStr} pts | ${result}`;
       const item = el("button", { class: "video-item", type: "button", text: label });
       item.addEventListener("click", () => previewMatch(match));
       matchesList.appendChild(el("li", {}, [item]));
@@ -61,121 +66,28 @@ export function mountCombineClips(root) {
   }
 
   async function previewMatch(match) {
-    setStatus(`Loading preview: ${match.video}...`);
+    panel.setStatus(`Loading preview: ${match.video}...`);
     try {
       const url = await ensurePreview("taged", match.video);
       player.load(url, match.start_time);
-      setStatus(`Previewing: ${match.video} [${formatClock(match.start_time)}]`);
+      panel.setStatus(`Previewing: ${match.video} [${formatClock(match.start_time)}]`);
     } catch (err) {
       showToast(err.message || "Could not load preview.", "error");
     }
   }
 
-  // ---------- Left column: controls ----------
+  // ---------- Find Clips ----------
 
-  const wrestlers = checkList({
-    label: "Wrestlers:",
-    items: [],
-    onChange: () => {
-      state.matches = [];
-      renderMatches();
-      updateButtons();
-    },
-  });
-
-  const tieRadio = el("input", { type: "radio", name: "clip-filter", value: "Starting Tie", checked: "" });
-  const moveRadio = el("input", { type: "radio", name: "clip-filter", value: "Move Used" });
-  const defendRadio = el("input", { type: "radio", name: "clip-filter", value: "Move Defended" });
-  const filterRadios = [tieRadio, moveRadio, defendRadio];
-  for (const radio of filterRadios) {
-    radio.addEventListener("change", () => {
-      state.filterType = radio.value;
-      swapFilterItems();
-    });
-  }
-  const filterRow = el("div", { class: "row radio-row" }, [
-    el("label", { class: "check-label", text: "Starting Tie" }, [tieRadio]),
-    el("label", { class: "check-label", text: "Move Used" }, [moveRadio]),
-    el("label", { class: "check-label", text: "Move Defended" }, [defendRadio]),
-  ]);
-
-  const filterItem = filterList({
-    label: "Filter Item:",
-    items: [],
-    onChange: () => {
-      state.filterItem = filterItem.selected;
-      state.matches = [];
-      renderMatches();
-      updateButtons();
-    },
-  });
-
-  const findBtn = el("button", { class: "btn", type: "button", text: "Find Clips", disabled: "" });
-  const generateBtn = el("button", { class: "btn", type: "button", text: "Generate Reel", disabled: "" });
-
-  const progress = el("progress", { class: "progress", max: "100", value: "0", hidden: "" });
-  const statusLabel = el("p", { class: "status-label", text: "Select a wrestler and filter to begin." });
-  const outputEl = el("pre", { class: "error-display", hidden: "" });
-  const playReelBtn = el("button", { class: "btn", type: "button", text: "Play Reel", hidden: "" });
-  const downloadLink = el("a", { class: "btn download-link", text: "Download", hidden: "" });
-  const reelActions = el("div", { class: "row" }, [playReelBtn, downloadLink]);
-
-  function setStatus(text) {
-    statusLabel.textContent = text;
-  }
-
-  function setOutput(text) {
-    outputEl.hidden = !text;
-    outputEl.textContent = text;
-  }
-
-  function updateButtons() {
-    const selected = wrestlers.selected();
-    const hasWrestlers = selected.length > 0;
-    const hasItem = Boolean(state.filterItem);
-    findBtn.disabled = !hasWrestlers || !hasItem || state.finding || state.running;
-    generateBtn.disabled = !hasWrestlers || !hasItem || state.matches.length === 0 || state.running;
-    generateBtn.textContent = selected.length > 1 ? "Batch Generate All" : "Generate Reel";
-  }
-
-  function setRunning(active) {
-    state.running = active;
-    progress.hidden = !active;
-    if (!active) progress.value = 0;
-    updateButtons();
-  }
-
-  async function loadConfigs() {
-    try {
-      const { ok, body } = await fetchJson("/api/config");
-      const config = ok ? body : {};
-      wrestlers.setItems(config.wrestlers || []);
-      wrestlers.setTeams(config.teams || {});
-      state.ties = config.ties || [];
-      state.moves = config.moves || [];
-      swapFilterItems();
-    } catch (err) {
-      showToast("Could not load config (moves/ties/wrestlers).", "error");
+  async function findClips(query) {
+    const selected = query.wrestlers;
+    if (selected.length === 0) {
+      showToast("Select at least one wrestler.", "error");
+      return;
     }
-  }
-
-  function swapFilterItems() {
-    const items = state.filterType === "Starting Tie" ? state.ties || [] : state.moves || [];
-    filterItem.setItems(items);
-    filterItem.clear();
-    state.filterItem = "";
-    state.matches = [];
-    renderMatches();
-    updateButtons();
-  }
-
-  async function findClips() {
-    const selected = wrestlers.selected();
-    if (selected.length === 0 || !state.filterItem) return;
 
     state.finding = true;
-    updateButtons();
-    setStatus(`Finding matching sequences for ${selected.length} wrestler(s)...`);
+    panel.setButtonsEnabled(false);
+    panel.setStatus(`Finding matching sequences for ${selected.length} wrestler(s)...`);
     try {
       const responses = await Promise.all(selected.map((wrestler) =>
         fetchJson("/api/clips/find", {
@@ -183,8 +95,12 @@ export function mountCombineClips(root) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             wrestler,
-            filter_type: state.filterType,
-            filter_item: state.filterItem,
+            attack_mode: query.attack_mode,
+            tie_up: query.tie_up,
+            team_move: query.team_move,
+            opp_move: query.opp_move,
+            min_points: query.min_points,
+            max_points: query.max_points,
           }),
         })
       ));
@@ -203,37 +119,65 @@ export function mountCombineClips(root) {
 
       state.matches = merged;
       renderMatches();
-      if (state.matches.length === 0) {
+      if (merged.length === 0) {
         const who = selected.length > 1 ? "the selected wrestlers" : `'${selected[0]}'`;
-        setStatus(`No sequences found for ${who} / ${state.filterType} = '${state.filterItem}'.`);
+        panel.setStatus(`No sequences found for ${who}.`);
       } else {
-        setStatus(`Found ${state.matches.length} matching sequence(s).`);
+        panel.setStatus(`Found ${merged.length} matching sequence(s).`);
       }
-    } catch (err) {
+    } catch {
       showToast("Could not find clips (network error).", "error");
-      setStatus("Could not find clips.");
+      panel.setStatus("Could not find clips.");
     } finally {
       state.finding = false;
-      updateButtons();
+      panel.setButtonsEnabled(true);
     }
   }
 
-  async function generateReel() {
-    const selected = wrestlers.selected();
-    if (selected.length === 0 || state.matches.length === 0) return;
-    const isBatch = selected.length > 1;
+  // ---------- Generate Reel ----------
 
-    setRunning(true);
+  function deriveFilter(query) {
+    if (query.tie_up) return { filter_type: "Starting Tie", filter_item: query.tie_up };
+    if (query.team_move) return { filter_type: "Move Used", filter_item: query.team_move };
+    if (query.opp_move) return { filter_type: "Move Defended", filter_item: query.opp_move };
+    return { filter_type: "Starting Tie", filter_item: "" };
+  }
+
+  const progress = el("progress", { class: "progress", max: "100", value: "0", hidden: "" });
+  const outputEl = el("pre", { class: "error-display", hidden: "" });
+  const playReelBtn = el("button", { class: "btn", type: "button", text: "Play Reel", hidden: "" });
+  const downloadLink = el("a", { class: "btn download-link", text: "Download", hidden: "" });
+  const reelActions = el("div", { class: "row" }, [playReelBtn, downloadLink]);
+
+  function setOutput(text) {
+    outputEl.hidden = !text;
+    outputEl.textContent = text;
+  }
+
+  async function generateReel(query) {
+    const selected = query.wrestlers;
+    if (selected.length === 0 || state.matches.length === 0) return;
+
+    const { filter_type, filter_item } = deriveFilter(query);
+    if (!filter_item) {
+      showToast("Set a Tie Up, Team Move, or Opponent Move to generate a reel.", "error");
+      return;
+    }
+
+    const isBatch = selected.length > 1;
+    state.running = true;
+    progress.hidden = false;
+    progress.value = 0;
+    panel.setButtonsEnabled(false);
     setOutput("");
     reelActions.hidden = true;
-    setStatus(isBatch ? `Batch generating ${selected.length} reel(s)...` : "Generating clips...");
+    panel.setStatus(isBatch ? `Batch generating ${selected.length} reel(s)...` : "Generating clips...");
+
     try {
-      const payload = {
-        filter_type: state.filterType,
-        filter_item: state.filterItem,
-      };
+      const payload = { filter_type, filter_item };
       if (isBatch) payload.wrestlers = selected;
       else payload.wrestler = selected[0];
+
       const { ok, body } = await fetchJson(
         isBatch ? "/api/combine-clips/batch" : "/api/combine-clips",
         {
@@ -244,41 +188,46 @@ export function mountCombineClips(root) {
       );
       if (!ok) throw new Error(body.detail || "Could not start clip generation");
       state.jobId = body.job_id;
+
       const job = await pollJob(state.jobId, {
         onProgress: (p) => { progress.value = p; },
-        onStatus: setStatus,
+        onStatus: (msg) => panel.setStatus(msg),
       });
       const result = job.result || {};
+
       if (isBatch) {
         const lines = (result.results || []).map((r) =>
           `${r.success ? "\u2713" : "\u2717"} ${r.wrestler}: ${r.message}`
         );
         setOutput(lines.join("\n"));
-        setStatus(result.summary || "Batch complete.");
+        panel.setStatus(result.summary || "Batch complete.");
         showToast(result.summary || "Batch complete.", result.failures > 0 ? "warning" : "success");
       } else {
-        setStatus(`Highlight reel created: ${result.output}`);
+        panel.setStatus(`Highlight reel created: ${result.output}`);
         showToast(`Created: ${result.output}`, "success");
         setOutput(`${result.output}\n${result.segments} segments`);
-        if (result.errors && result.errors.length) setOutput(`${result.output}\n${result.errors.join("\n")}`);
+        if (result.errors?.length) setOutput(`${result.output}\n${result.errors.join("\n")}`);
         downloadLink.href = `/api/clips/${encodeURIComponent(result.output)}`;
         reelActions.hidden = false;
       }
     } catch (err) {
       showToast(err.message || "Clip generation failed.", "error");
-      setStatus("Failed to create highlight reel.");
+      panel.setStatus("Failed to create highlight reel.");
     } finally {
       state.jobId = "";
-      setRunning(false);
+      state.running = false;
+      progress.hidden = true;
+      progress.value = 0;
+      panel.setButtonsEnabled(true);
     }
   }
 
   // ---------- Wiring ----------
 
   playReelBtn.addEventListener("click", async () => {
-    const file = downloadLink.getAttribute("href");
-    if (!file) return;
-    const name = decodeURIComponent(file.split("/").pop());
+    const href = downloadLink.getAttribute("href");
+    if (!href) return;
+    const name = decodeURIComponent(href.split("/").pop());
     try {
       const url = await ensurePreview("clips", name);
       player.load(url);
@@ -288,26 +237,13 @@ export function mountCombineClips(root) {
     }
   });
 
-  findBtn.addEventListener("click", findClips);
-  generateBtn.addEventListener("click", generateReel);
+  // ---------- Panel ----------
+
+  const panel = queryPanel({ onFindClips: findClips, onGenerateReel: generateReel });
 
   // ---------- Layout ----------
 
-  const controlsCard = el("fieldset", { class: "tag-card" }, [
-    el("legend", { text: "Filters" }),
-    wrestlers.node,
-    el("div", { class: "row radio-row" }, [filterRow]),
-    filterItem.node,
-  ]);
-  const actionsCard = el("fieldset", { class: "tag-card" }, [
-    el("legend", { text: "Actions" }),
-    el("div", { class: "row" }, [findBtn, generateBtn]),
-    progress,
-    statusLabel,
-    outputEl,
-    reelActions,
-  ]);
-  const left = el("div", { class: "tag-left" }, [controlsCard, actionsCard]);
+  const left = el("div", { class: "tag-left" }, [panel.node]);
 
   const playerCard = el("section", { class: "tag-card player-card" }, [player.node]);
   const matchesCard = el("fieldset", { class: "tag-card" }, [
@@ -316,9 +252,36 @@ export function mountCombineClips(root) {
   ]);
   const right = el("div", { class: "tag-right" }, [playerCard, matchesCard]);
 
+  const bottomRow = el("div", { class: "tag-left" }, [
+    el("fieldset", { class: "tag-card" }, [
+      el("legend", { text: "Reel Output" }),
+      progress,
+      outputEl,
+      reelActions,
+    ]),
+  ]);
+
   root.appendChild(el("div", { class: "tag-film-grid" }, [left, right]));
+  root.appendChild(bottomRow);
 
   // ---------- Boot ----------
+
+  async function loadConfigs() {
+    try {
+      const { ok, body } = await fetchJson("/api/config");
+      const config = ok ? body : {};
+      state.ties = config.ties || [];
+      state.moves = config.moves || [];
+      panel.setItems({
+        wrestlers: config.wrestlers || [],
+        ties: state.ties,
+        moves: state.moves,
+        teams: config.teams || {},
+      });
+    } catch {
+      showToast("Could not load config (moves/ties/wrestlers).", "error");
+    }
+  }
 
   window.addEventListener("configs-updated", loadConfigs);
   loadConfigs();

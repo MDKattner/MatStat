@@ -164,6 +164,9 @@ class TestMatchesToJson:
             "attacking": True,
             "tie_up": "collar tie",
             "moves": ["double"],
+            "net_points": 3,
+            "adjusted_net_points": 3,
+            "match_result": "",
         }]
 
 
@@ -397,3 +400,43 @@ class TestClipRoutes:
     def test_download_invalid_name_400(self, client) -> None:
         resp = client.get("/api/clips/.hidden.mkv")
         assert resp.status_code == 400
+
+    def test_find_with_query_builder(self, client, tmp_path, monkeypatch) -> None:
+        """POST /api/clips/find with QueryBuilder fields (no filter_item)."""
+        dirs: dict[str, Path] = _redirect_route_dirs(monkeypatch, tmp_path)
+        _write_csv(dirs)
+
+        resp = client.post("/api/clips/find", json={
+            "wrestler": "Alice",
+            "attack_mode": "Attacking",
+        })
+        assert resp.status_code == 200
+        body: dict[str, Any] = resp.json()
+        assert body["count"] == 1
+        assert body["matches"][0]["attacking"] is True
+        assert "net_points" in body["matches"][0]
+        assert "adjusted_net_points" in body["matches"][0]
+        assert "match_result" in body["matches"][0]
+
+    def test_find_with_query_no_filter_item_400_empty_wrestler(
+        self, client, tmp_path, monkeypatch
+    ) -> None:
+        """POST /api/clips/find with empty wrestler returns 400."""
+        _redirect_route_dirs(monkeypatch, tmp_path)
+
+        resp = client.post("/api/clips/find", json={"wrestler": ""})
+        assert resp.status_code == 400
+
+    def test_find_legacy_still_works(self, client, tmp_path, monkeypatch) -> None:
+        """POST /api/clips/find with filter_type + filter_item (legacy path)."""
+        dirs: dict[str, Path] = _redirect_route_dirs(monkeypatch, tmp_path)
+        _write_csv(dirs)
+
+        resp = client.post("/api/clips/find", json={
+            "wrestler": "Alice",
+            "filter_type": "Starting Tie",
+            "filter_item": "collar tie",
+        })
+        assert resp.status_code == 200
+        body: dict[str, Any] = resp.json()
+        assert body["count"] == 1

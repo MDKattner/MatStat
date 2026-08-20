@@ -673,3 +673,153 @@ export function videoPlayer({ onPosition = () => {} } = {}) {
     togglePlay() { if (video.paused) video.play(); else video.pause(); },
   };
 }
+
+/**
+ * Unified query panel used by both Search and Combine Clips tabs.
+ *
+ * Provides a shared filter UI (wrestlers, attack mode, tie, team/opp moves,
+ * adjusted net points range) and renders only the action buttons whose
+ * callbacks are supplied.
+ *
+ * @param {Object} opts
+ * @param {Function} [opts.onSearch]   - Search button callback (receives query).
+ * @param {Function} [opts.onExport]   - Export CSV button callback (receives query).
+ * @param {Function} [opts.onFindClips] - Find Clips button callback (receives query).
+ * @param {Function} [opts.onGenerateReel] - Generate Reel button callback (receives query).
+ */
+export function queryPanel({
+  onSearch = null,
+  onExport = null,
+  onFindClips = null,
+  onGenerateReel = null,
+} = {}) {
+  // ---------- Wrestlers ----------
+
+  const wrestlers = checkList({
+    label: "Wrestlers:",
+    items: [],
+    onChange: () => {},
+  });
+
+  // ---------- Attack mode ----------
+
+  const attackMode = el("select", { class: "combo-input" }, [
+    el("option", { value: "All", text: "All" }),
+    el("option", { value: "Attacking", text: "Attacking" }),
+    el("option", { value: "Defending", text: "Defending" }),
+  ]);
+
+  // ---------- Filter lists ----------
+
+  const tie = filterList({ label: "Tie Up:", items: [] });
+  const teamMove = filterList({ label: "Team Move:", items: [] });
+  const oppMove = filterList({ label: "Opponent Move:", items: [] });
+
+  // ---------- Points range ----------
+
+  const minPts = el("input", {
+    class: "combo-input pts-input",
+    type: "number",
+    value: "-20",
+    min: "-20",
+    max: "20",
+  });
+  const maxPts = el("input", {
+    class: "combo-input pts-input",
+    type: "number",
+    value: "20",
+    min: "-20",
+    max: "20",
+  });
+
+  // ---------- Status ----------
+
+  const statusLabel = el("p", { class: "status-label", text: "Select filters and run a query." });
+
+  // ---------- Action buttons ----------
+
+  function pointsValue(input, fallback) {
+    const n = parseInt(input.value, 10);
+    return Number.isNaN(n) ? fallback : n;
+  }
+
+  function buildQuery() {
+    return {
+      wrestlers: wrestlers.selected(),
+      attack_mode: attackMode.value,
+      tie_up: tie.selected,
+      team_move: teamMove.selected,
+      opp_move: oppMove.selected,
+      min_points: pointsValue(minPts, -20),
+      max_points: pointsValue(maxPts, 20),
+    };
+  }
+
+  const actionRow = el("div", { class: "row" });
+  let searchBtn = null;
+  let exportBtn = null;
+  let findClipsBtn = null;
+  let generateReelBtn = null;
+
+  if (onSearch) {
+    searchBtn = el("button", { class: "btn", type: "button", text: "Search" });
+    searchBtn.addEventListener("click", () => onSearch(buildQuery()));
+    actionRow.appendChild(searchBtn);
+  }
+  if (onExport) {
+    exportBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Export CSV" });
+    exportBtn.addEventListener("click", () => onExport(buildQuery()));
+    actionRow.appendChild(exportBtn);
+  }
+  if (onFindClips) {
+    findClipsBtn = el("button", { class: "btn", type: "button", text: "Find Clips" });
+    findClipsBtn.addEventListener("click", () => onFindClips(buildQuery()));
+    actionRow.appendChild(findClipsBtn);
+  }
+  if (onGenerateReel) {
+    generateReelBtn = el("button", { class: "btn", type: "button", text: "Generate Reel" });
+    generateReelBtn.addEventListener("click", () => onGenerateReel(buildQuery()));
+    actionRow.appendChild(generateReelBtn);
+  }
+
+  // ---------- Layout ----------
+
+  const fieldset = el("fieldset", { class: "tag-card" }, [
+    el("legend", { text: "Filters" }),
+    wrestlers.node,
+    el("div", { class: "row filter-row" }, [
+      el("label", { class: "field-label", text: "Attack/Defense:" }, [attackMode]),
+    ]),
+    tie.node,
+    teamMove.node,
+    oppMove.node,
+    el("div", { class: "row filter-row" }, [
+      el("label", { class: "field-label", text: "Min Adj. Pts:" }, [minPts]),
+      el("label", { class: "field-label", text: "Max Adj. Pts:" }, [maxPts]),
+    ]),
+    actionRow,
+    statusLabel,
+  ]);
+
+  return {
+    node: fieldset,
+    query: buildQuery,
+    setStatus(text) { statusLabel.textContent = text; },
+    setButtonsEnabled(enabled) {
+      if (searchBtn) searchBtn.disabled = !enabled;
+      if (exportBtn) exportBtn.disabled = !enabled;
+      if (findClipsBtn) findClipsBtn.disabled = !enabled;
+      if (generateReelBtn) generateReelBtn.disabled = !enabled;
+    },
+    setItems({ wrestlers: w, ties, moves, teams }) {
+      if (w) wrestlers.setItems(w);
+      wrestlers.setTeams(teams || {});
+      if (ties) tie.setItems(ties);
+      if (moves) {
+        teamMove.setItems(moves);
+        oppMove.setItems(moves);
+      }
+    },
+    wrestlers,
+  };
+}
