@@ -29,6 +29,13 @@ matstat-csv   stats/wrestler_data/*.csv   # Compiled CSV shape as loaded by help
 matstat-stats stats/wrestler_data/*.csv   # Move/initiation stats overview
 ```
 
+## Deployment
+- **Supported paths**: `nixosModules.default` for servers (hardened systemd, data seeding, optional Caddy TLS), or `nix build .#default` plus your own service manager on non-NixOS hosts. There is no OCI image.
+- **Docs to keep in sync**: `README.md` (Deployment section), `wiki/User Manual.md`, and the option descriptions in `nix/module.nix`. Update all three when changing flake outputs, launcher environment variables, module options, or public probes.
+- **Git-tracked source**: the flake copies only tracked `scripts/` and `cfg/` files. Stage changes before `nix build`/`nix flake check`, and never stage real `cfg/Wrestlers.json` or media.
+- **Caddy firewall**: enabling the module's `virtualHost` does not open 80/443; set `services.caddy.openFirewall = true` (or open the ports explicitly).
+- **Single process**: jobs, cancellation, sessions, and transcodes live in memory. Do not add uvicorn workers.
+
 ## Code Style & Conventions
 - **Naming**: `PascalCase` classes/methods, `snake_case` variables, `UPPER_SNAKE_CASE` constants.
 - **Types**: MANDATORY type annotations on all functions/variables. Use builtin generics (e.g., `list[str]`).

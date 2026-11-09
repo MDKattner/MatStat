@@ -15,7 +15,7 @@ MatStat provides a FastAPI web app to tag wrestling matches, extract sequence da
 
 ## Key Features
 
--   Single interface: **web app** (FastAPI; run from source with `nix develop`, or deploy with `nix run .#`).
+-   Single interface: **web app** (FastAPI; run from source with `nix develop`, or deploy with the NixOS module / `nix run .#`).
 -   **Batch video upload** into the untagged pool (multi-file, with per-file success/conflict/error reporting).
 -   Interactive tagging of sequences with ties/positions, moves, and scoring — each move can be assigned a count for how many times it occurred in a sequence.
 -   **Dual-wrestler mode:** tag both wrestlers in one pass, each with their own ties, plus a match outcome (Win/Loss) recorded as a `(W)` on the winner's name. Per-wrestler stats are derived for both sides automatically.
@@ -127,7 +127,9 @@ matstat-stats stats/wrestler_data/*.csv   # Derived move/initiation stats overvi
 > ```bash
 > MATSTAT_AUTH=off uvicorn scripts.web.app:app --reload
 > ```
-> See [Authentication & Deployment](#authentication--deployment) below.
+> See [Authentication](#authentication) and [Deployment](#deployment) below.
+
+> **Deploying a server instance?** The development shell above is for local work; jump to [Deployment](#deployment) for the NixOS module, systemd, reverse-proxy, and backup instructions.
 
 ## Usage
 **Web app:** run the packaged app and open http://127.0.0.1:8000 in a browser:
@@ -161,7 +163,7 @@ MATSTAT_VISIBLE_LOGGING=1 nix run .#
 -   **Metadata-only edits** (fixing a name, date, or result without changing sequences) use `mkvpropedit` when available and otherwise fall back to an ffmpeg stream-copy rewrite. Both preserve existing chapters.
 -   **API:** query, export, search, and reel endpoints accept only the shared `QuerySpec` shape (`wrestlers` list plus filters). Legacy `filter_type`/`filter_item` bodies return `422`.
 
-## Authentication & Deployment
+## Authentication
 
 MatStat protects wrestler PII and video with password authentication. It is **enabled by default**: start the server with `MATSTAT_PASSWORD` set, and every page and API (including `/ws`, static assets, previews, and downloads) requires the login page. The server **fails fast** if a password is expected but not configured, so an unprotected instance is never silently served:
 
@@ -169,19 +171,26 @@ MatStat protects wrestler PII and video with password authentication. It is **en
 MATSTAT_PASSWORD="StrongPassword" nix run .#
 ```
 
-Behavior knobs (all optional):
+Authentication knobs:
 
 -   `MATSTAT_AUTH=off` — disable authentication entirely (trusted LAN/local only).
 -   `MATSTAT_SESSION_HOURS=12` — how long a login stays valid (default 12 hours). Only **one session is active at a time**; a second login while one is active is rejected until the first is logged out or expires.
 -   `MATSTAT_SECRET=...` — optional cookie-signing key. Set it so changing `MATSTAT_PASSWORD` does not invalidate sessions; leave unset to key cookies off the password.
 -   `MATSTAT_SECURE_COOKIE=1` — set the `Secure` attribute on the session cookie (required over HTTPS).
--   `MATSTAT_ROOT=/path` — data root for `cfg/`, `vids/`, and `stats/` (defaults to the current directory; browser tests use it to isolate their temp tree).
--   `MATSTAT_FORWARDED_ALLOW_IPS=127.0.0.1,::1` — proxy addresses trusted to set `X-Forwarded-*`. Keep loopback when the proxy is local; this is what makes login rate limiting and logs see the real client IP.
+
+## Runtime configuration
+
+The package launcher reads these optional environment variables:
+
+-   `MATSTAT_ROOT=/path` — data root for `cfg/`, `vids/`, and `stats/` (defaults to the current directory). The server `chdir`s here, so every path below is relative to it; browser tests use it to isolate their temp tree.
+-   `MATSTAT_HOST=127.0.0.1` / `MATSTAT_PORT=8000` — bind address and port (defaults shown). Keep the host on loopback when a reverse proxy is in front.
+-   `MATSTAT_FORWARDED_ALLOW_IPS=127.0.0.1` — proxy addresses trusted to set `X-Forwarded-*`. Keep this to loopback when the proxy is local; it is what makes login rate limiting, logs, and HTTPS detection see the real client.
 -   `MATSTAT_MAX_UPLOAD_MB=4096` / `MATSTAT_MAX_REQUEST_MB=8192` — per-file and total upload caps. Oversized requests are rejected with `413`; oversized files fail individually without entering the pool.
 -   `MATSTAT_MAX_UPLOAD_FILES=20` — maximum files in one upload request.
 -   `MATSTAT_ALLOWED_EXTENSIONS=.mkv,.mp4,.mov,.webm,.m4v` — accepted upload extensions (case-insensitive).
 -   `MATSTAT_MIN_FREE_MB=1024` — free-space reserve that uploads may not consume.
 -   `MATSTAT_HSTS_MAX_AGE=31536000` — HSTS max-age sent over HTTPS; set `0` to disable.
+-   `MATSTAT_VISIBLE_LOGGING=1` — show the in-browser log panel (hidden by default).
 
 Uploads are additionally validated with `ffprobe` before they join the untagged pool, so renaming a non-video file to `.mkv` does not work.
 
@@ -198,24 +207,41 @@ The SPA's own `/api/health` endpoint remains behind the authentication gate.
 
 Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a restrictive `Permissions-Policy`, and a same-origin `Content-Security-Policy` (scripts must be external files; inline styles stay allowed for Plotly). HSTS is added automatically when the request arrives over HTTPS. Cross-origin `POST`/`PUT`/`DELETE` requests are rejected with `403`, complementing the `SameSite=Lax` session cookie.
 
+## Deployment
+
+### Deployment targets
+
+MatStat ships in two forms:
+
+-   **Nix flake package** (`packages.default`, `apps.default`) for Linux and macOS. Use it with `nix run .#` for a quick run, or install the built binary as a service on a non-NixOS host.
+-   **NixOS module** (`nixosModules.default`) for servers. It runs MatStat as a hardened systemd service, creates and seeds the data tree, and can provision Caddy with automatic HTTPS.
+
+There is no OCI/Docker image and no PyPI package. A Nix installation with flakes enabled is required for the packaged deployment. `nix run .#` is a quick foreground run that uses the current directory as its data root; for a persistent server, use the module or a dedicated data root.
+
 ### Deploy on NixOS with the flake
 
-The flake exports `nixosModules.default`, which runs MatStat as a hardened systemd service with a persistent data directory and optional Caddy TLS:
+Add the MatStat flake as an input and enable the module in your host configuration:
 
 ```nix
 {
-  inputs.matstat.url = "github:MDKattner/MatStat";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    matstat.url = "github:MDKattner/MatStat";
+  };
 
   outputs = { self, nixpkgs, matstat, ... }: {
     nixosConfigurations.host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
       modules = [
         matstat.nixosModules.default
         {
           services.matstat = {
             enable = true;
-            passwordFile = "/run/secrets/matstat.env";
+            passwordFile = "/etc/matstat/matstat.env";
             virtualHost = "matstat.example.com"; # optional; enables Caddy + HTTPS
           };
+          # Caddy's own firewall switch is off by default in nixpkgs.
+          services.caddy.openFirewall = true;
         }
       ];
     };
@@ -223,72 +249,233 @@ The flake exports `nixosModules.default`, which runs MatStat as a hardened syste
 }
 ```
 
-`/run/secrets/matstat.env` is a systemd EnvironmentFile containing the password:
+`passwordFile` is a systemd `EnvironmentFile` that must exist at runtime. At minimum it contains the login password; add `MATSTAT_SECRET` to keep sessions valid when the password changes:
 
 ```bash
 MATSTAT_PASSWORD=StrongPassword
+MATSTAT_SECRET=change-me-to-a-long-random-string
 ```
 
-Then deploy:
+Do **not** place secrets in the Nix store. Materialize the file with a secrets manager (sops-nix, agenix, etc.) or create it as root:
+
+```bash
+sudo install -d -m 0750 /etc/matstat
+sudo install -m 0600 /dev/null /etc/matstat/matstat.env
+sudoedit /etc/matstat/matstat.env
+```
+
+Before deploying:
+
+-   Point the `virtualHost` DNS name (A/AAAA) at the host.
+-   Open ports 80 and 443 for Caddy (`services.caddy.openFirewall = true`, or `networking.firewall.allowedTCPPorts = [ 80 443 ]`).
+-   Keep `host = "127.0.0.1"` (the default) so the app is reachable only through Caddy. Do not open the app port.
+
+Then deploy and verify:
 
 ```bash
 sudo nixos-rebuild switch --flake .#host
+
+systemctl status matstat
+curl -fsS http://127.0.0.1:8000/readyz
+curl -fsS https://matstat.example.com/readyz
+journalctl -u matstat -f
 ```
 
-The module keeps data in `/var/lib/matstat` by default (`cfg/`, `vids/`, `stats/`, `tmp/`, and `MatStat.log`). Packaged default config is copied there on first start and is never overwritten on upgrade. Useful options:
+The module keeps data in `stateDir` (`/var/lib/matstat` by default): `cfg/`, `vids/`, `stats/`, `tmp/`, and `MatStat.log`. On first start it creates the tree and copies the packaged default `cfg/` files only when they are absent, so upgrades never overwrite your rulesets or roster.
+
+Module options:
 
 -   `stateDir` — writable data root (default `/var/lib/matstat`).
+-   `user` / `group` — service account that owns the data (default `matstat`).
 -   `host` / `port` — bind address (default `127.0.0.1:8000`); keep it local when using Caddy.
 -   `virtualHost` — Caddy virtual host; enables Caddy and defaults `secureCookie` to `true`. Caddy also enforces `maxRequestMb` with `request_body`.
 -   `openFirewall` — open the app port directly (off by default; prefer the proxy).
 -   `forwardedAllowIps` — proxy addresses trusted for `X-Forwarded-*` (default `127.0.0.1,::1`).
 -   `maxUploadMb`, `maxRequestMb`, `maxUploadFiles`, `minFreeMb` — upload guards mirrored to the app environment.
--   `sessionHours`, `visibleLogging`, `extraEnvironment` — corresponding `MATSTAT_*` knobs. Put `MATSTAT_SECRET=...` in `passwordFile` to keep sessions valid across password changes.
+-   `auth` — enable password authentication (default `true`). The module refuses to evaluate without `passwordFile`.
+-   `passwordFile` — runtime EnvironmentFile with `MATSTAT_PASSWORD` (and optionally `MATSTAT_SECRET`).
+-   `sessionHours`, `secureCookie`, `visibleLogging` — corresponding runtime knobs.
+-   `extraEnvironment` — extra `MATSTAT_*` variables (for example `{ MATSTAT_HSTS_MAX_AGE = "0"; }`).
 -   `package` — override the flake package.
 
-On non-NixOS hosts, build and run the same package directly:
+### Deploy on non-NixOS hosts
+
+Build the package once and keep an out-link so the store path stays alive across garbage collection:
 
 ```bash
-nix build .#default
-MATSTAT_PASSWORD=... MATSTAT_SECURE_COOKIE=1 ./result/bin/matstat --host 127.0.0.1
+# Root needs flakes enabled (or pass the experimental flags explicitly).
+sudo nix --extra-experimental-features 'nix-command flakes' \
+  build .#default -o /var/lib/matstat-pkg
 ```
 
-### Manual reverse proxy
+Create the service account and data tree, then seed the packaged default config without overwriting existing files:
 
-Because the app is password-only and single-session, it is meant to sit **behind an HTTPS front**. Two straightforward options:
+```bash
+sudo useradd --system --home /var/lib/matstat --shell /usr/sbin/nologin matstat
+sudo install -d -o matstat -g matstat -m 0750 \
+  /var/lib/matstat/{cfg,vids/untaged,vids/taged,vids/clips,stats/wrestler_data,stats/reports,tmp}
+sudo cp -n /var/lib/matstat-pkg/share/matstat/cfg/* /var/lib/matstat/cfg/
+```
 
--   **Caddy reverse proxy** (recommended, automatic TLS): put `https://your.domain { reverse_proxy 127.0.0.1:8000 }` in the Caddyfile, then run `MATSTAT_PASSWORD=... MATSTAT_SECURE_COOKIE=1 nix run .# -- --host 127.0.0.1`.
--   **uvicorn TLS directly**: `MATSTAT_PASSWORD=... MATSTAT_SECURE_COOKIE=1 nix run .# -- --ssl-keyfile key.pem --ssl-certfile cert.pem`.
+Create the environment file (root-owned; systemd reads it before dropping privileges):
+
+```bash
+sudo install -d -m 0750 /etc/matstat
+sudo install -m 0600 /dev/null /etc/matstat/matstat.env
+sudoedit /etc/matstat/matstat.env   # MATSTAT_PASSWORD=... and optional MATSTAT_SECRET=...
+```
+
+An example unit at `/etc/systemd/system/matstat.service`:
+
+```ini
+[Unit]
+Description=MatStat wrestling analysis web app
+After=network.target
+
+[Service]
+Type=simple
+User=matstat
+Group=matstat
+WorkingDirectory=/var/lib/matstat
+EnvironmentFile=/etc/matstat/matstat.env
+Environment=MATSTAT_ROOT=/var/lib/matstat
+Environment=MATSTAT_HOST=127.0.0.1
+Environment=MATSTAT_PORT=8000
+Environment=MATSTAT_SECURE_COOKIE=1
+Environment=MATSTAT_FORWARDED_ALLOW_IPS=127.0.0.1
+ExecStart=/var/lib/matstat-pkg/bin/matstat
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/matstat
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Set `MATSTAT_SECURE_COOKIE=0` only if you are deliberately testing over plain HTTP; the browser will not send a `Secure` cookie over HTTP, which looks like a login loop. Enable and verify:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now matstat
+curl -fsS http://127.0.0.1:8000/readyz
+```
+
+The packaged launcher adds `--proxy-headers`, reads `MATSTAT_HOST`, `MATSTAT_PORT`, `MATSTAT_ROOT`, and `MATSTAT_FORWARDED_ALLOW_IPS`, and embeds its Python path. Run it with `MATSTAT_ROOT` set rather than relying on the current directory.
+
+### Reverse proxy and TLS
+
+MatStat is single-tenant and password-only, so expose it **behind HTTPS**. The proxy must preserve the public `Host` header and set `X-Forwarded-Proto`; the app compares `Origin` with `Host` for cross-origin write protection, and uses the forwarded scheme for secure cookies and HSTS. Set `MATSTAT_FORWARDED_ALLOW_IPS` to the proxy's address (never a wildcard unless the proxy is fully trusted), and keep WebSocket upgrade headers enabled for `/ws`.
+
+**Caddy** (automatic TLS; this is what the NixOS module configures):
+
+```caddyfile
+matstat.example.com {
+    request_body {
+        max_size 8GB
+    }
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+**Nginx** (with your certificate paths; the `map` belongs in the `http {}` block):
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name matstat.example.com;
+    client_max_body_size 8192m;
+
+    ssl_certificate     /etc/ssl/certs/matstat.crt;
+    ssl_certificate_key /etc/ssl/private/matstat.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+}
+```
+
+Align `client_max_body_size` / Caddy's `request_body` with `MATSTAT_MAX_REQUEST_MB`; otherwise the proxy rejects large uploads with `413` before MatStat sees them.
+
+**Direct uvicorn TLS** is also possible on a single host:
+
+```bash
+MATSTAT_HOST=0.0.0.0 MATSTAT_SECURE_COOKIE=1 \
+MATSTAT_PASSWORD=... ./result/bin/matstat \
+  --ssl-keyfile /etc/ssl/private/matstat.key \
+  --ssl-certfile /etc/ssl/certs/matstat.crt
+```
+
+With direct TLS, HSTS is emitted because the request scheme is `https`; with a reverse proxy it is emitted when the trusted proxy supplies `X-Forwarded-Proto: https`.
 
 > MatStat runs a single process: jobs, cancellation, sessions, and in-flight transcodes are held in memory. Do not add multiple uvicorn workers.
 
-> Use the local dev commands above with `MATSTAT_AUTH=off` unless you actually want to exercise the login flow.
+> `MATSTAT_AUTH=off` is only appropriate on a trusted LAN. It disables the login page entirely; never combine it with a public listener.
+
+### Operations: logs, upgrades, and rollback
+
+-   **Logs:** `journalctl -u matstat -f` on systemd hosts, plus `MatStat.log` in the data root. The in-browser log panel is opt-in with `MATSTAT_VISIBLE_LOGGING=1` (module: `visibleLogging = true`).
+-   **NixOS upgrades:** update the input (`nix flake update matstat` in the host flake), then `sudo nixos-rebuild switch --flake .#host`. Roll back with `sudo nixos-rebuild switch --rollback` (or select the previous generation at boot).
+-   **Non-NixOS upgrades:** pull the new source, run `sudo nix --extra-experimental-features 'nix-command flakes' build .#default -o /var/lib/matstat-pkg`, then `sudo systemctl restart matstat`.
+-   **Data survives upgrades:** the module never overwrites existing `cfg/` files; new packaged defaults are copied only when absent. Back up `cfg/` before editing rulesets or the roster.
+-   **Health checks:** point your monitoring at `/healthz` for liveness and `/readyz` for readiness; use the `503` response and its per-check body to diagnose startup problems.
 
 ### Backup and restore
 
 The deployment's irreplaceable data is `cfg/` (rulesets and the PII roster) and `stats/` (compiled wrestler CSVs and reports). `vids/` is large media; back it up according to your retention policy, and expect to re-transcode previews after a restore since `tmp/` is scratch.
 
-A filesystem-consistent backup is easiest with the service stopped:
+A filesystem-consistent backup is easiest with the service stopped (`STATE_DIR` is the module's `stateDir` or your `MATSTAT_ROOT`):
 
 ```bash
+STATE_DIR=/var/lib/matstat
 sudo systemctl stop matstat
-sudo tar -C /var/lib/matstat -czf /backup/matstat-$(date +%F).tar.gz cfg stats vids
+sudo tar -C "$STATE_DIR" -czf /backup/matstat-$(date +%F).tar.gz cfg stats vids
 sudo systemctl start matstat
 curl -fsS http://127.0.0.1:8000/readyz
 ```
 
-For recurring backups, point restic/borg at `/var/lib/matstat` and exclude `tmp/` and `MatStat.log`. If you cannot stop the service, snapshot the filesystem or accept that an upload or reel being written at that moment may be partial.
+For recurring backups, point restic/borg at `$STATE_DIR` and exclude `tmp/` and `MatStat.log`. If you cannot stop the service, snapshot the filesystem or accept that an upload or reel being written at that moment may be partial.
 
 Restore into a fresh host:
 
 ```bash
+STATE_DIR=/var/lib/matstat
 sudo systemctl stop matstat
-sudo tar -C /var/lib/matstat -xzf /backup/matstat-YYYY-MM-DD.tar.gz
-sudo chown -R matstat:matstat /var/lib/matstat
+sudo tar -C "$STATE_DIR" -xzf /backup/matstat-YYYY-MM-DD.tar.gz
+sudo chown -R matstat:matstat "$STATE_DIR"
 sudo systemctl start matstat
 ```
 
 Then confirm `/readyz` returns `200`, open the app, and check that **Match Outcomes**/reports show the expected date range. Restoring `cfg/` before the first start prevents the module's default-config seeding from racing your restore.
+
+### Troubleshooting
+
+-   **`readyz` returns `503`:** check the `checks` object. `data_root: error` is usually ownership or permissions on `stateDir`; `ffmpeg: error` means `ffmpeg` is not on the service's `PATH` (the packaged launcher supplies it); `config: error` means an unreadable or malformed `cfg/config.json`.
+-   **`502 Bad Gateway`:** the proxy cannot reach the app. Confirm `systemctl status matstat` and that the proxy dials the same `host:port` (`127.0.0.1:8000` by default).
+-   **Login loops or the cookie is not stored:** you are serving over HTTP with `MATSTAT_SECURE_COOKIE=1`, or the proxy strips `X-Forwarded-Proto`. Use HTTPS (or set the cookie flag to `0` for a deliberate HTTP-only test).
+-   **`403 Cross-origin request rejected`:** the proxy rewrote `Host` or you opened the app under a different hostname than the one in `Origin`. Preserve the public `Host` header and use one canonical hostname.
+-   **Uploads return `413`:** align the proxy body limit (`request_body` / `client_max_body_size`) with `MATSTAT_MAX_REQUEST_MB`; the per-file cap is `MATSTAT_MAX_UPLOAD_MB`.
+-   **`401` on most URLs:** expected when auth is on. Only `/healthz`, `/readyz`, `/login`, `/static/js/login.js`, and the login/logout endpoints are public.
+-   **Data appears empty after moving the instance:** `MATSTAT_ROOT` (or `WorkingDirectory`) points at the wrong directory. The app `chdir`s to the data root before resolving `cfg/`, `vids/`, and `stats/`.
+-   **Uploads fail with a free-space error:** `MATSTAT_MIN_FREE_MB` reserves free space; lower it or add disk capacity.
 
 ## Module Overview
 

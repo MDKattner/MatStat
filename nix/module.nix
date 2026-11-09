@@ -63,7 +63,8 @@ in
       default = "/var/lib/matstat";
       description = ''
         Writable data root. Holds `cfg/`, `vids/`, `stats/`, `tmp/`, and
-        `MatStat.log`.
+        `MatStat.log`. The packaged default configuration is copied in on first
+        start and is never overwritten on upgrade.
       '';
     };
 
@@ -82,7 +83,11 @@ in
     openFirewall = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Open the app port in the firewall. Prefer a reverse proxy instead.";
+      description = ''
+        Open the app port directly in the firewall. Prefer a reverse proxy
+        instead. This does not open the proxy's HTTPS ports; set
+        {option}`services.caddy.openFirewall` for that.
+      '';
     };
 
     forwardedAllowIps = lib.mkOption {
@@ -132,9 +137,10 @@ in
     passwordFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = "/run/secrets/matstat.env";
+      example = "/etc/matstat/matstat.env";
       description = ''
-        Path to a systemd EnvironmentFile containing `MATSTAT_PASSWORD=...`.
+        Path to a systemd EnvironmentFile containing `MATSTAT_PASSWORD=...`
+        and, optionally, `MATSTAT_SECRET=...` (a stable cookie-signing key).
         Required when {option}`services.matstat.auth` is enabled. Use a
         runtime path (not a Nix path literal) so the secret is not copied
         into the store.
@@ -162,7 +168,10 @@ in
       example = "matstat.example.com";
       description = ''
         Optional Caddy virtual host. Setting this enables Caddy and proxies
-        the host to the local MatStat port over HTTPS.
+        the host to the local MatStat port over HTTPS. Point the name's DNS
+        records at this host and open ports 80/443 (for example with
+        {option}`services.caddy.openFirewall`). Defaults
+        {option}`services.matstat.secureCookie` to `true`.
       '';
     };
 
@@ -175,7 +184,11 @@ in
     extraEnvironment = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = { };
-      description = "Extra environment variables for the service.";
+      description = ''
+        Extra environment variables for the service (for example
+        `{ MATSTAT_HSTS_MAX_AGE = "0"; }`). Secrets belong in
+        {option}`services.matstat.passwordFile`.
+      '';
     };
   };
 
