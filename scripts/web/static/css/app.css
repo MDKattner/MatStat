@@ -575,8 +575,27 @@ fieldset.tag-card { margin: 0; }
   padding: 3px 6px;
 }
 
-#tab-tag-film .video-card .check-list,
-#tab-audit .video-card .check-list { max-height: 104px; }
+/* The Select Video list grows to fill its card instead of leaving dead space.
+   On desktop the card height comes from the adjacent wrestler card, and the
+   list scrolls internally; narrow layouts keep the normal capped list. */
+#tab-tag-film .video-card .filter-group,
+#tab-audit .video-card .filter-group {
+  flex: 1;
+  min-height: 0;
+}
+
+@media (min-width: 901px) {
+  #tab-tag-film .video-card .check-list,
+  #tab-audit .video-card .check-list {
+    flex: 1;
+    height: 0;
+    min-height: 0;
+    max-height: none;
+    /* Size the list from its flex slot, not from the number of videos, so a
+       long list scrolls inside the card instead of stretching the card. */
+    contain: size;
+  }
+}
 
 #tab-tag-film .wrestler-card .check-list,
 #tab-audit .wrestler-card .check-list { max-height: 104px; }

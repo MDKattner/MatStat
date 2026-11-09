@@ -282,6 +282,37 @@ class TestViewportFit:
             assert metrics["docScrollW"] <= metrics["docClientW"] + 1, label
             assert metrics["contentScrollW"] <= metrics["contentClientW"] + 1, label
 
+    def test_video_selector_fills_its_card(
+        self, app_page: tuple[Any, list[str]]
+    ) -> None:
+        page, _errors = app_page
+        _open_tab(page, "tag-film")
+        page.locator(
+            "#tab-tag-film .video-card .check-list li"
+        ).first.wait_for(state="attached")
+        metrics: dict[str, int] = page.evaluate(
+            """() => {
+              const card = document.querySelector(
+                '#tab-tag-film .video-card'
+              );
+              const list = card.querySelector('.check-list');
+              return {
+                cardH: card.getBoundingClientRect().height,
+                listH: list.getBoundingClientRect().height,
+              };
+            }"""
+        )
+        assert metrics["listH"] > metrics["cardH"] * 0.3, metrics
+
+    def test_pca_plot_sits_in_left_column(
+        self, app_page: tuple[Any, list[str]]
+    ) -> None:
+        page, _errors = app_page
+        _open_tab(page, "pca")
+        assert page.locator("#tab-pca .tag-left .plot-card").count() == 1
+        assert page.locator("#tab-pca .tag-right .plot-card").count() == 0
+        assert page.locator("#tab-pca .tag-right .player-card").count() == 1
+
 
 class TestAccessibility:
     """axe-core scans for each tab; skips when axe is not installed."""
