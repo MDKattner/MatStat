@@ -334,21 +334,17 @@ export function mountCombineClips(root) {
     el("legend", {}, [el("span", { text: "Matched Sequences: " }), matchesCount]),
     matchesList,
   ]);
-  const right = el("div", { class: "tag-right" }, [playerCard, matchesCard]);
-
-  const bottomRow = el("div", { class: "tag-left" }, [
-    el("fieldset", { class: "tag-card" }, [
-      el("legend", { text: "Reel Output" }),
-      progress,
-      outputEl,
-      reelActions,
-      el("h3", { class: "results-title", text: "Reel Versions" }),
-      versionsList,
-    ]),
+  const reelCard = el("fieldset", { class: "tag-card" }, [
+    el("legend", { text: "Reel Output" }),
+    progress,
+    outputEl,
+    reelActions,
+    el("h3", { class: "results-title", text: "Reel Versions" }),
+    versionsList,
   ]);
+  const right = el("div", { class: "tag-right" }, [playerCard, matchesCard, reelCard]);
 
   root.appendChild(el("div", { class: "tag-film-grid" }, [left, right]));
-  root.appendChild(bottomRow);
 
   // ---------- Boot ----------
 

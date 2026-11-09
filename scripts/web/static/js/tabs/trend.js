@@ -163,7 +163,7 @@ export function mountTrend(root) {
     el("div", { class: "row" }, [loadPlotBtn]),
     statusLabel,
   ]);
-  const plotCard = el("section", { class: "tag-card" }, [plotEl]);
+  const plotCard = el("section", { class: "tag-card plot-card" }, [plotEl]);
   const left = el("div", { class: "tag-left" }, [controlsCard]);
   const right = el("div", { class: "tag-right" }, [plotCard]);
 

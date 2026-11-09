@@ -784,15 +784,19 @@ export function queryPanel({
 
   // ---------- Layout ----------
 
-  const fieldset = el("fieldset", { class: "tag-card" }, [
-    el("legend", { text: "Filters" }),
+  const filters = el("div", { class: "query-grid" }, [
     wrestlers.node,
-    el("div", { class: "row filter-row" }, [
-      el("label", { class: "field-label", text: "Attack/Defense:" }, [attackMode]),
-    ]),
     tie.node,
     teamMove.node,
     oppMove.node,
+  ]);
+
+  const fieldset = el("fieldset", { class: "tag-card" }, [
+    el("legend", { text: "Filters" }),
+    el("div", { class: "row filter-row" }, [
+      el("label", { class: "field-label", text: "Attack/Defense:" }, [attackMode]),
+    ]),
+    filters,
     el("div", { class: "row filter-row" }, [
       el("label", { class: "field-label", text: "Min Adj. Pts:" }, [minPts]),
       el("label", { class: "field-label", text: "Max Adj. Pts:" }, [maxPts]),

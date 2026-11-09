@@ -215,6 +215,74 @@ class TestHiddenInvariant:
             assert display == "none", selector
 
 
+class TestViewportFit:
+    """Cards and panes fit the viewport instead of scrolling the whole page.
+
+    Desktop panes own their scrolling, so the document and ``#tab-content``
+    must not grow past the viewport. Narrow layouts may scroll vertically but
+    must never overflow sideways.
+    """
+
+    _DESKTOP: tuple[tuple[int, int], ...] = (
+        (1440, 900), (1280, 800), (1024, 768),
+    )
+    _NARROW: tuple[int, int] = (390, 844)
+
+    @staticmethod
+    def _metrics(page: Any) -> dict[str, int]:
+        """Return document and content-area scroll/client dimensions."""
+        return page.evaluate(
+            """() => {
+              const doc = document.documentElement;
+              const content = document.querySelector('#tab-content');
+              return {
+                docScrollW: doc.scrollWidth,
+                docClientW: doc.clientWidth,
+                docScrollH: doc.scrollHeight,
+                docClientH: doc.clientHeight,
+                contentScrollW: content.scrollWidth,
+                contentClientW: content.clientWidth,
+                contentScrollH: content.scrollHeight,
+                contentClientH: content.clientHeight,
+              };
+            }"""
+        )
+
+    def test_desktop_tabs_fit_without_page_scroll(
+        self, app_page: tuple[Any, list[str]]
+    ) -> None:
+        page, _errors = app_page
+        for width, height in self._DESKTOP:
+            page.set_viewport_size({"width": width, "height": height})
+            for tab in _TABS:
+                _open_tab(page, tab)
+                page.wait_for_timeout(100)
+                metrics = self._metrics(page)
+                label = f"{width}x{height} {tab}: {metrics}"
+                assert metrics["docScrollW"] <= metrics["docClientW"] + 1, label
+                assert (
+                    metrics["contentScrollW"] <= metrics["contentClientW"] + 1
+                ), label
+                assert metrics["docScrollH"] <= metrics["docClientH"] + 1, label
+                assert (
+                    metrics["contentScrollH"] <= metrics["contentClientH"] + 1
+                ), label
+
+    def test_narrow_layout_never_overflows_sideways(
+        self, app_page: tuple[Any, list[str]]
+    ) -> None:
+        page, _errors = app_page
+        width, height = self._NARROW
+        page.set_viewport_size({"width": width, "height": height})
+        for tab in _TABS:
+            _open_tab(page, tab)
+            page.wait_for_timeout(100)
+            metrics = self._metrics(page)
+            label = f"{width}x{height} {tab}: {metrics}"
+            assert metrics["docScrollW"] <= metrics["docClientW"] + 1, label
+            assert metrics["contentScrollW"] <= metrics["contentClientW"] + 1, label
+
+
 class TestAccessibility:
     """axe-core scans for each tab; skips when axe is not installed."""
 

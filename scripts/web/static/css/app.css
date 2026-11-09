@@ -128,8 +128,34 @@ html, body {
 
 .tab-content {
   flex: 1;
-  overflow: auto;
+  min-height: 0;
+  overflow: hidden;
   padding: 16px;
+}
+
+.tab-pane {
+  height: 100%;
+  min-height: 0;
+}
+
+/* Tab roots fill the pane so their grids can size to the viewport instead of
+   growing with their content (which used to push whole pages into a scroll). */
+#tag-film-root,
+#combine-clips-root,
+#search-root,
+#pca-root,
+#trend-root,
+#audit-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+#team-eval-root {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
 }
 
 .empty-item {
@@ -304,7 +330,7 @@ html, body {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(420px, 588px) 1fr;
+  grid-template-columns: minmax(340px, 38%) minmax(0, 1fr);
   gap: 16px;
   align-items: stretch;
 }
@@ -317,6 +343,8 @@ html, body {
   min-height: 0;
   height: 100%;
   overflow-y: auto;
+  padding-right: 2px;
+  container-type: inline-size;
 }
 
 .tag-right {
@@ -327,6 +355,8 @@ html, body {
   min-height: 0;
   height: 100%;
   overflow-y: auto;
+  padding-right: 2px;
+  container-type: inline-size;
 }
 
 .tag-card {
@@ -423,6 +453,7 @@ fieldset.tag-card { margin: 0; }
 .row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -545,10 +576,10 @@ fieldset.tag-card { margin: 0; }
 }
 
 #tab-tag-film .video-card .check-list,
-#tab-audit .video-card .check-list { max-height: 160px; }
+#tab-audit .video-card .check-list { max-height: 104px; }
 
 #tab-tag-film .wrestler-card .check-list,
-#tab-audit .wrestler-card .check-list { max-height: 160px; }
+#tab-audit .wrestler-card .check-list { max-height: 104px; }
 
 .video-item {
   width: 100%;
@@ -639,10 +670,10 @@ fieldset.tag-card { margin: 0; }
 #tab-audit .tag-left .tag-card { padding: 10px; }
 
 #tab-tag-film .tag-left .check-list,
-#tab-audit .tag-left .check-list { max-height: 130px; }
+#tab-audit .tag-left .check-list { max-height: 108px; }
 
 #tab-tag-film .tag-left .filter-group .check-list,
-#tab-audit .tag-left .filter-group .check-list { max-height: 110px; }
+#tab-audit .tag-left .filter-group .check-list { max-height: 96px; }
 
 #tab-tag-film .tag-left .check-item,
 #tab-audit .tag-left .check-item { padding: 3px 8px; }
@@ -657,7 +688,7 @@ fieldset.tag-card { margin: 0; }
 
 .details-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px;
 }
 
@@ -756,9 +787,11 @@ details.tag-card summary:hover { color: var(--text); }
 /* ---------- Compile Stats ---------- */
 
 .compile-stats-card {
-  max-width: 640px;
   display: grid;
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 16px;
+  align-items: start;
+  max-width: 1200px;
 }
 
 .results-title { margin: 8px 0 0; }
@@ -790,24 +823,85 @@ details.tag-card summary:hover { color: var(--text); }
   overflow: auto;
 }
 
-/* ---------- PCA ---------- */
+/* ---------- PCA / Trends ---------- */
 
-.pca-plot { width: 100%; aspect-ratio: 1 / 1; }
+.plot-card {
+  flex: 1;
+  min-height: 220px;
+}
+
+.pca-plot {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
 .pca-plot .js-plotly-plot { width: 100% !important; height: 100% !important; }
 
+/* ---------- Query panel ---------- */
+
+.query-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-items: start;
+}
+
+.query-grid > * { min-width: 0; }
+
+.query-grid .check-list { max-height: 148px; }
+
+.pts-input { max-width: 96px; }
+
 /* ---------- Responsive ---------- */
+
+/* Nested layouts adapt to the width of their column, not just the window. */
+@container (max-width: 560px) {
+  .selection-row { flex-direction: column; }
+  .video-card, .wrestler-card { flex: none; }
+}
+
+@container (max-width: 440px) {
+  .query-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 900px) {
+  .tab-content { overflow: auto; padding: 12px; }
+  .tab-pane { height: auto; }
+  #tag-film-root,
+  #combine-clips-root,
+  #search-root,
+  #pca-root,
+  #trend-root,
+  #audit-root,
+  #team-eval-root {
+    display: block;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+  #tab-tag-film { height: auto; }
+  .tag-film-grid { grid-template-columns: 1fr; }
+  .tag-left, .tag-right {
+    height: auto;
+    overflow: visible;
+    padding-right: 0;
+  }
+  /* Keep the video player first when the two columns stack. */
+  #tab-tag-film .tag-right,
+  #tab-audit .tag-right { order: -1; }
+  .plot-card { min-height: 320px; }
+}
 
 @media (max-width: 720px) {
   .app-title { display: none; }
   .tab-btn { padding: 12px 10px; }
-  .tab-content { padding: 12px; }
-  #tab-tag-film { height: auto; }
-  .tag-film-grid { grid-template-columns: 1fr; }
-  .tag-left, .tag-right { height: auto; overflow: visible; }
+  .tab-content { padding: 10px; }
   .details-grid { grid-template-columns: 1fr; }
   .selection-row { flex-direction: column; }
   .video-card { flex: none; }
   .wrestler-card { flex: none; }
   .player-card { flex: none; max-height: none; }
   .video-panel { flex: none; min-height: 200px; }
+  .query-grid { grid-template-columns: 1fr; }
 }
