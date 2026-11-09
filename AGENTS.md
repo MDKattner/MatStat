@@ -2,7 +2,7 @@
 
 ## Core Concepts
 - **Frontend**: Sole frontend is a FastAPI web app (`scripts/web/`). No CLI or desktop GUI exists.
-- **Environment**: Nix flake (`nix develop`) on NixOS or any system with flakes enabled, or `pipenv` for a non-Nix setup.
+- **Environment**: Nix flake (`nix develop` for development, `nix build .#default` / `nixosModules.default` for deployment) on NixOS or any system with flakes enabled.
 - **No Build/Lint/Format System**: Style is enforced manually.
 
 ## Development Commands
@@ -16,6 +16,10 @@ MATSTAT_AUTH=off uvicorn scripts.web.app:app --reload
 # Run Tests
 pytest                 # fast suite; browser tests excluded
 pytest -m browser      # Playwright + axe UI suite
+
+# Build / verify the deployable package
+nix build .#default
+nix flake check
 ```
 
 The dev shell's `shellHook` also defines inspection helpers:

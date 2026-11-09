@@ -1,5 +1,5 @@
 {
-  description = "MatStat Development Environment";
+  description = "MatStat — statistical analysis and film generation for folkstyle wrestling";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
@@ -11,33 +11,65 @@
       forEachSupportedSystem = f: nixpkgs.lib.genAttrs supportedSystems (system: f {
         pkgs = import nixpkgs { inherit system; };
       });
+
+      # Single dependency list shared by the package, the test check, and the
+      # development shell so they cannot drift apart.
+      runtimePackages = ps: with ps; [
+        pandas
+        numpy
+        openpyxl
+        fastapi
+        uvicorn
+        python-multipart
+        plotly
+        websockets
+      ];
+
+      runtimePython = pkgs: pkgs.python3.withPackages runtimePackages;
+      testPython = pkgs: pkgs.python3.withPackages (ps: runtimePackages ps ++ [ ps.pytest ps.httpx ]);
+      devPython = pkgs: pkgs.python3.withPackages (ps: runtimePackages ps ++ [ ps.pytest ps.httpx ps.playwright ]);
+
+      mkMatStat = pkgs: import ./nix/package.nix {
+        inherit self pkgs;
+        python = runtimePython pkgs;
+      };
     in
     {
+      packages = forEachSupportedSystem ({ pkgs }: {
+        default = mkMatStat pkgs;
+        matstat = mkMatStat pkgs;
+      });
+
+      apps = forEachSupportedSystem ({ pkgs }: {
+        default = {
+          type = "app";
+          program = "${mkMatStat pkgs}/bin/matstat";
+          meta = {
+            description = "MatStat wrestling analysis web app";
+          };
+        };
+      });
+
+      checks = forEachSupportedSystem ({ pkgs }: {
+        package = mkMatStat pkgs;
+        tests = import ./nix/tests.nix {
+          inherit self pkgs;
+          python = testPython pkgs;
+        };
+      });
+
+      nixosModules.default = import ./nix/module.nix { inherit self; };
+
       devShells = forEachSupportedSystem ({ pkgs }: {
         default = pkgs.mkShell {
-          buildInputs = with pkgs; [
-            # ── Python runtime ──
-            python3
-
-            # ── Python packages (PyPI equivalents) ──
-            python3Packages.pandas
-            python3Packages.numpy
-            python3Packages.openpyxl
-            python3Packages.fastapi
-            python3Packages.uvicorn
-            python3Packages.python-multipart
-            python3Packages.httpx
-            python3Packages.plotly
-
-            # ── Python dev / test ──
-            python3Packages.pytest
-            python3Packages.playwright
-            pipenv
+          buildInputs = [
+            # ── Python runtime + dev/test packages ──
+            (devPython pkgs)
 
             # ── System tools ──
-            ffmpeg
-            mkvtoolnix
-            playwright-driver.browsers
+            pkgs.ffmpeg
+            pkgs.mkvtoolnix
+            pkgs.playwright-driver.browsers
           ];
 
           # Point Playwright at the Nix-provided Chromium instead of ~/.cache.

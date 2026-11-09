@@ -8,6 +8,8 @@ stats/wrestler_data/*
 stats/reports/*
 
 # Misc data
+result
+result-*
 scripts/__pycache__
 tmp/.*
 tmp/*

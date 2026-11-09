@@ -4,8 +4,6 @@ The default test run excludes these with ``addopts = -m "not browser"``. They
 boot a real uvicorn server against a temporary ``vids/``/``stats/`` tree with
 authentication off, then exercise every tab and the modal dialogs. In the Nix
 dev shell Playwright and Chromium are provided, so run ``pytest -m browser``.
-On a pipenv setup, install the browser once with
-``pipenv run playwright install chromium`` before ``pipenv run pytest -m browser``.
 
 The axe scans skip gracefully when ``axe-playwright-python`` is not installed;
 the Playwright smoke tests skip when Playwright itself is unavailable.

@@ -15,7 +15,7 @@ MatStat provides a FastAPI web app to tag wrestling matches, extract sequence da
 
 ## Key Features
 
--   Single interface: **web app** (`uvicorn scripts.web.app:app --reload`).
+-   Single interface: **web app** (FastAPI; run from source with `nix develop`, or deploy with `nix run .#`).
 -   **Batch video upload** into the untagged pool (multi-file, with per-file success/conflict/error reporting).
 -   Interactive tagging of sequences with ties/positions, moves, and scoring — each move can be assigned a count for how many times it occurred in a sequence.
 -   **Dual-wrestler mode:** tag both wrestlers in one pass, each with their own ties, plus a match outcome (Win/Loss) recorded as a `(W)` on the winner's name. Per-wrestler stats are derived for both sides automatically.
@@ -67,24 +67,23 @@ The Tag Film and Auditing tabs support tagging both wrestlers in a single pass.
 -   `scripts/`: Contains the application logic scripts.
     -   `web/`: FastAPI web app (app.py, jobs, ffmpeg runner, tab modules, static/).
     -   `helpers.py`: Shared data classes and utility functions.
--   `flake.nix`: Nix flake defining the development shell (all dependencies pre-configured).
--   `flake.lock`: Pinned flake inputs (locks the `nixpkgs` revision used by the dev shell).
--   `Pipfile`: pipenv dependencies (alternative to the Nix flake).
+-   `flake.nix`: Nix flake defining the development shell, production package, and NixOS module (all dependencies pre-configured).
+-   `flake.lock`: Pinned flake inputs (locks the `nixpkgs` revision used by the shell and package).
+-   `nix/`: Nix package, test check, and NixOS module definitions.
 -   `MatStat.log`: A log file for debugging and tracking application activity.
 
 ## Installation and Setup
 
 ### Dependencies
 
--   [Nix](https://nixos.org/download/) with flakes enabled (recommended — the flake supplies Python, ffmpeg, pytest, and Playwright/Chromium), or `pipenv` for a non-Nix setup
--   `ffmpeg`
-    -   `ffprobe` (included with most ffmpeg packages)
+-   [Nix](https://nixos.org/download/) with flakes enabled — the flake supplies Python, ffmpeg/mkvtoolnix, pytest, Playwright/Chromium, and the production package.
+-   `ffmpeg` / `ffprobe` (provided by the flake; needed at runtime for transcoding and clip generation).
 
 ### Setup
 
 #### NixOS / Nix (primary development environment)
 
-The project uses a Nix flake (`flake.nix`) whose `devShells.default` provides all dependencies (Python, ffmpeg, pytest, Playwright/Chromium). On NixOS — or any system with Nix and flakes enabled — enter the development shell with `nix develop`:
+The project uses a Nix flake (`flake.nix`) whose `devShells.default` provides all dependencies (Python, ffmpeg, pytest, Playwright/Chromium), and whose `packages.default` builds the deployable app. On NixOS — or any system with Nix and flakes enabled — enter the development shell with `nix develop`:
 
 ```bash
 git clone https://github.com/MDKattner/MatStat.git
@@ -112,12 +111,6 @@ Chromium. The Nix dev shell already provides both (the browsers come from
 ```bash
 pytest -m browser
 ```
-The pipenv path needs a one-time install:
-```bash
-pipenv install --dev                      # provides playwright + axe-playwright-python
-pipenv run playwright install chromium    # one-time browser download
-pipenv run pytest -m browser
-```
 The axe accessibility checks skip automatically when
 `axe-playwright-python` is unavailable (as in the Nix shell); the Playwright
 smoke tests still run.
@@ -136,33 +129,24 @@ matstat-stats stats/wrestler_data/*.csv   # Derived move/initiation stats overvi
 > ```
 > See [Authentication & Deployment](#authentication--deployment) below.
 
-#### Non-NixOS (pipenv)
-
-Install [ffmpeg and ffprobe](https://ffmpeg.org/download.html). Install [pipenv](https://pipenv.pypa.io/en/latest/installation.html).
-
-```bash
-git clone https://github.com/MDKattner/MatStat.git
-cd MatStat
-pipenv install
-```
-
-To run:
-```bash
-pipenv run uvicorn scripts.web.app:app --reload      # Launch web app (http://127.0.0.1:8000)
-pipenv run pytest                                    # Run fast tests (browser suite excluded)
-pipenv run pytest -m browser                         # Playwright + axe UI suite
-```
-
-Install Chromium once before the browser suite: `pipenv run playwright install chromium`.
-
 ## Usage
-**Web app:** Start the FastAPI server and open http://127.0.0.1:8000 in a browser:
+**Web app:** run the packaged app and open http://127.0.0.1:8000 in a browser:
 ```bash
+MATSTAT_AUTH=off nix run .#          # trusted local/LAN use
+MATSTAT_PASSWORD=... nix run .#      # keep the login page enabled
+```
+For iterative development, enter the dev shell and use auto-reload:
+```bash
+nix develop
 uvicorn scripts.web.app:app --reload
+```
+`nix run .#` uses the current directory as its data root. To keep a run isolated from the repo, point `MATSTAT_ROOT` at a temp directory:
+```bash
+MATSTAT_ROOT=$(mktemp -d) MATSTAT_AUTH=off nix run .#
 ```
 The tabs above are available in the browser with the same workflows, plus PCA and Auditing tabs. Browsers can't play `.mkv` directly, so sources are streamed as progressive HLS previews that start playing within seconds while the rest of the video encodes in the background. The on-screen log panel is removed from the web UI by default; pass the logging flag to show it:
 ```bash
-MATSTAT_VISIBLE_LOGGING=1 uvicorn scripts.web.app:app
+MATSTAT_VISIBLE_LOGGING=1 nix run .#
 ```
 
 ## Data Integrity, Reports, and Reels
@@ -182,7 +166,7 @@ MATSTAT_VISIBLE_LOGGING=1 uvicorn scripts.web.app:app
 MatStat protects wrestler PII and video with password authentication. It is **enabled by default**: start the server with `MATSTAT_PASSWORD` set, and every page and API (including `/ws`, static assets, previews, and downloads) requires the login page. The server **fails fast** if a password is expected but not configured, so an unprotected instance is never silently served:
 
 ```bash
-MATSTAT_PASSWORD="StrongPassword" uvicorn scripts.web.app:app
+MATSTAT_PASSWORD="StrongPassword" nix run .#
 ```
 
 Behavior knobs (all optional):
@@ -190,12 +174,69 @@ Behavior knobs (all optional):
 -   `MATSTAT_AUTH=off` — disable authentication entirely (trusted LAN/local only).
 -   `MATSTAT_SESSION_HOURS=12` — how long a login stays valid (default 12 hours). Only **one session is active at a time**; a second login while one is active is rejected until the first is logged out or expires.
 -   `MATSTAT_SECURE_COOKIE=1` — set the `Secure` attribute on the session cookie (required over HTTPS).
--   `MATSTAT_ROOT=/path` — data root for `cfg/`, `vids/`, and `stats/` (defaults to the repository root; browser tests use it to isolate their temp tree).
+-   `MATSTAT_ROOT=/path` — data root for `cfg/`, `vids/`, and `stats/` (defaults to the current directory; browser tests use it to isolate their temp tree).
+
+### Deploy on NixOS with the flake
+
+The flake exports `nixosModules.default`, which runs MatStat as a hardened systemd service with a persistent data directory and optional Caddy TLS:
+
+```nix
+{
+  inputs.matstat.url = "github:MDKattner/MatStat";
+
+  outputs = { self, nixpkgs, matstat, ... }: {
+    nixosConfigurations.host = nixpkgs.lib.nixosSystem {
+      modules = [
+        matstat.nixosModules.default
+        {
+          services.matstat = {
+            enable = true;
+            passwordFile = "/run/secrets/matstat.env";
+            virtualHost = "matstat.example.com"; # optional; enables Caddy + HTTPS
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+`/run/secrets/matstat.env` is a systemd EnvironmentFile containing the password:
+
+```bash
+MATSTAT_PASSWORD=StrongPassword
+```
+
+Then deploy:
+
+```bash
+sudo nixos-rebuild switch --flake .#host
+```
+
+The module keeps data in `/var/lib/matstat` by default (`cfg/`, `vids/`, `stats/`, `tmp/`, and `MatStat.log`). Packaged default config is copied there on first start and is never overwritten on upgrade. Useful options:
+
+-   `stateDir` — writable data root (default `/var/lib/matstat`).
+-   `host` / `port` — bind address (default `127.0.0.1:8000`); keep it local when using Caddy.
+-   `virtualHost` — Caddy virtual host; enables Caddy and defaults `secureCookie` to `true`.
+-   `openFirewall` — open the app port directly (off by default; prefer the proxy).
+-   `sessionHours`, `visibleLogging`, `extraEnvironment` — corresponding `MATSTAT_*` knobs.
+-   `package` — override the flake package.
+
+On non-NixOS hosts, build and run the same package directly:
+
+```bash
+nix build .#default
+MATSTAT_PASSWORD=... MATSTAT_SECURE_COOKIE=1 ./result/bin/matstat --host 127.0.0.1
+```
+
+### Manual reverse proxy
 
 Because the app is password-only and single-session, it is meant to sit **behind an HTTPS front**. Two straightforward options:
 
--   **Caddy reverse proxy** (recommended, automatic TLS): put `https://your.domain { reverse_proxy 127.0.0.1:8000 }` in the Caddyfile, then run `MATSTAT_PASSWORD=... MATSTAT_SECURE_COOKIE=1 uvicorn scripts.web.app:app --host 127.0.0.1`.
--   **uvicorn TLS directly**: `MATSTAT_PASSWORD=... MATSTAT_SECURE_COOKIE=1 uvicorn scripts.web.app:app --ssl-keyfile key.pem --ssl-certfile cert.pem`.
+-   **Caddy reverse proxy** (recommended, automatic TLS): put `https://your.domain { reverse_proxy 127.0.0.1:8000 }` in the Caddyfile, then run `MATSTAT_PASSWORD=... MATSTAT_SECURE_COOKIE=1 nix run .# -- --host 127.0.0.1`.
+-   **uvicorn TLS directly**: `MATSTAT_PASSWORD=... MATSTAT_SECURE_COOKIE=1 nix run .# -- --ssl-keyfile key.pem --ssl-certfile cert.pem`.
+
+> MatStat runs a single process: jobs, cancellation, sessions, and in-flight transcodes are held in memory. Do not add multiple uvicorn workers.
 
 > Use the local dev commands above with `MATSTAT_AUTH=off` unless you actually want to exercise the login flow.
 
