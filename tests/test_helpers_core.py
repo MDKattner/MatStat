@@ -19,7 +19,7 @@ from scripts.helpers import (
     _MoveFilter,
     _GenerateMoveDF, GenerateOffenseDF, GenerateDefenseDF,
     GenerateInitiationDFBySegment, GenerateRatesDF, GenerateTeamSummaryDF,
-    GenerateMatchOutcomesDF,
+    GenerateMatchOutcomesDF, MatchOutcomeConflictError, ValidateMatchOutcomes,
 )
 
 
@@ -387,58 +387,116 @@ class TestGenerateTeamSummaryDF:
 
 
 class TestGenerateMatchOutcomesDF:
-    """Tests for GenerateMatchOutcomesDF — the consolidated W/L/unrecorded block."""
+    """Tests for GenerateMatchOutcomesDF — match-level W/L/unrecorded counts."""
 
-    def _frames(self) -> dict[str, pd.DataFrame]:
-        alice: pd.DataFrame = pd.DataFrame({
-            COL_START_TIME: [0, 6, 12],
-            COL_END_TIME: [6, 12, 18],
-            COL_ATTACKING: [True, True, True],
-            COL_TIE_UP: ["collar tie", "standing", "front headlock"],
-            COL_TEAM_MOVES: [["double"], ["single"], ["sprawl"]],
-            COL_OPPONENT_MOVES: [["sprawl"], ["whizzer"], ["double"]],
-            COL_TEAM_SCORES: [["T"], ["N2"], [""]],
-            COL_OPPONENT_SCORES: [[], [], []],
-            COL_NET_POINTS: [3, 2, 0],
-            COL_ADJUSTED_NET_POINTS: [3, 2, 0],
-            COL_MATCH_RESULT: ["W", "W", "L"],
-        }, index=pd.Index(["a.mkv:1", "a.mkv:2", "a.mkv:3"], name=COL_ORIGIN))
-        bob: pd.DataFrame = alice.copy()
-        bob.index = pd.Index(["b.mkv:1", "b.mkv:2", "b.mkv:3"], name=COL_ORIGIN)
-        bob[COL_MATCH_RESULT] = ["", "", ""]
-        return {"Alice": alice, "Bob": bob}
+    _COLUMNS: list[str] = [
+        "Matches", "W", "L", "Unrecorded", "Recorded", "Win Rate",
+        "Pins", "Times Pinned",
+    ]
 
-    def test_counts_wins_losses_and_unrecorded(self) -> None:
-        out = GenerateMatchOutcomesDF(self._frames())
-        assert list(out.columns) == ["W", "L", "Unrecorded", "Win Rate", "Pins", "Times Pinned"]
+    def _frame(
+        self,
+        origins: list[str],
+        results: list[str],
+        team_scores: list[list[str]] | None = None,
+        opponent_scores: list[list[str]] | None = None,
+    ) -> pd.DataFrame:
+        count: int = len(origins)
+        return pd.DataFrame({
+            COL_START_TIME: list(range(0, 6 * count, 6)),
+            COL_END_TIME: list(range(6, 6 * count + 1, 6)),
+            COL_ATTACKING: [True] * count,
+            COL_TIE_UP: ["collar tie"] * count,
+            COL_TEAM_MOVES: [["double"]] * count,
+            COL_OPPONENT_MOVES: [["sprawl"]] * count,
+            COL_TEAM_SCORES: team_scores or [["T"]] * count,
+            COL_OPPONENT_SCORES: opponent_scores or [[]] * count,
+            COL_NET_POINTS: [3] * count,
+            COL_ADJUSTED_NET_POINTS: [3] * count,
+            COL_MATCH_RESULT: results,
+        }, index=pd.Index(origins, name=COL_ORIGIN))
+
+    def test_one_match_with_many_sequences_counts_once(self) -> None:
+        frame: pd.DataFrame = self._frame(
+            ["a.mkv:1", "a.mkv:2", "a.mkv:3", "a.mkv:4"], ["W", "W", "W", "W"]
+        )
+        out = GenerateMatchOutcomesDF({"Alice": frame})
+        assert list(out.columns) == self._COLUMNS
         assert out.index.name == "Wrestler"
-        assert out.loc["Alice", "W"] == 2
+        assert out.loc["Alice", "Matches"] == 1
+        assert out.loc["Alice", "W"] == 1
+        assert out.loc["Alice", "L"] == 0
+        assert out.loc["Alice", "Recorded"] == 1
+        assert out.loc["Alice", "Win Rate"] == 1.0
+
+    def test_two_matches(self) -> None:
+        frame: pd.DataFrame = self._frame(
+            ["a.mkv:1", "a.mkv:2", "b.mkv:1", "b.mkv:2"],
+            ["W", "W", "L", "L"],
+        )
+        out = GenerateMatchOutcomesDF({"Alice": frame})
+        assert out.loc["Alice", "Matches"] == 2
+        assert out.loc["Alice", "W"] == 1
         assert out.loc["Alice", "L"] == 1
+        assert out.loc["Alice", "Recorded"] == 2
         assert out.loc["Alice", "Unrecorded"] == 0
-        assert out.loc["Alice", "Win Rate"] == 0.67
-        assert out.loc["Bob", "W"] == 0
-        assert out.loc["Bob", "L"] == 0
-        assert out.loc["Bob", "Unrecorded"] == 3
-        assert out.loc["Bob", "Win Rate"] == 0.0
+        assert out.loc["Alice", "Win Rate"] == 0.5
+
+    def test_contradictory_result_raises(self) -> None:
+        frame: pd.DataFrame = self._frame(
+            ["a.mkv:1", "a.mkv:2", "a.mkv:3", "a.mkv:4"],
+            ["W", "W", "L", ""],
+        )
+        with pytest.raises(MatchOutcomeConflictError) as excinfo:
+            GenerateMatchOutcomesDF({"Alice": frame})
+        conflicts = excinfo.value.conflicts
+        assert len(conflicts) == 1
+        assert conflicts[0].wrestler == "Alice"
+        assert conflicts[0].video == "a.mkv"
+        assert conflicts[0].results == ("L", "W")
+
+    def test_blank_beside_result_is_not_a_conflict(self) -> None:
+        frame: pd.DataFrame = self._frame(
+            ["a.mkv:1", "a.mkv:2"], ["W", ""]
+        )
+        assert ValidateMatchOutcomes({"Alice": frame}) == []
+        out = GenerateMatchOutcomesDF({"Alice": frame})
+        assert out.loc["Alice", "Matches"] == 1
+        assert out.loc["Alice", "W"] == 1
+        assert out.loc["Alice", "Recorded"] == 1
+        assert out.loc["Alice", "Unrecorded"] == 0
+
+    def test_no_results_has_blank_win_rate(self) -> None:
+        frame: pd.DataFrame = self._frame(["a.mkv:1", "b.mkv:1"], ["", ""])
+        out = GenerateMatchOutcomesDF({"Bob": frame})
+        assert out.loc["Bob", "Matches"] == 2
+        assert out.loc["Bob", "Recorded"] == 0
+        assert out.loc["Bob", "Unrecorded"] == 2
+        assert pd.isna(out.loc["Bob", "Win Rate"])
 
     def test_no_result_column_counts_all_unrecorded(self) -> None:
-        legacy: pd.DataFrame = self._frames()["Alice"].drop(columns=[COL_MATCH_RESULT])
+        legacy: pd.DataFrame = self._frame(
+            ["a.mkv:1", "a.mkv:2"], ["W", "W"]
+        ).drop(columns=[COL_MATCH_RESULT])
         out = GenerateMatchOutcomesDF({"Legacy": legacy})
-        assert out.loc["Legacy", "Unrecorded"] == 3
-        assert out.loc["Legacy", "Win Rate"] == 0.0
+        assert out.loc["Legacy", "Matches"] == 1
+        assert out.loc["Legacy", "Unrecorded"] == 1
+        assert pd.isna(out.loc["Legacy", "Win Rate"])
 
-    def test_counts_pins_and_times_pinned(self) -> None:
-        frames: dict[str, pd.DataFrame] = self._frames()
-        alice: pd.DataFrame = frames["Alice"].copy()
-        alice.loc["a.mkv:1", COL_TEAM_SCORES] = ["PIN"]
-        alice.loc["a.mkv:2", COL_OPPONENT_SCORES] = ["PIN"]
-        out = GenerateMatchOutcomesDF({"Alice": alice})
+    def test_pins_count_per_match(self) -> None:
+        frame: pd.DataFrame = self._frame(
+            ["a.mkv:1", "a.mkv:2", "b.mkv:1", "b.mkv:2"],
+            ["W", "W", "L", "L"],
+            team_scores=[["PIN"], ["PIN"], ["T"], ["T"]],
+            opponent_scores=[["T"], ["T"], ["PIN"], ["PIN"]],
+        )
+        out = GenerateMatchOutcomesDF({"Alice": frame})
         assert out.loc["Alice", "Pins"] == 1
         assert out.loc["Alice", "Times Pinned"] == 1
 
     def test_empty_frames(self) -> None:
         out = GenerateMatchOutcomesDF({})
-        assert list(out.columns) == ["W", "L", "Unrecorded", "Win Rate", "Pins", "Times Pinned"]
+        assert list(out.columns) == self._COLUMNS
         assert len(out) == 0
 
 

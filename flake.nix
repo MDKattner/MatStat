@@ -31,11 +31,17 @@
 
             # ── Python dev / test ──
             python3Packages.pytest
+            python3Packages.playwright
             pipenv
 
             # ── System tools ──
             ffmpeg
+            mkvtoolnix
+            playwright-driver.browsers
           ];
+
+          # Point Playwright at the Nix-provided Chromium instead of ~/.cache.
+          PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
 
           shellHook = ''
             # ── Dev helper macros ────────────────────────────────────────────────────

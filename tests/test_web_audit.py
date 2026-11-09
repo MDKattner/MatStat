@@ -292,11 +292,87 @@ class TestRunRetagJob:
         with pytest.raises(ValueError, match="Wrestler name"):
             audit.run_retag_job(FakeContext(), "match.mkv", "  ", [TagSequence(start_time=0, end_time=5)])
 
-    def test_requires_sequences(self, tmp_path, monkeypatch) -> None:
-        _redirect_dirs(monkeypatch, tmp_path)
+    def test_metadata_only_uses_mkvpropedit(self, tmp_path, monkeypatch) -> None:
+        dirs = _redirect_dirs(monkeypatch, tmp_path)
+        (dirs["taged"] / "match.mkv").write_bytes(b"old")
+        monkeypatch.setattr(audit.shutil, "which", lambda name: "/usr/bin/mkvpropedit")
 
-        with pytest.raises(ValueError, match="At least one sequence"):
-            audit.run_retag_job(FakeContext(), "match.mkv", "Alice", [])
+        def unexpected_duration(path: Path) -> int:
+            raise AssertionError("metadata-only edits must not probe duration")
+
+        monkeypatch.setattr(audit, "GetVidDuration", unexpected_duration)
+        captured: dict[str, list[str]] = {}
+
+        def fake_propedit(cmd: list[str]) -> tuple[bool, str]:
+            captured["cmd"] = cmd
+            return (True, "ok")
+
+        monkeypatch.setattr(audit, "_run_mkvpropedit", fake_propedit)
+
+        result: dict[str, Any] = audit.run_retag_job(
+            FakeContext(), "match.mkv", "Alice", [], match_date="2026-08-01"
+        )
+
+        assert result["mode"] == "mkvpropedit"
+        assert result["elapsed_seconds"] >= 0
+        assert result["output"] == "match.mkv"
+        assert "title=Alice" in captured["cmd"]
+        assert "matchdate=2026-08-01" in captured["cmd"]
+        assert (dirs["taged"] / "match.mkv").read_bytes() == b"old"
+
+    def test_metadata_only_falls_back_to_ffmpeg(self, tmp_path, monkeypatch) -> None:
+        dirs = _redirect_dirs(monkeypatch, tmp_path)
+        (dirs["taged"] / "match.mkv").write_bytes(b"old")
+        monkeypatch.setattr(audit.shutil, "which", lambda name: None)
+        _mock_make_name_and_csv(
+            monkeypatch, {"match.mkv": ("Alice", "2026-08-01", CSV_DATA)}
+        )
+
+        captured: dict[str, str] = {}
+
+        def fake_ffmpeg(cmd, description="", on_progress=None, cancel_event=None) -> FfmpegResult:
+            captured["metadata"] = Path(cmd[4]).read_text()
+            Path(cmd[-1]).parent.mkdir(parents=True, exist_ok=True)
+            Path(cmd[-1]).write_bytes(b"new")
+            return FfmpegResult(success=True, message="ok")
+
+        monkeypatch.setattr(audit, "run_ffmpeg", fake_ffmpeg)
+
+        result: dict[str, Any] = audit.run_retag_job(
+            FakeContext(), "match.mkv", "Alice", [], match_date="2026-08-01"
+        )
+
+        assert result["mode"] == "ffmpeg_copy"
+        assert "title=Alice" in captured["metadata"]
+        assert "matchdate=2026-08-01" in captured["metadata"]
+        assert "collar tie" in captured["metadata"]
+        assert "standing" in captured["metadata"]
+        assert (dirs["taged"] / "match.mkv").read_bytes() == b"new"
+
+    def test_mkvpropedit_failure_falls_back_to_ffmpeg(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        dirs = _redirect_dirs(monkeypatch, tmp_path)
+        (dirs["taged"] / "match.mkv").write_bytes(b"old")
+        monkeypatch.setattr(audit.shutil, "which", lambda name: "/usr/bin/mkvpropedit")
+        monkeypatch.setattr(
+            audit, "_run_mkvpropedit", lambda cmd: (False, "unsupported tag")
+        )
+        _mock_make_name_and_csv(monkeypatch, {"match.mkv": ("Alice", "", CSV_DATA)})
+
+        def fake_ffmpeg(cmd, description="", on_progress=None, cancel_event=None) -> FfmpegResult:
+            Path(cmd[-1]).parent.mkdir(parents=True, exist_ok=True)
+            Path(cmd[-1]).write_bytes(b"new")
+            return FfmpegResult(success=True, message="ok")
+
+        monkeypatch.setattr(audit, "run_ffmpeg", fake_ffmpeg)
+
+        result: dict[str, Any] = audit.run_retag_job(
+            FakeContext(), "match.mkv", "Alice", []
+        )
+
+        assert result["mode"] == "ffmpeg_copy"
+        assert (dirs["taged"] / "match.mkv").read_bytes() == b"new"
 
     def test_rejects_overlapping_sequences(self, tmp_path, monkeypatch) -> None:
         dirs = _redirect_dirs(monkeypatch, tmp_path)
@@ -422,12 +498,38 @@ class TestAuditRoutes:
         )
         assert resp.status_code == 400
 
-    def test_retag_no_sequences_400(self, client, tmp_path, monkeypatch) -> None:
+    def test_retag_metadata_only_completes(
+        self, client, tmp_path, monkeypatch
+    ) -> None:
+        dirs = _redirect_dirs(monkeypatch, tmp_path)
+        (dirs["taged"] / "match.mkv").write_bytes(b"old")
+        monkeypatch.setattr(audit.shutil, "which", lambda name: None)
+        _mock_make_name_and_csv(monkeypatch, {"match.mkv": ("Alice", "", CSV_DATA)})
+
+        def fake_ffmpeg(cmd, description="", on_progress=None, cancel_event=None) -> FfmpegResult:
+            Path(cmd[-1]).parent.mkdir(parents=True, exist_ok=True)
+            Path(cmd[-1]).write_bytes(b"new")
+            return FfmpegResult(success=True, message="ok")
+
+        monkeypatch.setattr(audit, "run_ffmpeg", fake_ffmpeg)
+
+        resp = client.post(
+            "/api/audit/match.mkv/retag",
+            json={"wrestler": "Alice", "match_date": "2026-08-01", "sequences": []},
+        )
+        assert resp.status_code == 200
+
+        job: dict[str, Any] = _wait_for_job(client, resp.json()["job_id"])
+        assert job["status"] == "done"
+        assert job["result"]["mode"] == "ffmpeg_copy"
+        assert job["result"]["output"] == "match.mkv"
+
+    def test_retag_invalid_date_400(self, client, tmp_path, monkeypatch) -> None:
         dirs = _redirect_dirs(monkeypatch, tmp_path)
         (dirs["taged"] / "match.mkv").write_bytes(b"old")
 
         resp = client.post(
             "/api/audit/match.mkv/retag",
-            json={"wrestler": "Alice", "sequences": []},
+            json={"wrestler": "Alice", "match_date": "08/01/2026", "sequences": []},
         )
         assert resp.status_code == 400

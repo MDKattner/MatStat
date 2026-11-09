@@ -25,9 +25,32 @@ class TestHlsPaths:
     def test_paths_live_under_hls_dir(self, monkeypatch) -> None:
         monkeypatch.setattr(transcode, "PREVIEW_DIR", Path("/tmp/preview"))
         source: Path = Path("vids/taged/match.mkv")
-        assert transcode.hls_dir_path(source) == Path("/tmp/preview/hls/match.mkv")
-        assert transcode.playlist_path(source) == Path("/tmp/preview/hls/match.mkv/prog.m3u8")
-        assert transcode.segments_dir(source) == Path("/tmp/preview/hls/match.mkv/segments")
+        hls_dir: Path = transcode.hls_dir_path(source)
+        assert hls_dir.parent == Path("/tmp/preview/hls")
+        assert hls_dir.name.startswith("match-")
+        assert transcode.playlist_path(source) == hls_dir / "prog.m3u8"
+        assert transcode.segments_dir(source) == hls_dir / "segments"
+
+    def test_same_basename_in_different_dirs_uses_distinct_cache(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
+        untaged: Path = tmp_path / "untaged" / "match.mkv"
+        taged: Path = tmp_path / "taged" / "match.mkv"
+        for path in (untaged, taged):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"video")
+
+        assert transcode.hls_dir_path(untaged) != transcode.hls_dir_path(taged)
+
+    def test_retagged_source_gets_a_new_cache(self, tmp_path, monkeypatch) -> None:
+        _redirect_preview_dir(monkeypatch, tmp_path)
+        source: Path = tmp_path / "match.mkv"
+        source.write_bytes(b"one")
+        first: Path = transcode.hls_dir_path(source)
+        source.write_bytes(b"two-different-size")
+
+        assert transcode.hls_dir_path(source) != first
 
 
 class TestHlsIsReady:

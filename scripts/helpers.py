@@ -732,15 +732,17 @@ def MakeFormattedDataFrame(csv_path: Path) -> pd.DataFrame:
     """Initialize a pandas DataFrame from a wrestler's CSV file.
 
     Reads a CSV file, converts colon-delimited columns into lists, and sets
-    appropriate data types. Compiled CSVs may carry stored Net Points and
-    Adjusted Net Points columns; both are recomputed from the active ruleset
-    on load regardless of what is stored.
+    appropriate data types. Compiled CSVs carrying stored Net Points and
+    Adjusted Net Points columns (11+ columns) keep those values verbatim, so a
+    ruleset change never rewrites historical numbers on read. Legacy 9-column
+    CSVs have no stored points and are computed on load.
 
     Args:
         csv_path: The path to the CSV file to load.
 
     Returns:
-        A pandas DataFrame with the parsed and structured data.
+        A pandas DataFrame with the parsed and structured data. Its ``attrs``
+        record ``points_source`` ("stored" or "computed_on_load").
     """
     logging.info(f"Loading CSV from '{csv_path}' into DataFrame.")
     column_names: list[str] = [
@@ -802,8 +804,22 @@ def MakeFormattedDataFrame(csv_path: Path) -> pd.DataFrame:
     logging.info(
         f"Successfully loaded DataFrame from '{csv_path}' with shape: {df.shape}")
     ReloadScoringMap()
-    TabulateNetPoints(df)
-    TabulateAdjustedNetPoints(df)
+    if COL_NET_POINTS in df.columns and COL_ADJUSTED_NET_POINTS in df.columns:
+        df[COL_NET_POINTS] = (
+            pd.to_numeric(df[COL_NET_POINTS], errors="coerce")
+            .fillna(0)
+            .astype("int16")
+        )
+        df[COL_ADJUSTED_NET_POINTS] = (
+            pd.to_numeric(df[COL_ADJUSTED_NET_POINTS], errors="coerce")
+            .fillna(0)
+            .astype("int16")
+        )
+        df.attrs["points_source"] = "stored"
+    else:
+        TabulateNetPoints(df)
+        TabulateAdjustedNetPoints(df)
+        df.attrs["points_source"] = "computed_on_load"
     return df
 
 
@@ -1034,6 +1050,20 @@ def _MoveFilter(move: str, column: str) -> Callable[[pd.Series], pd.Series | Non
     return lambda row: row if move in row[column] else None
 
 
+def _SequenceHasPin(sequence: object) -> bool:
+    """Return whether one score list contains a pin code.
+
+    Args:
+        sequence: A sequence's score list (e.g. ``["T", "PIN"]``).
+
+    Returns:
+        True when the list contains a code from the active ruleset's pin set.
+    """
+    if not isinstance(sequence, list):
+        return False
+    return any(score in _ACTIVE_PIN_CODES for score in sequence)
+
+
 def PinCount(df_in: pd.DataFrame, column: str) -> int:
     """Count the number of sequences containing a pin in ``column``.
 
@@ -1049,14 +1079,103 @@ def PinCount(df_in: pd.DataFrame, column: str) -> int:
     Returns:
         The number of sequences that contain a pin.
     """
-    pins_count: int = 0
-    for sequence in df_in[column]:
-        if isinstance(sequence, list):
-            for score in sequence:
-                if score in _ACTIVE_PIN_CODES:
-                    pins_count += 1
-                    break
-    return pins_count
+    return sum(1 for sequence in df_in[column] if _SequenceHasPin(sequence))
+
+
+def _PinMatchCount(df_in: pd.DataFrame, column: str) -> int:
+    """Count distinct matches in which at least one sequence contains a pin.
+
+    Args:
+        df_in: The DataFrame to search.
+        column: The score column to inspect.
+
+    Returns:
+        The number of distinct match keys with a pin in ``column``.
+    """
+    return len({
+        MatchKey(origin)
+        for origin, sequence in zip(df_in.index, df_in[column])
+        if _SequenceHasPin(sequence)
+    })
+
+
+@dataclass(frozen=True)
+class MatchConflict:
+    """A match whose sequence rows disagree about the win/loss result."""
+
+    wrestler: str
+    video: str
+    results: tuple[str, ...]
+
+    def describe(self) -> str:
+        """Return a human-readable description for errors and the UI."""
+        joined: str = ", ".join(self.results)
+        return f"'{self.wrestler}' — '{self.video}' has conflicting results ({joined})"
+
+
+class MatchOutcomeConflictError(ValueError):
+    """Raised when one match carries contradictory W/L results.
+
+    Contradictory data is never averaged or silently dropped: the report and
+    tabulation refuse to proceed until the source CSV or tagged video is fixed.
+    """
+
+    def __init__(self, conflicts: list[MatchConflict]) -> None:
+        self.conflicts: list[MatchConflict] = conflicts
+        details: str = "; ".join(conflict.describe() for conflict in conflicts)
+        super().__init__(f"Conflicting match results: {details}")
+
+
+def MatchKey(origin: object) -> str:
+    """Derive the match key (video prefix) from an Origin index value."""
+    return str(origin).split(":")[0]
+
+
+def _MatchResults(df_in: pd.DataFrame) -> dict[str, str]:
+    """Map each match key to its single non-blank result.
+
+    Blank rows are ignored (they mean "not recorded for this sequence"), so a
+    match may legitimately contain ``W`` and ``""`` rows.
+
+    Args:
+        df_in: A formatted sequence DataFrame.
+
+    Returns:
+        A dict of video key to "W"/"L"; matches without a result are absent.
+    """
+    results: dict[str, str] = {}
+    for origin, result in zip(df_in.index, df_in[COL_MATCH_RESULT]):
+        value: str = str(result).strip()
+        if value in ("W", "L"):
+            results[MatchKey(origin)] = value
+    return results
+
+
+def ValidateMatchOutcomes(frames: dict[str, pd.DataFrame]) -> list[MatchConflict]:
+    """Find matches whose sequence rows disagree about the result.
+
+    Args:
+        frames: A mapping of wrestler name to its formatted sequence DataFrame.
+
+    Returns:
+        Every conflict found, in wrestler then video order. An empty list means
+        the data is consistent.
+    """
+    conflicts: list[MatchConflict] = []
+    for name, df_in in frames.items():
+        if COL_MATCH_RESULT not in df_in.columns:
+            continue
+        buckets: dict[str, set[str]] = {}
+        for origin, result in zip(df_in.index, df_in[COL_MATCH_RESULT]):
+            value: str = str(result).strip()
+            if value in ("W", "L"):
+                buckets.setdefault(MatchKey(origin), set()).add(value)
+        for video, values in buckets.items():
+            if len(values) > 1:
+                conflicts.append(
+                    MatchConflict(name, video, tuple(sorted(values)))
+                )
+    return conflicts
 
 
 def _MoveAttribution(
@@ -1271,9 +1390,9 @@ def GenerateRatesDF(df_in: pd.DataFrame) -> pd.DataFrame:
         ),
         "Attacks per Match": round(attack_count / divisor, 2),
         "Defenses per Match": round((total_count - attack_count) / divisor, 2),
-        "Pins per Match": round(PinCount(df_in, COL_TEAM_SCORES) / divisor, 2),
+        "Pins per Match": round(_PinMatchCount(df_in, COL_TEAM_SCORES) / divisor, 2),
         "Times Pinned per Match": round(
-            PinCount(df_in, COL_OPPONENT_SCORES) / divisor, 2
+            _PinMatchCount(df_in, COL_OPPONENT_SCORES) / divisor, 2
         ),
     }
     df_out: pd.DataFrame = pd.DataFrame.from_dict(
@@ -1347,46 +1466,60 @@ def GenerateTeamSummaryDF(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
 def GenerateMatchOutcomesDF(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """Build the consolidated Match Outcomes block from per-wrestler frames.
 
-    Each wrestler's rows are bucketed by COL_MATCH_RESULT ("W" / "L" /
-    unrecorded); the win rate is wins / (wins + losses), zero when no outcomes
-    are recorded. Pins and times-pinned count sequences containing a pin.
+    A match is the distinct video prefix of the Origin index, so a match with
+    several tagged sequences counts once. Each match contributes one outcome
+    ("W", "L", or unrecorded); contradictory results raise
+    ``MatchOutcomeConflictError`` instead of being tallied. The win rate is
+    wins / recorded and is blank (NaN) when no outcome is recorded. Pins and
+    times-pinned count distinct matches containing a pin.
 
     Args:
         frames: A mapping of wrestler name to its formatted sequence DataFrame.
 
     Returns:
         A DataFrame indexed by wrestler (index name "Wrestler") with the
-        columns "W", "L", "Unrecorded", "Win Rate", "Pins", and "Times Pinned".
+        columns "Matches", "W", "L", "Unrecorded", "Recorded", "Win Rate",
+        "Pins", and "Times Pinned".
+
+    Raises:
+        MatchOutcomeConflictError: If any match has contradictory W/L results.
     """
+    conflicts: list[MatchConflict] = ValidateMatchOutcomes(frames)
+    if conflicts:
+        raise MatchOutcomeConflictError(conflicts)
+
     rows: list[dict[str, Any]] = []
     for name, df_in in frames.items():
-        if COL_MATCH_RESULT in df_in.columns:
-            result_col: pd.Series = df_in[COL_MATCH_RESULT]
-            wins: int = int((result_col == "W").sum())
-            losses: int = int((result_col == "L").sum())
-            unrecorded: int = int((~result_col.isin(["W", "L"])).sum())
-        else:
-            wins = 0
-            losses = 0
-            unrecorded = len(df_in)
+        match_keys: list[str] = [MatchKey(origin) for origin in df_in.index]
+        matches: int = len(set(match_keys))
+        results: dict[str, str] = (
+            _MatchResults(df_in) if COL_MATCH_RESULT in df_in.columns else {}
+        )
+        wins: int = sum(1 for result in results.values() if result == "W")
+        losses: int = sum(1 for result in results.values() if result == "L")
         recorded: int = wins + losses
-        win_rate: float = wins / recorded if recorded > 0 else 0.0
+        unrecorded: int = matches - recorded
+        win_rate: float = float("nan") if recorded == 0 else wins / recorded
         rows.append({
             "Wrestler": name,
+            "Matches": matches,
             "W": wins,
             "L": losses,
             "Unrecorded": unrecorded,
-            "Win Rate": round(win_rate, 2),
-            "Pins": PinCount(df_in, COL_TEAM_SCORES),
-            "Times Pinned": PinCount(df_in, COL_OPPONENT_SCORES),
+            "Recorded": recorded,
+            "Win Rate": round(win_rate, 2) if recorded > 0 else win_rate,
+            "Pins": _PinMatchCount(df_in, COL_TEAM_SCORES),
+            "Times Pinned": _PinMatchCount(df_in, COL_OPPONENT_SCORES),
         })
     out: pd.DataFrame = pd.DataFrame.from_records(rows)
     if out.empty:
         out = pd.DataFrame({
             "Wrestler": [],
+            "Matches": [],
             "W": [],
             "L": [],
             "Unrecorded": [],
+            "Recorded": [],
             "Win Rate": [],
             "Pins": [],
             "Times Pinned": [],

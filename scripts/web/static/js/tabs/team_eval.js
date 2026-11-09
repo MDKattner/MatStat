@@ -10,8 +10,6 @@
 
 import { el, fetchJson, pollJob, showToast } from "../components.js";
 
-const REPORT_FILE = "Team_Stats.xlsx";
-
 /**
  * Tabulate Sequences card — ported from the former compile-stats tab.
  */
@@ -80,6 +78,7 @@ function buildTabulateCard() {
       }
       const errors = result.errors || [];
       if (errors.length) showToast(`${errors.length} issue(s) reported.`, "warning");
+      window.dispatchEvent(new CustomEvent("stats-updated"));
     } catch (err) {
       showToast(err.message || "Tabulation failed.", "error");
       setStatus("Tabulation failed.");
@@ -121,15 +120,39 @@ function buildReportCard() {
   const statusLabel = el("p", { class: "status-label", text: "Ready" });
   const resultsList = el("ul", { class: "results-list" });
   const errorDisplay = el("pre", { class: "error-display", hidden: "" });
+  const freshnessLabel = el("p", { class: "status-label", text: "" });
   const downloadLink = el("a", {
     class: "btn download-link",
-    href: `/api/reports/${REPORT_FILE}`,
-    text: `Download ${REPORT_FILE}`,
+    text: "Download latest report",
     hidden: "",
   });
 
   function setStatus(text) {
     statusLabel.textContent = text;
+  }
+
+  function showLatest(info) {
+    if (!info) {
+      freshnessLabel.textContent = "No report generated yet.";
+      downloadLink.hidden = true;
+      return;
+    }
+    const stamp = info.generated_at || new Date(info.mtime * 1000).toISOString();
+    const ruleset = info.active_ruleset || "unknown ruleset";
+    freshnessLabel.textContent =
+      `Generated ${stamp} \u00b7 ${info.wrestlers || 0} wrestlers \u00b7 ${ruleset}`;
+    downloadLink.href = `/api/reports/${encodeURIComponent(info.latest || info.filename)}`;
+    downloadLink.textContent = `Download ${info.filename}`;
+    downloadLink.hidden = false;
+  }
+
+  async function refreshLatest() {
+    try {
+      const { ok, body } = await fetchJson("/api/reports/latest");
+      showLatest(ok ? body : null);
+    } catch {
+      showLatest(null);
+    }
   }
 
   function setRunning(active) {
@@ -172,13 +195,23 @@ function buildReportCard() {
       const result = job.result || {};
       renderResults(result);
       const errors = result.errors || [];
-      if (errors.length) {
-        setStatus(`Report generated with ${errors.length} issue(s).`);
-        showToast(`${errors.length} issue(s) reported.`, "warning");
+      if (result.cancelled) {
+        setStatus("Report generation cancelled; previous report kept.");
+      } else if (result.partial || errors.length) {
+        setStatus(
+          `Report incomplete (${(result.failed_sheets || []).length || errors.length} ` +
+          "failed sheet(s)); previous report kept."
+        );
+        showToast("Report incomplete; previous report kept.", "warning");
+        downloadLink.hidden = true;
       } else {
-        setStatus(`Report generated: ${result.output || REPORT_FILE}`);
+        setStatus(`Report generated: ${result.output}`);
+        downloadLink.href =
+          `/api/reports/${encodeURIComponent(result.latest || result.output)}`;
+        downloadLink.textContent = `Download ${result.output}`;
+        downloadLink.hidden = false;
       }
-      downloadLink.hidden = false;
+      await refreshLatest();
     } catch (err) {
       showToast(err.message || "Report generation failed.", "error");
       setStatus("Report generation failed.");
@@ -189,11 +222,13 @@ function buildReportCard() {
   }
 
   generateBtn.addEventListener("click", start);
+  refreshLatest();
 
   return el("fieldset", { class: "tag-card" }, [
     el("legend", { text: "Generate Report" }),
-    el("p", { class: "shortcut-hint", text: "Build the Team_Stats.xlsx workbook from the compiled sequence data." }),
+    el("p", { class: "shortcut-hint", text: "Build a timestamped Team_Stats workbook from the compiled sequence data." }),
     el("div", { class: "row" }, [generateBtn, downloadLink]),
+    freshnessLabel,
     progress,
     statusLabel,
     el("h3", { class: "results-title", text: "Results" }),

@@ -174,10 +174,16 @@ export function mountAudit(root) {
   const updateBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Update Sequence", hidden: "" });
   const deleteBtn = el("button", { class: "btn btn-ghost danger", type: "button", text: "Delete Sequence", hidden: "" });
   const retagBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Re-log Match", disabled: "" });
+  const deleteVideoBtn = el("button", { class: "btn btn-ghost danger", type: "button", text: "Delete Video", disabled: "" });
   const recompileCheck = el("input", { type: "checkbox" });
   const recompileRow = el("label", { class: "recompile-row" }, [
     recompileCheck,
     el("span", { text: "Re-tabulate all sequences after re-logging" }),
+  ]);
+  const deleteRecompileCheck = el("input", { type: "checkbox" });
+  const deleteRecompileRow = el("label", { class: "recompile-row" }, [
+    deleteRecompileCheck,
+    el("span", { text: "Re-tabulate stats after deleting this video" }),
   ]);
   const progress = el("progress", { class: "progress", max: "100", value: "0", hidden: "" });
   const statusLabel = el("p", { class: "status-label", text: "Select a logged video to review." });
@@ -213,7 +219,12 @@ export function mountAudit(root) {
 
   function updateButtons() {
     const hasData = Boolean(state.data && !state.retagging);
-    retagBtn.disabled = !hasData || state.data.sequences.length === 0;
+    const count = state.data ? state.data.sequences.length : 0;
+    retagBtn.disabled = !hasData;
+    retagBtn.textContent = count === 0
+      ? "Metadata-only edit (fast)"
+      : `Rewrite with ${count} sequence${count === 1 ? "" : "s"}`;
+    deleteVideoBtn.disabled = !hasData;
     setEditingMode(state.editingIndex >= 0);
   }
 
@@ -408,6 +419,59 @@ export function mountAudit(root) {
     updateButtons();
   }
 
+  async function deleteVideo() {
+    if (!state.data || state.retagging) return;
+    const name = state.data.name;
+    const recompile = deleteRecompileCheck.checked;
+    const confirmed = await confirmModal({
+      title: "Delete tagged video",
+      message: `Delete '${name}'? This cannot be undone.` +
+        (recompile ? "" : " Stats stay stale until you re-tabulate."),
+    });
+    if (!confirmed) return;
+
+    setRetagging(true);
+    setStatus("Deleting video...");
+    try {
+      const { ok, body } = await fetchJson(
+        `/api/videos/taged/${encodeURIComponent(name)}` +
+          `?recompile=${recompile ? "true" : "false"}`,
+        { method: "DELETE" }
+      );
+      if (!ok) throw new Error(body.detail || "Could not delete video.");
+      if (body.job_id) {
+        await pollJob(body.job_id, {
+          onProgress: (p) => { progress.value = p; },
+          onStatus: setStatus,
+        });
+      }
+      showToast(
+        recompile ? "Video deleted and stats re-tabulated." : "Video deleted.",
+        "success"
+      );
+      if (recompile) window.dispatchEvent(new CustomEvent("stats-updated"));
+      state.data = null;
+      state.editingIndex = -1;
+      videoList.clear();
+      wrestlerList.clear();
+      opponentList.clear();
+      opponentList.setItems(wrestlerNames);
+      oppTie.clear();
+      oppTie.node.hidden = true;
+      setResult("");
+      matchDateInput.value = "";
+      renderSequences();
+      resetDetails();
+      setStatus(recompile ? "Video deleted. Stats re-tabulated." : "Video deleted.");
+      await loadVideos();
+    } catch (err) {
+      showToast(err.message || "Could not delete video.", "error");
+      setStatus("Delete failed.");
+    } finally {
+      setRetagging(false);
+    }
+  }
+
   // ---------- Preview + re-tag ----------
 
   async function loadVideos() {
@@ -475,10 +539,7 @@ export function mountAudit(root) {
 
   async function retagVideo() {
     if (!state.data || state.retagging) return;
-    if (state.data.sequences.length === 0) {
-      showToast("Add at least one sequence.", "error");
-      return;
-    }
+    const metadataOnly = state.data.sequences.length === 0;
     const wrestler = wrestlerList.selected;
     if (!wrestler) {
       showToast("Select a wrestler first.", "error");
@@ -486,7 +547,9 @@ export function mountAudit(root) {
     }
 
     setRetagging(true);
-    setStatus("Re-logging match...");
+    setStatus(metadataOnly
+      ? "Saving metadata-only edit..."
+      : `Rewriting with ${state.data.sequences.length} sequence(s)...`);
     try {
       const name = state.data.name;
       const payload = {
@@ -509,8 +572,18 @@ export function mountAudit(root) {
         onStatus: setStatus,
       });
       const recompiled = recompileCheck.checked;
-      setStatus(`Re-logged: ${job.result.output}${recompiled ? " (stats recompiled)" : " (run Tabulate to refresh stats)"}`);
-      showToast(recompiled ? "Match re-logged and stats recompiled." : "Match re-logged.", "success");
+      const mode = job.result.mode === "mkvpropedit"
+        ? "metadata-only edit"
+        : "rewrite (ffmpeg stream copy)";
+      setStatus(
+        `Re-logged: ${job.result.output} via ${mode}` +
+        (recompiled ? " (stats recompiled)" : " (run Tabulate to refresh stats)")
+      );
+      showToast(
+        `Match re-logged via ${mode}` + (recompiled ? " and stats recompiled." : "."),
+        "success"
+      );
+      if (recompiled) window.dispatchEvent(new CustomEvent("stats-updated"));
       state.data = null;
       opponentList.clear();
       oppTie.clear();
@@ -533,6 +606,7 @@ export function mountAudit(root) {
   updateBtn.addEventListener("click", updateSequence);
   deleteBtn.addEventListener("click", deleteSequence);
   retagBtn.addEventListener("click", retagVideo);
+  deleteVideoBtn.addEventListener("click", deleteVideo);
   startTime.markBtn.addEventListener("click", () => {
     startTime.setFromSeconds(Math.floor(state.playerPosMs / 1000));
   });
@@ -611,8 +685,9 @@ export function mountAudit(root) {
   const actionsCard = el("fieldset", { class: "tag-card" }, [
     el("legend", { text: "Actions" }),
     el("div", { class: "row" }, [addBtn, updateBtn, deleteBtn]),
-    el("div", { class: "row" }, [retagBtn]),
+    el("div", { class: "row" }, [retagBtn, deleteVideoBtn]),
     recompileRow,
+    deleteRecompileRow,
     progress,
     statusLabel,
   ]);

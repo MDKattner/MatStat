@@ -66,7 +66,7 @@ class TestExecuteSearch:
 
     def test_filters_by_wrestler(self, tmp_path, monkeypatch) -> None:
         _seed_search_data(tmp_path, monkeypatch)
-        rows: list[dict[str, Any]] = search.execute_search(SearchQuery(wrestler="Alice"))
+        rows: list[dict[str, Any]] = search.execute_search(SearchQuery(wrestlers=["Alice"]))
         assert len(rows) == 2
         assert all(row["wrestler"] == "Alice" for row in rows)
 
@@ -145,7 +145,7 @@ class TestExecuteSearch:
     def test_combined_filters(self, tmp_path, monkeypatch) -> None:
         _seed_search_data(tmp_path, monkeypatch)
         rows: list[dict[str, Any]] = search.execute_search(SearchQuery(
-            wrestler="Bob", attack_mode="Defending", opp_move="sprawl",
+            wrestlers=["Bob"], attack_mode="Defending", opp_move="sprawl",
             min_points=0, max_points=0,
         ))
         assert len(rows) == 1
@@ -160,7 +160,7 @@ class TestExecuteSearch:
             "dave.mkv:3,20,30,A,front headlock,half nelson,sprawl,T,None,2,3,W",
         ])
         rows: list[dict[str, Any]] = search.execute_search(
-            SearchQuery(wrestler="Dave", match_result="W")
+            SearchQuery(wrestlers=["Dave"], match_result="W")
         )
         assert len(rows) == 2
         assert all(row["origin"].startswith("dave.mkv") for row in rows)
@@ -173,7 +173,7 @@ class TestExecuteSearch:
             "dave.mkv:2,10,20,D,collar tie,single,whizzer,None,T,-1,-2,L",
         ])
         rows: list[dict[str, Any]] = search.execute_search(
-            SearchQuery(wrestler="Dave", match_result="L")
+            SearchQuery(wrestlers=["Dave"], match_result="L")
         )
         assert len(rows) == 1
         assert rows[0]["origin"] == "dave.mkv:2"
@@ -187,7 +187,7 @@ class TestExecuteSearch:
             "dave.mkv:3,20,30,A,front headlock,half nelson,sprawl,T,None,2,3,W,2025-06-01",
         ])
         rows: list[dict[str, Any]] = search.execute_search(
-            SearchQuery(wrestler="Dave", min_date="2025-03-01", max_date="2025-12-31")
+            SearchQuery(wrestlers=["Dave"], min_date="2025-03-01", max_date="2025-12-31")
         )
         assert len(rows) == 2
         assert {row["origin"] for row in rows} == {"dave.mkv:2", "dave.mkv:3"}
@@ -200,7 +200,7 @@ class TestExecuteSearch:
             "dave.mkv:2,10,20,D,collar tie,single,whizzer,None,T,-1,-2,L,2025-03-15",
         ])
         rows: list[dict[str, Any]] = search.execute_search(
-            SearchQuery(wrestler="Dave", min_date="2025-03-01")
+            SearchQuery(wrestlers=["Dave"], min_date="2025-03-01")
         )
         assert len(rows) == 1
         assert rows[0]["origin"] == "dave.mkv:2"
@@ -214,7 +214,7 @@ class TestExecuteSearch:
             "dave.mkv:3,20,30,A,front headlock,half nelson,sprawl,T,None,2,3,W",
         ])
         rows: list[dict[str, Any]] = search.execute_search(
-            SearchQuery(wrestler="Dave", min_raw_points=0, max_raw_points=3)
+            SearchQuery(wrestlers=["Dave"], min_raw_points=0, max_raw_points=3)
         )
         assert len(rows) == 2
         assert {row["origin"] for row in rows} == {"dave.mkv:1", "dave.mkv:3"}
@@ -228,7 +228,7 @@ class TestExecuteSearch:
             "dave.mkv:3,20,50,A,front headlock,half nelson,sprawl,T,None,2,3,W",
         ])
         rows: list[dict[str, Any]] = search.execute_search(
-            SearchQuery(wrestler="Dave", min_duration=20, max_duration=50)
+            SearchQuery(wrestlers=["Dave"], min_duration=20, max_duration=50)
         )
         assert len(rows) == 2
         assert {row["origin"] for row in rows} == {"dave.mkv:2", "dave.mkv:3"}
@@ -242,7 +242,7 @@ class TestExecuteSearch:
             "dave.mkv:3,20,30,A,front headlock,half nelson,sprawl,T,None,2,5,W",
         ])
         rows: list[dict[str, Any]] = search.execute_search(
-            SearchQuery(wrestler="Dave", sort_by="Adjusted Net Points", ascending=False)
+            SearchQuery(wrestlers=["Dave"], sort_by="Adjusted Net Points", ascending=False)
         )
         assert len(rows) == 3
         pts = [r["adjusted_net_points"] for r in rows]
@@ -258,10 +258,10 @@ class TestExecuteSearch:
             "dave.mkv:4,30,40,D,standing,high crotch,whizzer,None,T,0,0",
         ])
         all_rows: list[dict[str, Any]] = search.execute_search(
-            SearchQuery(wrestler="Dave")
+            SearchQuery(wrestlers=["Dave"])
         )
         page: list[dict[str, Any]] = search.execute_search(
-            SearchQuery(wrestler="Dave", limit=2, offset=1)
+            SearchQuery(wrestlers=["Dave"], limit=2, offset=1)
         )
         assert len(page) == 2
         assert [r["origin"] for r in page] == [r["origin"] for r in all_rows[1:3]]
@@ -307,7 +307,7 @@ class TestSearchRoutes:
 
     def test_search_route(self, client, tmp_path, monkeypatch) -> None:
         _seed_search_data(tmp_path, monkeypatch)
-        resp = client.post("/api/search", json={"wrestler": "Alice"})
+        resp = client.post("/api/search", json={"wrestlers": ["Alice"]})
         assert resp.status_code == 200
         body: dict[str, Any] = resp.json()
         assert body["count"] == 2
@@ -319,9 +319,25 @@ class TestSearchRoutes:
         assert resp.status_code == 200
         assert resp.json() == {"count": 0, "matches": []}
 
+    def test_export_only_selected_wrestlers(
+        self, client, tmp_path, monkeypatch
+    ) -> None:
+        _seed_search_data(tmp_path, monkeypatch)
+
+        only_alice = client.post("/api/search/export", json={"wrestlers": ["Alice"]})
+        both = client.post("/api/search/export", json={"wrestlers": ["Alice", "Bob"]})
+
+        alice_csv: str = only_alice.content.decode()
+        assert "alice.mkv:1" in alice_csv
+        assert "bob.mkv" not in alice_csv
+        both_csv: str = both.content.decode()
+        assert "alice.mkv:1" in both_csv
+        assert "bob.mkv:1" in both_csv
+        assert "unknown.mkv" not in both_csv
+
     def test_export_route(self, client, tmp_path, monkeypatch) -> None:
         _seed_search_data(tmp_path, monkeypatch)
-        resp = client.post("/api/search/export", json={"wrestler": "Bob"})
+        resp = client.post("/api/search/export", json={"wrestlers": ["Bob"]})
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("text/csv")
         content: str = resp.content.decode()

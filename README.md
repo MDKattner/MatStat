@@ -38,7 +38,7 @@ The data pipelines are as follows:
 1.  **Tagging (`Tag Film` tab):** A user uploads raw videos into `vids/untaged/` (batch upload supported), then selects a video. The interface guides the user through creating chapters for each action sequence. A new, tagged `.mkv` video is created in `vids/taged/`, and the original is deleted.
 2.  **Compilation (`Tabulate & Report` tab):** Tabulate all tagged videos in `vids/taged/` into per-wrestler sequence data. The tabulation step extracts the chapter data and aggregates it, writing one `.csv` file per wrestler into `stats/wrestler_data/`. Each row carries stored Net Points, Adjusted Net Points, a `W/L` column (the match result, if recorded), and a `Match Date` column (the `YYYY-MM-DD` tag date, blank when unrecorded), and dual-wrestler videos also produce a perspective-swapped CSV for the opponent.
 3.  **Data Use:**
-    - **Analysis (`Tabulate & Report` tab):** Reads the per-wrestler CSV files, loads them into pandas DataFrames, and calculates a variety of statistics (with the Initiation summary broken out by match result into All / Wins / Losses rows). These stats are then added to wrestler-specific sheets of the `stats/reports/Team_Stats.xlsx` Excel file, alongside a **Team Summary** sheet of team-wide rates and a **Match Outcomes** sheet consolidating each wrestler's wins/losses, unrecorded matches, win rate, and pins.
+    - **Analysis (`Tabulate & Report` tab):** Reads the per-wrestler CSV files, loads them into pandas DataFrames, and calculates a variety of statistics (with the Initiation summary broken out by match result into All / Wins / Losses rows). These stats are then added to wrestler-specific sheets of a timestamped `stats/reports/Team_Stats_<YYYYMMDD-HHMMSS>.xlsx` workbook, alongside a **Team Summary** sheet of team-wide rates, a **Match Outcomes** sheet consolidating each wrestler's wins/losses, unrecorded matches, win rate, and pins, and a **Read Me** sheet recording ruleset provenance and definitions. `Team_Stats_latest.xlsx` always points at the most recent complete report.
     - **Viewing (`Combine Clips` tab):** Lets you filter tagged sequences by wrestler, tie-up, or move, then concatenates matching clips into a single video in `vids/clips/`. The web app provides a live preview of the generated reel.
     - **Search (`Search` tab):** Query across all wrestlers' tagged data with filters for tie-up, moves, scores, and adjusted net points (net points plus the pin bonus). Preview results in the video player and export to CSV.
     - **Analysis (`PCA` tab):** Projects every tagged sequence (or per-wrestler/per-video match aggregates) onto its first offense and defense move components, colored by net points. Brush-select points to preview them in the player or compile them into a highlight reel.
@@ -63,38 +63,71 @@ The Tag Film and Auditing tabs support tagging both wrestlers in a single pass.
     -   `clips/`: Output location for generated highlight reel videos.
 -   `stats/`:
     -   `wrestler_data/`: Contains intermediate `.csv` files for each wrestler.
-    -   `reports/`: Contains the final `Team_Stats.xlsx` report.
+    -   `reports/`: Timestamped `Team_Stats_<YYYYMMDD-HHMMSS>.xlsx` reports plus the `Team_Stats_latest.xlsx` pointer (the last 10 are kept).
 -   `scripts/`: Contains the application logic scripts.
     -   `web/`: FastAPI web app (app.py, jobs, ffmpeg runner, tab modules, static/).
     -   `helpers.py`: Shared data classes and utility functions.
--   `shell.nix`: Nix development shell (all dependencies pre-configured).
--   `Pipfile`: pipenv dependencies (alternative to nix-shell).
+-   `flake.nix`: Nix flake defining the development shell (all dependencies pre-configured).
+-   `flake.lock`: Pinned flake inputs (locks the `nixpkgs` revision used by the dev shell).
+-   `Pipfile`: pipenv dependencies (alternative to the Nix flake).
 -   `MatStat.log`: A log file for debugging and tracking application activity.
 
 ## Installation and Setup
 
 ### Dependencies
 
--   `pipenv`
+-   [Nix](https://nixos.org/download/) with flakes enabled (recommended — the flake supplies Python, ffmpeg, pytest, and Playwright/Chromium), or `pipenv` for a non-Nix setup
 -   `ffmpeg`
     -   `ffprobe` (included with most ffmpeg packages)
 
 ### Setup
 
-#### NixOS (primary development environment)
+#### NixOS / Nix (primary development environment)
 
-On NixOS, use `nix-shell` to enter a development shell with all dependencies (Python, ffmpeg, pytest):
+The project uses a Nix flake (`flake.nix`) whose `devShells.default` provides all dependencies (Python, ffmpeg, pytest, Playwright/Chromium). On NixOS — or any system with Nix and flakes enabled — enter the development shell with `nix develop`:
 
 ```bash
 git clone https://github.com/MDKattner/MatStat.git
 cd MatStat
-nix-shell
+nix develop
 ```
 
-Once inside `nix-shell`:
+> **Flakes not enabled?** Either enable `nix-command` and `flakes` in your `nix.conf`, or invoke the shell with the experimental features flag:
+> ```bash
+> nix --extra-experimental-features 'nix-command flakes' develop
+> ```
+> The pinned `flake.lock` ensures everyone gets the same `nixpkgs` revision.
+
+Once inside `nix develop`:
 ```bash
 uvicorn scripts.web.app:app --reload      # Launch web app (http://127.0.0.1:8000)
-pytest                                    # Run tests
+pytest                                    # Run fast tests (browser suite excluded)
+pytest -m browser                         # Playwright + axe UI suite (see below)
+```
+
+**Browser tests (optional):** the `browser`-marked tests need Playwright and
+Chromium. The Nix dev shell already provides both (the browsers come from
+`playwright-driver.browsers` via `PLAYWRIGHT_BROWSERS_PATH`), so inside
+`nix develop` just run:
+```bash
+pytest -m browser
+```
+The pipenv path needs a one-time install:
+```bash
+pipenv install --dev                      # provides playwright + axe-playwright-python
+pipenv run playwright install chromium    # one-time browser download
+pipenv run pytest -m browser
+```
+The axe accessibility checks skip automatically when
+`axe-playwright-python` is unavailable (as in the Nix shell); the Playwright
+smoke tests still run.
+
+The dev shell also provides helper macros that run the same `scripts/helpers.py` code paths as the web app:
+
+```bash
+matstat-meta  vids/taged/*.mkv            # Inspect tagged-video metadata (title + chapters)
+matstat-csv   stats/wrestler_data/*.csv   # Show compiled CSV shape as loaded by helpers
+matstat-stats stats/wrestler_data/*.csv   # Derived move/initiation stats overview
 ```
 
 > **Authentication:** auth is on by default — set `MATSTAT_PASSWORD` to a strong password or the server refuses to start. For a trusted local/LAN setup, pass `MATSTAT_AUTH=off` to run without a login page:
@@ -116,9 +149,13 @@ pipenv install
 To run:
 ```bash
 pipenv run uvicorn scripts.web.app:app --reload      # Launch web app (http://127.0.0.1:8000)
-pipenv run pytest                                    # Run tests
-```## Usage
+pipenv run pytest                                    # Run fast tests (browser suite excluded)
+pipenv run pytest -m browser                         # Playwright + axe UI suite
+```
 
+Install Chromium once before the browser suite: `pipenv run playwright install chromium`.
+
+## Usage
 **Web app:** Start the FastAPI server and open http://127.0.0.1:8000 in a browser:
 ```bash
 uvicorn scripts.web.app:app --reload
@@ -127,6 +164,18 @@ The tabs above are available in the browser with the same workflows, plus PCA an
 ```bash
 MATSTAT_VISIBLE_LOGGING=1 uvicorn scripts.web.app:app
 ```
+
+## Data Integrity, Reports, and Reels
+
+-   **Match outcomes count per match, not per sequence.** One video with many sequences is one match in **Match Outcomes**. Win rate is blank when no result was recorded; `Matches`, `Recorded`, and `Unrecorded` make the denominator explicit.
+-   **Conflicting results are blocked.** If sequences from the same match disagree on `W`/`L`, tabulation and report generation abort before writing anything and list every conflict. Fix the tagged metadata in **Review & Fix** and retry.
+-   **Tabulation and reports are fail-safe.** CSVs and workbooks are written atomically. A failed re-tabulation or report keeps the previous valid files intact; incomplete reports are timestamped but never replace `Team_Stats_latest.xlsx`.
+-   **Reports are versioned.** Each run writes `Team_Stats_<YYYYMMDD-HHMMSS>.xlsx`; `Team_Stats_latest.xlsx` tracks the newest complete report, and the last 10 are retained. The **Read Me** sheet records the active ruleset, its hash, pin bonus, source files, match counts, date range, and column definitions.
+-   **Ruleset changes never rewrite history.** Stored net/adjusted points are trusted as compiled. If the active ruleset differs from the compiled one, a banner appears (Search, Trends, PCA, Report) telling you to re-tabulate; it does not alter existing values.
+-   **Reels are versioned.** Generated clips use timestamped names with a `<base>_latest.mkv` alias. **Combine Clips** lists every version with Play, Download, and Delete actions.
+-   **Deletes require confirmation** and purge the cached preview. Re-tabulation after a delete is optional and off by default, so removing a video does not silently change compiled stats.
+-   **Metadata-only edits** (fixing a name, date, or result without changing sequences) use `mkvpropedit` when available and otherwise fall back to an ffmpeg stream-copy rewrite. Both preserve existing chapters.
+-   **API:** query, export, search, and reel endpoints accept only the shared `QuerySpec` shape (`wrestlers` list plus filters). Legacy `filter_type`/`filter_item` bodies return `422`.
 
 ## Authentication & Deployment
 
@@ -141,6 +190,7 @@ Behavior knobs (all optional):
 -   `MATSTAT_AUTH=off` — disable authentication entirely (trusted LAN/local only).
 -   `MATSTAT_SESSION_HOURS=12` — how long a login stays valid (default 12 hours). Only **one session is active at a time**; a second login while one is active is rejected until the first is logged out or expires.
 -   `MATSTAT_SECURE_COOKIE=1` — set the `Secure` attribute on the session cookie (required over HTTPS).
+-   `MATSTAT_ROOT=/path` — data root for `cfg/`, `vids/`, and `stats/` (defaults to the repository root; browser tests use it to isolate their temp tree).
 
 Because the app is password-only and single-session, it is meant to sit **behind an HTTPS front**. Two straightforward options:
 

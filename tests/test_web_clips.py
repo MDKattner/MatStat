@@ -18,6 +18,7 @@ from scripts.helpers import (
 )
 from scripts.web import app as web_app
 from scripts.web import clips
+from scripts.web.query import QuerySpec, apply_query
 from scripts.web.ffmpeg import FfmpegResult
 
 CSV_ROW: str = '"v.mkv:1",0,6,A,collar tie,"double","sprawl","T","E"'
@@ -125,10 +126,10 @@ class TestBuildConcatCmd:
 
 
 class TestFilterDataframe:
-    """Tests for clips.filter_dataframe — sequence filtering."""
+    """Tests for apply_query — the shared sequence filtering implementation."""
 
     def test_starting_tie(self, simple_df) -> None:
-        filtered = clips.filter_dataframe(simple_df, "Starting Tie", "collar tie")
+        filtered = apply_query(simple_df, QuerySpec(tie_up="collar tie"))
         assert len(filtered) == 1
         assert filtered[COL_TIE_UP].iloc[0] == "collar tie"
 
@@ -136,17 +137,17 @@ class TestFilterDataframe:
         dual_df: pd.DataFrame = simple_df.copy()
         dual_df[COL_TIE_UP] = ["collar tie:underhook", "standing:front headlock"]
 
-        filtered = clips.filter_dataframe(dual_df, "Starting Tie", "collar tie")
+        filtered = apply_query(dual_df, QuerySpec(tie_up="collar tie"))
         assert len(filtered) == 1
         assert filtered[COL_TIE_UP].iloc[0] == "collar tie:underhook"
 
     def test_move_used(self, simple_df) -> None:
-        filtered = clips.filter_dataframe(simple_df, "Move Used", "double")
+        filtered = apply_query(simple_df, QuerySpec(team_move="double"))
         assert len(filtered) == 1
         assert filtered[COL_START_TIME].iloc[0] == 0
 
     def test_move_defended(self, simple_df) -> None:
-        filtered = clips.filter_dataframe(simple_df, "Move Defended", "sweep single")
+        filtered = apply_query(simple_df, QuerySpec(opp_move="sweep single"))
         assert len(filtered) == 1
         assert filtered[COL_END_TIME].iloc[0] == 20
 
@@ -155,7 +156,7 @@ class TestMatchesToJson:
     """Tests for clips.matches_to_json — match serialization."""
 
     def test_serializes_matches(self, simple_df) -> None:
-        filtered = clips.filter_dataframe(simple_df, "Move Used", "double")
+        filtered = apply_query(simple_df, QuerySpec(team_move="double"))
         matches: list[dict[str, Any]] = clips.matches_to_json(filtered)
         assert matches == [{
             "video": "v.mkv",
@@ -182,16 +183,19 @@ class TestRunCombineClipsJob:
 
         ctx: FakeContext = FakeContext()
         result: dict[str, Any] = clips.run_combine_clips_job(
-            ctx, "Alice", "Starting Tie", "collar tie", use_stream_copy=True
+            ctx, "Alice", QuerySpec(tie_up="collar tie"), use_stream_copy=True
         )
 
-        assert result == {
-            "output": "Alice_Starting_Tie_collar_tie.mkv",
-            "segments": 1,
-            "errors": [],
-        }
-        assert (dirs["clips"] / "Alice_Starting_Tie_collar_tie.mkv").read_bytes() == b"ok"
-        assert ctx.reports[-1] == (100, "Created: Alice_Starting_Tie_collar_tie.mkv")
+        assert result["output"].startswith("Alice_Starting_Tie_collar_tie_")
+        assert result["output"].endswith(".mkv")
+        assert result["segments"] == 1
+        assert result["errors"] == []
+        assert result["latest"] == "Alice_Starting_Tie_collar_tie_latest.mkv"
+        assert (dirs["clips"] / result["output"]).read_bytes() == b"ok"
+        assert (dirs["clips"] / result["latest"]).resolve() == (
+            dirs["clips"] / result["output"]
+        ).resolve()
+        assert ctx.reports[-1] == (100, f"Created: {result['output']}")
 
     def test_output_name_sanitizes_spaces(self, tmp_path, monkeypatch) -> None:
         dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
@@ -205,17 +209,18 @@ class TestRunCombineClipsJob:
         _mock_ffmpeg(monkeypatch)
 
         result: dict[str, Any] = clips.run_combine_clips_job(
-            ctx=FakeContext(), wrestler="Bob Smith", filter_type="Move Used",
-            filter_item="high crotch", use_stream_copy=False,
+            ctx=FakeContext(), wrestler="Bob Smith",
+            spec=QuerySpec(team_move="high crotch", move_match="exact"),
+            use_stream_copy=False,
         )
-        assert result["output"] == "Bob_Smith_Move_Used_high_crotch.mkv"
+        assert result["output"].startswith("Bob_Smith_Move_Used_high_crotch_")
 
     def test_missing_csv_raises(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
 
         with pytest.raises(FileNotFoundError, match="Compile Stats"):
             clips.run_combine_clips_job(
-                FakeContext(), "Alice", "Starting Tie", "collar tie"
+                FakeContext(), "Alice", QuerySpec(tie_up="collar tie")
             )
 
     def test_no_matches_raises(self, tmp_path, monkeypatch) -> None:
@@ -224,7 +229,7 @@ class TestRunCombineClipsJob:
 
         with pytest.raises(ValueError, match="No sequences found"):
             clips.run_combine_clips_job(
-                FakeContext(), "Alice", "Starting Tie", "nonexistent tie"
+                FakeContext(), "Alice", QuerySpec(tie_up="nonexistent tie")
             )
 
     def test_concat_failure_raises(self, tmp_path, monkeypatch) -> None:
@@ -245,7 +250,7 @@ class TestRunCombineClipsJob:
 
         with pytest.raises(RuntimeError, match="concat error"):
             clips.run_combine_clips_job(
-                FakeContext(), "Alice", "Starting Tie", "collar tie"
+                FakeContext(), "Alice", QuerySpec(tie_up="collar tie")
             )
         assert not (dirs["clips"] / "Alice_Starting_Tie_collar_tie.mkv").exists()
 
@@ -257,8 +262,51 @@ class TestRunCombineClipsJob:
 
         with pytest.raises(RuntimeError, match="No clips were successfully extracted"):
             clips.run_combine_clips_job(
-                FakeContext(), "Alice", "Starting Tie", "collar tie"
+                FakeContext(), "Alice", QuerySpec(tie_up="collar tie")
             )
+
+
+    def test_rerun_keeps_both_versions_and_moves_latest(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
+        _write_csv(dirs)
+        (dirs["taged"] / "v.mkv").write_bytes(b"video")
+        _mock_codecs(monkeypatch)
+        _mock_ffmpeg(monkeypatch)
+
+        first: dict[str, Any] = clips.run_combine_clips_job(
+            FakeContext(), "Alice", QuerySpec(tie_up="collar tie")
+        )
+        second: dict[str, Any] = clips.run_combine_clips_job(
+            FakeContext(), "Alice", QuerySpec(tie_up="collar tie")
+        )
+
+        assert first["output"] != second["output"]
+        assert (dirs["clips"] / first["output"]).is_file()
+        assert (dirs["clips"] / second["output"]).is_file()
+        assert (dirs["clips"] / second["latest"]).resolve() == (
+            dirs["clips"] / second["output"]
+        ).resolve()
+
+    def test_symlink_failure_skips_latest(self, tmp_path, monkeypatch) -> None:
+        dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
+        _write_csv(dirs)
+        (dirs["taged"] / "v.mkv").write_bytes(b"video")
+        _mock_codecs(monkeypatch)
+        _mock_ffmpeg(monkeypatch)
+
+        def broken(self, target) -> None:
+            raise OSError("symlinks unavailable")
+
+        monkeypatch.setattr(Path, "symlink_to", broken)
+
+        result: dict[str, Any] = clips.run_combine_clips_job(
+            FakeContext(), "Alice", QuerySpec(tie_up="collar tie")
+        )
+
+        assert result["output"]
+        assert result["latest"] is None
 
 
 class TestRunBatchClipsJob:
@@ -272,7 +320,7 @@ class TestRunBatchClipsJob:
         _mock_ffmpeg(monkeypatch)
 
         result: dict[str, Any] = clips.run_batch_clips_job(
-            FakeContext(), ["Alice", "Bob Smith"], "Starting Tie", "collar tie"
+            FakeContext(), ["Alice", "Bob Smith"], QuerySpec(tie_up="collar tie")
         )
 
         assert result["successes"] == 1
@@ -284,17 +332,77 @@ class TestRunBatchClipsJob:
         assert result["summary"] == "Batch complete. 1 succeeded, 1 failed."
 
 
+class TestListReels:
+    """Reel version listing and preview/reel origin parity (P0-3)."""
+
+    def test_groups_versions_and_marks_latest(self, tmp_path, monkeypatch) -> None:
+        dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
+        older: Path = dirs["clips"] / "Alice_Tie_collar_tie_20260101-120000.mkv"
+        newer: Path = dirs["clips"] / "Alice_Tie_collar_tie_20260102-120000.mkv"
+        older.write_bytes(b"old")
+        newer.write_bytes(b"new")
+        (dirs["clips"] / "Alice_Tie_collar_tie_latest.mkv").symlink_to(newer.name)
+
+        groups: list[dict[str, Any]] = clips.list_reels()
+
+        assert len(groups) == 1
+        group = groups[0]
+        assert group["base"] == "Alice_Tie_collar_tie"
+        assert group["latest"] == "Alice_Tie_collar_tie_latest.mkv"
+        assert [v["name"] for v in group["versions"]] == [newer.name, older.name]
+        assert [v["current"] for v in group["versions"]] == [True, False]
+
+    def test_empty_or_missing_dir_returns_empty(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        assert clips.list_reels() == []
+
+    def test_reel_receives_the_previewed_origins(self, tmp_path, monkeypatch) -> None:
+        dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
+        _write_csv(dirs, "Alice", (
+            'v.mkv:1,0,6,A,collar tie,"double","sprawl","T","E"\n'
+            'v.mkv:2,6,12,D,standing,"sprawl","sweep single","E","T"\n'
+            'w.mkv:1,0,6,A,collar tie,"single","whizzer","T","E"'
+        ))
+        spec: QuerySpec = QuerySpec(
+            wrestlers=["Alice"], tie_up="collar tie", attack_mode="Attacking"
+        )
+        previewed: list[str] = list(clips.find_with_query(spec, "Alice").index)
+        captured: dict[str, list[str]] = {}
+
+        def fake_build(ctx, filtered, wrestler, filter_type, filter_item,
+                       use_stream_copy, work_name):
+            captured["origins"] = list(filtered.index)
+            return ("reel.mkv", len(filtered), [], None)
+
+        monkeypatch.setattr(clips, "_build_reel", fake_build)
+        clips.run_combine_clips_job(FakeContext(), "Alice", spec)
+
+        assert previewed
+        assert captured["origins"] == previewed
+
+
 class TestClipRoutes:
     """Tests for the clips/find, combine-clips, and download routes."""
 
     def _payload(self, **overrides: Any) -> dict[str, Any]:
         base: dict[str, Any] = {
-            "wrestler": "Alice",
-            "filter_type": "Starting Tie",
-            "filter_item": "collar tie",
+            "wrestlers": ["Alice"],
+            "tie_up": "collar tie",
         }
         base.update(overrides)
         return base
+
+    def test_reels_route_lists_versions(self, client, tmp_path, monkeypatch) -> None:
+        dirs: dict[str, Path] = _redirect_route_dirs(monkeypatch, tmp_path)
+        reel: Path = dirs["clips"] / "Alice_Tie_collar_tie_20260101-120000.mkv"
+        reel.write_bytes(b"reel")
+
+        resp = client.get("/api/reels")
+
+        assert resp.status_code == 200
+        groups: list[dict[str, Any]] = resp.json()["reels"]
+        assert len(groups) == 1
+        assert groups[0]["versions"][0]["name"] == reel.name
 
     def test_find_returns_matches(self, client, tmp_path, monkeypatch) -> None:
         dirs: dict[str, Path] = _redirect_route_dirs(monkeypatch, tmp_path)
@@ -307,12 +415,18 @@ class TestClipRoutes:
         assert body["matches"][0]["video"] == "v.mkv"
         assert body["matches"][0]["tie_up"] == "collar tie"
 
-    def test_find_invalid_filter_422(self, client, tmp_path, monkeypatch) -> None:
+    def test_find_legacy_filter_fields_422(self, client, tmp_path, monkeypatch) -> None:
         dirs: dict[str, Path] = _redirect_route_dirs(monkeypatch, tmp_path)
         _write_csv(dirs)
 
-        resp = client.post("/api/clips/find", json=self._payload(filter_type="Bogus"))
+        resp = client.post("/api/clips/find", json={
+            "wrestler": "Alice",
+            "filter_type": "Starting Tie",
+            "filter_item": "collar tie",
+        })
         assert resp.status_code == 422
+        detail: str = resp.text
+        assert "filter_type" in detail or "wrestler" in detail
 
     def test_find_missing_csv_404(self, client, tmp_path, monkeypatch) -> None:
         _redirect_route_dirs(monkeypatch, tmp_path)
@@ -334,7 +448,8 @@ class TestClipRoutes:
         assert body["status"] == "queued"
         job: dict[str, Any] = _wait_for_job(client, body["job_id"])
         assert job["status"] == "done"
-        assert job["result"]["output"] == "Alice_Starting_Tie_collar_tie.mkv"
+        assert job["result"]["output"].startswith("Alice_Starting_Tie_collar_tie_")
+        assert job["result"]["latest"] == "Alice_Starting_Tie_collar_tie_latest.mkv"
 
         dl = client.get(f"/api/clips/{job['result']['output']}")
         assert dl.status_code == 200
@@ -346,18 +461,21 @@ class TestClipRoutes:
         resp = client.post("/api/combine-clips", json=self._payload())
         assert resp.status_code == 404
 
-    def test_combine_empty_item_400(self, client, tmp_path, monkeypatch) -> None:
+    def test_combine_requires_exactly_one_wrestler(
+        self, client, tmp_path, monkeypatch
+    ) -> None:
         dirs: dict[str, Path] = _redirect_route_dirs(monkeypatch, tmp_path)
         _write_csv(dirs)
 
-        resp = client.post("/api/combine-clips", json=self._payload(filter_item="  "))
+        resp = client.post("/api/combine-clips", json=self._payload(
+            wrestlers=["Alice", "Bob"]
+        ))
         assert resp.status_code == 400
 
     def test_batch_route_requires_wrestlers(self, client) -> None:
         payload: dict[str, Any] = {
             "wrestlers": [],
-            "filter_type": "Starting Tie",
-            "filter_item": "collar tie",
+            "tie_up": "collar tie",
         }
         resp = client.post("/api/combine-clips/batch", json=payload)
         assert resp.status_code == 400
@@ -371,8 +489,7 @@ class TestClipRoutes:
 
         payload: dict[str, Any] = {
             "wrestlers": ["Alice"],
-            "filter_type": "Starting Tie",
-            "filter_item": "collar tie",
+            "tie_up": "collar tie",
         }
         resp = client.post("/api/combine-clips/batch", json=payload)
         assert resp.status_code == 200
@@ -385,9 +502,11 @@ class TestClipRoutes:
         assert result["failures"] == 0
         assert result["results"][0]["success"] is True
         assert result["results"][0]["wrestler"] == "Alice"
-        assert result["results"][0]["message"] == "Created: Alice_Starting_Tie_collar_tie.mkv"
+        output: str = result["results"][0]["output"]
+        assert output.startswith("Alice_Starting_Tie_collar_tie_")
+        assert result["results"][0]["message"] == f"Created: {output}"
 
-        dl = client.get("/api/clips/Alice_Starting_Tie_collar_tie.mkv")
+        dl = client.get(f"/api/clips/{output}")
         assert dl.status_code == 200
         assert dl.content == b"ok"
 
@@ -402,41 +521,28 @@ class TestClipRoutes:
         assert resp.status_code == 400
 
     def test_find_with_query_builder(self, client, tmp_path, monkeypatch) -> None:
-        """POST /api/clips/find with QueryBuilder fields (no filter_item)."""
+        """POST /api/clips/find with QuerySpec fields."""
         dirs: dict[str, Path] = _redirect_route_dirs(monkeypatch, tmp_path)
         _write_csv(dirs)
 
         resp = client.post("/api/clips/find", json={
-            "wrestler": "Alice",
+            "wrestlers": ["Alice"],
             "attack_mode": "Attacking",
         })
         assert resp.status_code == 200
         body: dict[str, Any] = resp.json()
         assert body["count"] == 1
         assert body["matches"][0]["attacking"] is True
+        assert body["matches"][0]["wrestler"] == "Alice"
         assert "net_points" in body["matches"][0]
         assert "adjusted_net_points" in body["matches"][0]
         assert "match_result" in body["matches"][0]
 
-    def test_find_with_query_no_filter_item_400_empty_wrestler(
+    def test_find_empty_wrestler_list_400(
         self, client, tmp_path, monkeypatch
     ) -> None:
-        """POST /api/clips/find with empty wrestler returns 400."""
+        """POST /api/clips/find with no wrestlers returns 400."""
         _redirect_route_dirs(monkeypatch, tmp_path)
 
-        resp = client.post("/api/clips/find", json={"wrestler": ""})
+        resp = client.post("/api/clips/find", json={"wrestlers": []})
         assert resp.status_code == 400
-
-    def test_find_legacy_still_works(self, client, tmp_path, monkeypatch) -> None:
-        """POST /api/clips/find with filter_type + filter_item (legacy path)."""
-        dirs: dict[str, Path] = _redirect_route_dirs(monkeypatch, tmp_path)
-        _write_csv(dirs)
-
-        resp = client.post("/api/clips/find", json={
-            "wrestler": "Alice",
-            "filter_type": "Starting Tie",
-            "filter_item": "collar tie",
-        })
-        assert resp.status_code == 200
-        body: dict[str, Any] = resp.json()
-        assert body["count"] == 1

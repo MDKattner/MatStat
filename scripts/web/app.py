@@ -19,7 +19,12 @@ from starlette.concurrency import run_in_threadpool
 
 # helpers.py resolves cfg/vids/tmp/stats against the process cwd; pin it to the
 # repo root so config/video paths work regardless of how the server is launched.
-os.chdir(Path(__file__).resolve().parent.parent.parent)
+# MATSTAT_ROOT lets tests (and alternate deployments) point at an isolated tree.
+_project_root: Path = Path(
+    os.environ.get("MATSTAT_ROOT", "")
+    or Path(__file__).resolve().parent.parent.parent
+).resolve()
+os.chdir(_project_root)
 
 from scripts.helpers import (
     AppConfig,
@@ -37,7 +42,8 @@ from scripts.web.clips import BatchRequest, CombineRequest, FindRequest
 from scripts.web.configs import AppConfigUpdate, RosterUpdate
 from scripts.web.pca import PcaCompileRequest
 from scripts.web.jobs import Job, JobManager, JobContext
-from scripts.web.search import SearchQuery
+from scripts.web.query import QuerySpec, selected_wrestlers
+from scripts.web.stats import CompileRequest
 from scripts.web.tag import TagRequest
 from scripts.web.ws import EventHub, WebLogHandler
 
@@ -135,7 +141,7 @@ async def _no_stale_cache(request: Request, call_next) -> Response:
     """
     response: Response = await call_next(request)
     content_type: str = response.headers.get("content-type", "")
-    if "video" not in content_type:
+    if "video" not in content_type and "cache-control" not in response.headers:
         response.headers["Cache-Control"] = "no-cache"
     return response
 
@@ -355,6 +361,49 @@ async def list_videos(dir_name: str) -> dict[str, list[str]]:
     return {"files": files}
 
 
+@app.delete("/api/videos/{dir_name}/{file_name}")
+async def delete_video(
+    dir_name: str, file_name: str, recompile: bool = False
+) -> dict[str, Any]:
+    """Delete an untagged or tagged video and its cached preview.
+
+    Tagged videos feed the compiled CSVs, so deleting one leaves the stats
+    stale until a tabulation runs. ``recompile=true`` queues that tabulation
+    (off by default so deleting several files does not trigger several runs).
+    """
+    if dir_name not in ("untaged", "taged"):
+        raise HTTPException(status_code=404, detail=f"Unknown directory: {dir_name}")
+    if _SAFE_NAME_RE.match(file_name) is None or file_name.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid file name")
+    directory: Path = _PREVIEW_DIRS[dir_name]
+    video_path: Path = directory / file_name
+    if not video_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Video not found: {file_name}")
+
+    transcode.purge_preview(video_path)
+    try:
+        video_path.unlink()
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not delete {file_name}: {e}")
+
+    needs_recompile: bool = dir_name == "taged"
+    job_id: str | None = None
+    if recompile and needs_recompile:
+        wrestler_names: list[str] = configs.load_wrestler_names()
+
+        def _run(ctx: JobContext) -> dict[str, Any]:
+            return stats.run_compile_stats_job(ctx, wrestler_names)
+
+        job_id = job_manager.submit(
+            "compile_stats", _run, message="Re-tabulating after delete"
+        )
+    return {
+        "deleted": file_name,
+        "needs_recompile": needs_recompile,
+        "job_id": job_id,
+    }
+
+
 @app.post("/api/videos", response_model=None)
 async def upload_videos(files: list[UploadFile] | None = File(default=None)) -> dict[str, Any]:
     """Upload one or more video files into the untagged pool.
@@ -508,8 +557,6 @@ async def audit_retag(file_name: str, req: audit.RetagRequest) -> dict[str, Any]
         audit.ValidateMatchDate(req.match_date)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if not req.sequences:
-        raise HTTPException(status_code=400, detail="At least one sequence is required")
 
     def _run(ctx: JobContext) -> dict[str, Any]:
         return audit.run_retag_job(
@@ -535,8 +582,14 @@ def _prewarm_tagged_preview(output_name: str) -> None:
         logging.warning(f"Could not prepare preview for {output_name}: {e}")
 
 
+@app.get("/api/stats/provenance")
+async def stats_provenance() -> dict[str, Any]:
+    """Report the compiled ruleset versus the active one (never mutates data)."""
+    return stats.ruleset_status()
+
+
 @app.post("/api/compile-stats")
-async def compile_stats() -> dict[str, Any]:
+async def compile_stats(req: CompileRequest | None = None) -> dict[str, Any]:
     """Queue a job that compiles all tagged videos into wrestler CSVs."""
     wrestler_names: list[str] = configs.load_wrestler_names()
     if not wrestler_names:
@@ -544,9 +597,10 @@ async def compile_stats() -> dict[str, Any]:
             status_code=404,
             detail="No wrestlers configured (Wrestlers.json not found or empty)",
         )
+    force: bool = bool(req.force) if req else False
 
     def _run(ctx: JobContext) -> dict[str, Any]:
-        return stats.run_compile_stats_job(ctx, wrestler_names)
+        return stats.run_compile_stats_job(ctx, wrestler_names, force=force)
 
     job_id: str = job_manager.submit("compile_stats", _run, message="Compiling stats")
     return {"status": "queued", "job_id": job_id}
@@ -573,32 +627,28 @@ async def team_evaluation() -> dict[str, Any]:
 
 @app.post("/api/clips/find")
 async def clips_find(req: FindRequest) -> dict[str, Any]:
-    """Return a wrestler's sequences matching a filter, for previewing.
+    """Return the selected wrestlers' sequences matching a QuerySpec."""
+    wrestlers: list[str] = selected_wrestlers(req)
+    if not wrestlers:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one wrestler is required (send the 'wrestlers' list)",
+        )
 
-    When ``filter_item`` is provided, uses the legacy exact-match path.
-    Otherwise applies QueryBuilder filters from the request fields.
-    """
-    wrestler: str = req.wrestler.strip()
-    if not wrestler:
-        raise HTTPException(status_code=400, detail="Wrestler name is required")
-
+    matches: list[dict[str, Any]] = []
     try:
-        if req.filter_item.strip():
-            filtered = clips.load_filtered_dataframe(
-                wrestler, req.filter_type, req.filter_item
-            )
-        else:
-            filtered = clips.find_with_query(req)
+        for wrestler in wrestlers:
+            filtered = clips.find_with_query(req, wrestler)
+            for match in clips.matches_to_json(filtered):
+                match["wrestler"] = wrestler
+                matches.append(match)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    matches: list[dict[str, Any]] = clips.matches_to_json(filtered)
     return {
-        "wrestler": wrestler,
-        "filter_type": req.filter_type,
-        "filter_item": req.filter_item,
+        "wrestlers": wrestlers,
         "matches": matches,
         "count": len(matches),
     }
@@ -606,12 +656,14 @@ async def clips_find(req: FindRequest) -> dict[str, Any]:
 
 @app.post("/api/combine-clips")
 async def combine_clips(req: CombineRequest) -> dict[str, Any]:
-    """Queue a job that builds one highlight reel from filtered sequences."""
-    wrestler: str = req.wrestler.strip()
-    if not wrestler:
-        raise HTTPException(status_code=400, detail="Wrestler name is required")
-    if not req.filter_item.strip():
-        raise HTTPException(status_code=400, detail="Filter item is required")
+    """Queue a job that builds one highlight reel from a QuerySpec."""
+    wrestlers: list[str] = selected_wrestlers(req)
+    if len(wrestlers) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Exactly one wrestler is required (send the 'wrestlers' list)",
+        )
+    wrestler: str = wrestlers[0]
     if not (csv_dir / f"{wrestler}.csv").is_file():
         raise HTTPException(
             status_code=404,
@@ -620,7 +672,7 @@ async def combine_clips(req: CombineRequest) -> dict[str, Any]:
 
     def _run(ctx: JobContext) -> dict[str, Any]:
         return clips.run_combine_clips_job(
-            ctx, wrestler, req.filter_type, req.filter_item, req.use_stream_copy
+            ctx, wrestler, req, req.use_stream_copy
         )
 
     job_id: str = job_manager.submit(
@@ -632,15 +684,16 @@ async def combine_clips(req: CombineRequest) -> dict[str, Any]:
 @app.post("/api/combine-clips/batch")
 async def combine_clips_batch(req: BatchRequest) -> dict[str, Any]:
     """Queue a job that builds a highlight reel for every selected wrestler."""
-    wrestlers: list[str] = [w.strip() for w in req.wrestlers if w.strip()]
+    wrestlers: list[str] = selected_wrestlers(req)
     if not wrestlers:
-        raise HTTPException(status_code=400, detail="At least one wrestler is required")
-    if not req.filter_item.strip():
-        raise HTTPException(status_code=400, detail="Filter item is required")
+        raise HTTPException(
+            status_code=400,
+            detail="At least one wrestler is required (send the 'wrestlers' list)",
+        )
 
     def _run(ctx: JobContext) -> dict[str, Any]:
         return clips.run_batch_clips_job(
-            ctx, wrestlers, req.filter_type, req.filter_item, req.use_stream_copy
+            ctx, wrestlers, req, req.use_stream_copy
         )
 
     job_id: str = job_manager.submit(
@@ -649,6 +702,12 @@ async def combine_clips_batch(req: BatchRequest) -> dict[str, Any]:
         message=f"Batch combining clips for {len(wrestlers)} wrestler(s)",
     )
     return {"status": "queued", "job_id": job_id}
+
+
+@app.get("/api/reels")
+async def list_reels() -> dict[str, Any]:
+    """List generated highlight reels, grouped by base name and version."""
+    return {"reels": clips.list_reels()}
 
 
 @app.get("/api/clips/{file_name}", response_model=None)
@@ -660,6 +719,22 @@ async def download_clip(file_name: str) -> FileResponse:
     if not clip_path.is_file():
         raise HTTPException(status_code=404, detail=f"Clip not found: {file_name}")
     return FileResponse(str(clip_path), media_type="video/x-matroska")
+
+
+@app.delete("/api/clips/{file_name}")
+async def delete_clip(file_name: str) -> dict[str, Any]:
+    """Delete a generated highlight reel and its cached preview."""
+    if _SAFE_NAME_RE.match(file_name) is None or file_name.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid file name")
+    clip_path: Path = clips_dir / file_name
+    if not clip_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Clip not found: {file_name}")
+    transcode.purge_preview(clip_path)
+    try:
+        clip_path.unlink()
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not delete {file_name}: {e}")
+    return {"deleted": file_name}
 
 
 @app.get("/api/pca", response_model=None)
@@ -740,14 +815,14 @@ async def search_wrestlers() -> dict[str, list[str]]:
 
 
 @app.post("/api/search")
-async def search_all(req: SearchQuery) -> dict[str, Any]:
-    """Run a filter query across all compiled wrestler data."""
+async def search_all(req: QuerySpec) -> dict[str, Any]:
+    """Run a shared QuerySpec across the selected compiled wrestler data."""
     matches: list[dict[str, Any]] = await run_in_threadpool(search.execute_search, req)
     return {"count": len(matches), "matches": matches}
 
 
 @app.post("/api/search/export", response_model=None)
-async def search_export(req: SearchQuery) -> Response:
+async def search_export(req: QuerySpec) -> Response:
     """Export matching sequences as a downloadable CSV file."""
     matches: list[dict[str, Any]] = await run_in_threadpool(search.execute_search, req)
     return Response(
@@ -757,9 +832,18 @@ async def search_export(req: SearchQuery) -> Response:
     )
 
 
+@app.get("/api/reports/latest")
+async def latest_report() -> dict[str, Any]:
+    """Return freshness metadata for the current latest report."""
+    info: dict[str, Any] | None = team_eval.latest_report_info()
+    if info is None:
+        raise HTTPException(status_code=404, detail="No report has been generated yet")
+    return info
+
+
 @app.get("/api/reports/{file_name}", response_model=None)
 async def download_report(file_name: str) -> FileResponse:
-    """Download a generated report file (e.g. Team_Stats.xlsx)."""
+    """Download a generated report file (e.g. Team_Stats_20260101-120000.xlsx)."""
     if _SAFE_NAME_RE.match(file_name) is None or file_name.startswith("."):
         raise HTTPException(status_code=400, detail="Invalid file name")
     report_path: Path = eval_dir / file_name
@@ -768,6 +852,10 @@ async def download_report(file_name: str) -> FileResponse:
     return FileResponse(
         str(report_path),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="{file_name}"',
+        },
     )
 
 

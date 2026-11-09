@@ -10,12 +10,13 @@ JobManager thread; progress is reported via the JobContext.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import pandas as pd
-from pydantic import BaseModel
 
 from scripts.helpers import (
     COL_ADJUSTED_NET_POINTS,
@@ -29,7 +30,6 @@ from scripts.helpers import (
     COL_TIE_UP,
     GetVideoCodecs,
     MakeFormattedDataFrame,
-    QueryBuilder,
     clips_dir,
     csv_dir,
     taged_dir,
@@ -37,10 +37,13 @@ from scripts.helpers import (
 )
 from scripts.web.ffmpeg import run_ffmpeg
 from scripts.web.jobs import JobContext
-
-FilterType = Literal["Starting Tie", "Move Used", "Move Defended"]
+from scripts.web.query import QuerySpec, apply_query
 
 _STREAM_COPY_DEFAULT: bool = True
+
+_REEL_RE: re.Pattern[str] = re.compile(
+    r"^(?P<base>.+)_\d{8}-\d{6}(?:-\d+)?\.mkv$"
+)
 
 _RE_ENCODE_ARGS: list[str] = [
     "-vf", "scale=1280:720,setsar=1",
@@ -52,47 +55,19 @@ _RE_ENCODE_ARGS: list[str] = [
 ]
 
 
-AttackMode = Literal["All", "Attacking", "Defending"]
+class FindRequest(QuerySpec):
+    """Payload for POST /api/clips/find — list matching sequences."""
 
 
-class FindRequest(BaseModel):
-    """Payload for POST /api/clips/find — list matching sequences.
-
-    Supports two modes:
-    - Legacy: ``filter_type`` + ``filter_item`` (used by combine-clips).
-    - QueryBuilder: optional filter fields applied via ``QueryBuilder``.
-    """
-
-    wrestler: str
-    filter_type: FilterType = "Starting Tie"
-    filter_item: str = ""
-    attack_mode: AttackMode = "All"
-    tie_up: str = ""
-    team_move: str = ""
-    opp_move: str = ""
-    min_points: int = -20
-    max_points: int = 20
-    match_result: str = ""
-    min_date: str = ""
-    max_date: str = ""
-    min_raw_points: int = -20
-    max_raw_points: int = 20
-    min_duration: int | None = None
-    max_duration: int | None = None
-
-
-class CombineRequest(FindRequest):
+class CombineRequest(QuerySpec):
     """Payload for POST /api/combine-clips — build one highlight reel."""
 
     use_stream_copy: bool = _STREAM_COPY_DEFAULT
 
 
-class BatchRequest(BaseModel):
+class BatchRequest(QuerySpec):
     """Payload for POST /api/combine-clips/batch — build reels per wrestler."""
 
-    wrestlers: list[str]
-    filter_type: FilterType
-    filter_item: str
     use_stream_copy: bool = _STREAM_COPY_DEFAULT
 
 
@@ -171,45 +146,14 @@ def build_concat_cmd(list_file: Path, output_path: Path) -> list[str]:
     ]
 
 
-def filter_dataframe(
-    df: pd.DataFrame,
-    filter_type: FilterType,
-    filter_item: str,
-) -> pd.DataFrame:
-    """Filter a wrestler's sequence DataFrame by a tie, move used, or defended move.
-
-    Args:
-        df: The wrestler DataFrame loaded via MakeFormattedDataFrame.
-        filter_type: One of "Starting Tie", "Move Used", "Move Defended".
-        filter_item: The value to match against the appropriate column.
-
-    Returns:
-        The filtered DataFrame (possibly empty).
-    """
-    qb: QueryBuilder = QueryBuilder(df)
-    if filter_type == "Starting Tie":
-        qb.tie_filter(filter_item)
-    elif filter_type == "Move Used":
-        qb.team_move_filter(filter_item, exact=True)
-    else:
-        qb.opp_move_filter(filter_item, exact=True)
-    return qb.apply()
-
-
-def load_filtered_dataframe(
-    wrestler: str,
-    filter_type: FilterType,
-    filter_item: str,
-) -> pd.DataFrame:
-    """Load a wrestler's CSV and filter its sequences for clip generation.
+def load_wrestler_frame(wrestler: str) -> pd.DataFrame:
+    """Load a wrestler's compiled CSV.
 
     Args:
         wrestler: The wrestler name (also the CSV stem).
-        filter_type: One of "Starting Tie", "Move Used", "Move Defended".
-        filter_item: The value to filter by.
 
     Returns:
-        The filtered DataFrame (possibly empty).
+        The formatted sequence DataFrame.
 
     Raises:
         FileNotFoundError: If the wrestler's compiled CSV does not exist.
@@ -221,48 +165,43 @@ def load_filtered_dataframe(
             f"No compiled data for {wrestler}. Run Compile Stats first."
         )
     try:
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_path)
+        return MakeFormattedDataFrame(csv_path)
     except Exception as e:
         raise ValueError(f"Could not load data for {wrestler}: {e}")
-    return filter_dataframe(df, filter_type, filter_item)
 
 
-def find_with_query(req: FindRequest) -> pd.DataFrame:
-    """Load a wrestler's CSV and apply QueryBuilder filters.
+def find_with_query(req: QuerySpec, wrestler: str) -> pd.DataFrame:
+    """Load a wrestler's CSV and apply the shared query implementation.
 
     Args:
-        req: The find request with wrestler name and filter fields.
+        req: The shared filter specification.
+        wrestler: The wrestler name (also the CSV stem).
 
     Returns:
         The filtered DataFrame (possibly empty).
 
     Raises:
         FileNotFoundError: If the wrestler's compiled CSV does not exist.
-        ValueError: If the CSV exists but cannot be parsed.
+        ValueError: If the CSV exists but cannot be parsed, or origins are
+            unknown.
     """
-    csv_path: Path = csv_dir / f"{req.wrestler}.csv"
-    if not csv_path.is_file():
-        raise FileNotFoundError(
-            f"No compiled data for {req.wrestler}. Run Compile Stats first."
-        )
-    try:
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_path)
-    except Exception as e:
-        raise ValueError(f"Could not load data for {req.wrestler}: {e}")
-    qb: QueryBuilder = (
-        QueryBuilder(df)
-        .attack_filter(req.attack_mode)
-        .tie_filter(req.tie_up)
-        .team_move_filter(req.team_move)
-        .opp_move_filter(req.opp_move)
-        .match_result_filter(req.match_result)
-        .date_range_filter(req.min_date, req.max_date)
-        .adjusted_net_points_filter(req.min_points, req.max_points)
-        .net_points_filter(req.min_raw_points, req.max_raw_points)
-    )
-    if req.min_duration is not None or req.max_duration is not None:
-        qb.duration_filter(req.min_duration, req.max_duration)
-    return qb.apply()
+    return apply_query(load_wrestler_frame(wrestler), req, wrestler)
+
+
+def reel_label(req: QuerySpec) -> tuple[str, str]:
+    """Return a human-readable (filter type, filter item) label for a reel.
+
+    The label keeps the historical file-name shape for single-filter reels and
+    falls back to ``Selection`` / ``reel`` for origin-based or multi-filter
+    queries.
+    """
+    if req.tie_up:
+        return ("Starting Tie", req.tie_up)
+    if req.team_move:
+        return ("Move Used", req.team_move)
+    if req.opp_move:
+        return ("Move Defended", req.opp_move)
+    return ("Selection", "reel")
 
 
 def matches_to_json(filtered: pd.DataFrame) -> list[dict[str, Any]]:
@@ -293,15 +232,78 @@ def matches_to_json(filtered: pd.DataFrame) -> list[dict[str, Any]]:
     return matches
 
 
+def _unique_reel_path(clips_dir: Path, base: str) -> Path:
+    """Return a timestamped reel path that does not collide with an existing file."""
+    stamp: str = datetime.now().strftime("%Y%m%d-%H%M%S")
+    candidate: Path = clips_dir / f"{base}_{stamp}.mkv"
+    suffix: int = 1
+    while candidate.exists():
+        candidate = clips_dir / f"{base}_{stamp}-{suffix}.mkv"
+        suffix += 1
+    return candidate
+
+
+def _update_latest_pointer(clips_dir: Path, base: str, output: Path) -> str | None:
+    """Point ``{base}_latest.mkv`` at ``output``; skip the pointer on failure."""
+    latest: Path = clips_dir / f"{base}_latest.mkv"
+    try:
+        if latest.is_symlink() or latest.exists():
+            latest.unlink()
+        latest.symlink_to(output.name)
+        return latest.name
+    except OSError as e:
+        logging.warning(f"Could not create reel latest pointer '{latest}': {e}")
+        return None
+
+
+def list_reels() -> list[dict[str, Any]]:
+    """List generated reel versions grouped by their base name.
+
+    Returns:
+        A list of groups (sorted by base), each with the ``base`` name, the
+        ``latest`` pointer name (or None), and ``versions`` newest first. Every
+        version carries its filename, mtime, size, and whether it is the
+        current ``_latest`` target.
+    """
+    if not clips_dir.is_dir():
+        return []
+    groups: dict[str, list[Path]] = {}
+    for path in clips_dir.iterdir():
+        match = _REEL_RE.match(path.name)
+        if match and path.is_file():
+            groups.setdefault(match.group("base"), []).append(path)
+
+    result: list[dict[str, Any]] = []
+    for base, files in sorted(groups.items()):
+        files.sort(key=lambda p: p.name, reverse=True)
+        latest_path: Path = clips_dir / f"{base}_latest.mkv"
+        has_latest: bool = latest_path.exists()
+        target: str = latest_path.resolve().name if has_latest else ""
+        result.append({
+            "base": base,
+            "latest": latest_path.name if has_latest else None,
+            "versions": [
+                {
+                    "name": path.name,
+                    "mtime": path.stat().st_mtime,
+                    "size": path.stat().st_size,
+                    "current": path.name == target,
+                }
+                for path in files
+            ],
+        })
+    return result
+
+
 def _build_reel(
     ctx: JobContext,
     filtered: pd.DataFrame,
     wrestler: str,
-    filter_type: FilterType,
+    filter_type: str,
     filter_item: str,
     use_stream_copy: bool,
     work_name: str,
-) -> tuple[str, int, list[str]] | None:
+) -> tuple[str, int, list[str], str | None] | None:
     """Extract each matching sequence and concatenate it into a highlight reel.
 
     Args:
@@ -314,7 +316,8 @@ def _build_reel(
         work_name: Unique suffix for the temporary clip directory.
 
     Returns:
-        A (output_name, segment_count, errors) tuple, or None if cancelled.
+        An (output_name, segment_count, errors, latest_alias) tuple, or None
+        if cancelled. ``latest_alias`` is None when the symlink cannot be made.
 
     Raises:
         RuntimeError: If no segments were extracted or concatenation fails.
@@ -363,11 +366,11 @@ def _build_reel(
         raise RuntimeError("No clips were successfully extracted.")
 
     ctx.report(100, "Concatenating clips...")
-    output_path: Path = (
-        clips_dir
-        / f"{_sanitize(wrestler)}_{_sanitize(filter_type)}_{_sanitize(filter_item)}.mkv"
+    base: str = (
+        f"{_sanitize(wrestler)}_{_sanitize(filter_type)}_{_sanitize(filter_item)}"
     )
     clips_dir.mkdir(parents=True, exist_ok=True)
+    output_path: Path = _unique_reel_path(clips_dir, base)
 
     list_file: Path = clip_dir / "mylist.txt"
     list_file.write_text(
@@ -384,23 +387,22 @@ def _build_reel(
     errors: list[str] = []
     if has_errors:
         errors.append("Some clips had errors and were skipped.")
-    return (output_path.name, len(segment_files), errors)
+    latest: str | None = _update_latest_pointer(clips_dir, base, output_path)
+    return (output_path.name, len(segment_files), errors, latest)
 
 
 def run_combine_clips_job(
     ctx: JobContext,
     wrestler: str,
-    filter_type: FilterType,
-    filter_item: str,
+    spec: QuerySpec,
     use_stream_copy: bool = _STREAM_COPY_DEFAULT,
 ) -> dict[str, Any]:
-    """Build a single highlight reel for one wrestler × filter combination.
+    """Build a single highlight reel for one wrestler × query specification.
 
     Args:
         ctx: Job context for progress reporting and cancellation.
         wrestler: The wrestler name.
-        filter_type: One of "Starting Tie", "Move Used", "Move Defended".
-        filter_item: The value to filter by.
+        spec: The shared filter specification (or exact ``origins``).
         use_stream_copy: Whether to prefer stream-copy extraction.
 
     Returns:
@@ -408,51 +410,59 @@ def run_combine_clips_job(
 
     Raises:
         FileNotFoundError: If the wrestler's compiled CSV does not exist.
-        ValueError: If the CSV is unreadable or no sequences match.
+        ValueError: If the CSV is unreadable, origins are unknown, or no
+            sequences match.
         RuntimeError: If no clips were extracted or concatenation fails.
     """
-    filtered: pd.DataFrame = load_filtered_dataframe(wrestler, filter_type, filter_item)
+    filtered: pd.DataFrame = find_with_query(spec, wrestler)
+    filter_type, filter_item = reel_label(spec)
     if filtered.empty:
         raise ValueError(
             f"No sequences found for '{wrestler}' / {filter_type} = '{filter_item}'"
         )
 
-    reel: tuple[str, int, list[str]] | None = _build_reel(
+    reel: tuple[str, int, list[str], str | None] | None = _build_reel(
         ctx, filtered, wrestler, filter_type, filter_item, use_stream_copy, ctx.job_id
     )
     if reel is None:
-        return {"output": "", "segments": 0, "errors": ["Cancelled"]}
+        return {
+            "output": "", "segments": 0, "errors": ["Cancelled"], "latest": None,
+        }
 
-    output_name, segments, errors = reel
+    output_name, segments, errors, latest = reel
     ctx.report(100, f"Created: {output_name}")
     logging.info(f"Created highlight reel for {wrestler}: {output_name}")
-    return {"output": output_name, "segments": segments, "errors": errors}
+    return {
+        "output": output_name,
+        "segments": segments,
+        "errors": errors,
+        "latest": latest,
+    }
 
 
 def run_batch_clips_job(
     ctx: JobContext,
     wrestlers: list[str],
-    filter_type: FilterType,
-    filter_item: str,
+    spec: QuerySpec,
     use_stream_copy: bool = _STREAM_COPY_DEFAULT,
 ) -> dict[str, Any]:
-    """Build a highlight reel for every selected wrestler × the given filter.
+    """Build a highlight reel for every selected wrestler × the query spec.
 
     Args:
         ctx: Job context for progress reporting and cancellation.
         wrestlers: The wrestler names to process.
-        filter_type: One of "Starting Tie", "Move Used", "Move Defended".
-        filter_item: The value to filter by.
+        spec: The shared filter specification.
         use_stream_copy: Whether to prefer stream-copy extraction.
 
     Returns:
         A dict with per-wrestler results and a summary:
         ``{"results": [...], "successes": n, "failures": n, "summary": str}``.
     """
-    results: list[dict[str, str | bool]] = []
+    results: list[dict[str, str | bool | None]] = []
     successes: int = 0
     failures: int = 0
     total: int = len(wrestlers)
+    filter_type, filter_item = reel_label(spec)
 
     for i, wrestler in enumerate(wrestlers):
         if ctx.cancelled:
@@ -460,14 +470,12 @@ def run_batch_clips_job(
         ctx.report(100.0 * i / total, f"[{i + 1}/{total}] {wrestler} — {filter_item}")
 
         try:
-            filtered: pd.DataFrame = load_filtered_dataframe(
-                wrestler, filter_type, filter_item
-            )
+            filtered: pd.DataFrame = find_with_query(spec, wrestler)
             if filtered.empty:
                 raise ValueError(
                     f"No sequences found for '{wrestler}' / {filter_type} = '{filter_item}'"
                 )
-            reel: tuple[str, int, list[str]] | None = _build_reel(
+            reel: tuple[str, int, list[str], str | None] | None = _build_reel(
                 ctx,
                 filtered,
                 wrestler,
@@ -478,11 +486,17 @@ def run_batch_clips_job(
             )
             if reel is None:
                 break
-            output_name, _, errors = reel
+            output_name, _, errors, latest = reel
             msg: str = f"Created: {output_name}"
             if errors:
                 msg += " (some clips had errors)"
-            results.append({"wrestler": wrestler, "success": True, "message": msg})
+            results.append({
+                "wrestler": wrestler,
+                "success": True,
+                "message": msg,
+                "output": output_name,
+                "latest": latest,
+            })
             successes += 1
         except Exception as e:
             logging.warning(f"Batch clip failed for {wrestler}: {e}")

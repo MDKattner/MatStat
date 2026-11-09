@@ -59,6 +59,12 @@ export function mountTagFilm(root) {
     text: "Change Video",
     hidden: "",
   });
+  const deleteVideoBtn = el("button", {
+    class: "btn btn-ghost danger",
+    type: "button",
+    text: "Delete Video",
+    hidden: "",
+  });
 
   // ---------- Upload ----------
 
@@ -159,7 +165,38 @@ export function mountTagFilm(root) {
   function updateVideoLock() {
     const locked = state.videoConfirmed;
     changeBtn.hidden = !locked;
+    deleteVideoBtn.hidden = !state.video;
+    deleteVideoBtn.disabled = state.tagging;
     videoList.setDisabled(locked);
+  }
+
+  async function deleteVideo() {
+    if (!state.video || state.tagging) return;
+    const name = state.video;
+    const confirmed = await confirmModal({
+      title: "Delete video",
+      message: `Delete '${name}' from the untagged folder? This cannot be undone.`,
+    });
+    if (!confirmed) return;
+    try {
+      const { ok, body } = await fetchJson(
+        `/api/videos/untaged/${encodeURIComponent(name)}`, { method: "DELETE" }
+      );
+      if (!ok) throw new Error(body.detail || "Could not delete video.");
+      showToast(`Deleted ${name}.`, "success");
+      state.video = "";
+      state.videoConfirmed = false;
+      state.sequences = [];
+      videoList.clear();
+      seqListEl.replaceChildren();
+      seqCount.textContent = "0";
+      updateVideoLock();
+      updateButtons();
+      setStatus("Video deleted.");
+      await loadVideos();
+    } catch (err) {
+      showToast(err.message || "Could not delete video.", "error");
+    }
   }
 
   // ---------- Wrestler selector (right column, next to video) ----------
@@ -512,6 +549,7 @@ export function mountTagFilm(root) {
   endTime.markBtn.addEventListener("click", () => {
     endTime.setFromSeconds(Math.floor(state.playerPosMs / 1000));
   });
+  deleteVideoBtn.addEventListener("click", deleteVideo);
   addBtn.addEventListener("click", addSequence);
   finishBtn.addEventListener("click", finishTagging);
 
@@ -546,7 +584,7 @@ export function mountTagFilm(root) {
     el("h3", { text: "Select Video" }),
     uploadRow,
     videoList.node,
-    changeBtn,
+    el("div", { class: "row" }, [changeBtn, deleteVideoBtn]),
   ]);
   const wrestlerCard = el("section", { class: "tag-card wrestler-card" }, [
     el("h3", { text: "Main Wrestler" }),

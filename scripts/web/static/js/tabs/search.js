@@ -67,27 +67,22 @@ export function mountSearch(root) {
   // ---------- Search / Export ----------
 
   async function runSearch(query) {
-    const selected = query.wrestlers.length > 0 ? query.wrestlers : ["All"];
     panel.setButtonsEnabled(false);
     panel.setStatus("Searching...");
     state.searching = true;
     try {
-      const responses = await Promise.all(selected.map((name) =>
-        fetchJson("/api/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...query, wrestler: name }),
-        })
-      ));
-      const merged = [];
-      for (const { ok, body } of responses) {
-        if (!ok) continue;
-        for (const match of body.matches || []) merged.push(match);
-      }
-      state.matches = merged;
+      const { ok, body } = await fetchJson("/api/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(query),
+      });
+      if (!ok) throw new Error(body.detail || "Search failed.");
+      state.matches = body.matches || [];
       renderMatches();
       panel.setStatus(
-        merged.length === 0 ? "No matches found." : `Found ${merged.length} match(es).`
+        state.matches.length === 0
+          ? "No matches found."
+          : `Found ${state.matches.length} match(es).`
       );
     } catch (err) {
       showToast(err.message || "Search failed.", "error");
@@ -104,11 +99,10 @@ export function mountSearch(root) {
       return;
     }
     try {
-      const name = query.wrestlers.length === 1 ? query.wrestlers[0] : "All";
       const resp = await fetch("/api/search/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...query, wrestler: name }),
+        body: JSON.stringify(query),
       });
       if (!resp.ok) throw new Error("Export failed");
       const blob = await resp.blob();

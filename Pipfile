@@ -15,6 +15,8 @@ plotly = "*"
 [dev-packages]
 pytest = "*"
 httpx = "*"
+playwright = "*"
+axe-playwright-python = "*"
 
 [requires]
 python_version = "3.13"

@@ -15,6 +15,10 @@
 
 * { box-sizing: border-box; }
 
+/* The `hidden` attribute must win over component display rules (flex/grid).
+   Several components set `display:flex`, which otherwise defeats `hidden`. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;
@@ -108,6 +112,17 @@ html, body {
 }
 
 .icon-btn:hover { background: var(--bg-input); }
+
+/* ---------- Ruleset provenance banner ---------- */
+
+.ruleset-banner {
+  padding: 8px 16px;
+  background: var(--warning);
+  color: #1e1e2e;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+}
 
 /* ---------- Main content ---------- */
 
@@ -586,6 +601,18 @@ fieldset.tag-card { margin: 0; }
 }
 
 .seq-item:last-child { border-bottom: none; }
+
+.result-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  list-style: none;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.result-item:last-child { border-bottom: none; }
 
 .chapter-modal { max-width: 420px; }
 

@@ -307,6 +307,29 @@ class TestMakeFormattedDataFrame:
         assert df[COL_MATCH_DATE].iloc[0] == ""
         assert df[COL_MATCH_DATE].iloc[1] == "2026-08-01"
 
+    def test_stored_points_are_trusted_verbatim(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "stored.csv"
+        csv_file.write_text(
+            'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,99,123\n'
+        )
+
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
+
+        assert df[COL_NET_POINTS].iloc[0] == 99
+        assert df[COL_ADJUSTED_NET_POINTS].iloc[0] == 123
+        assert df.attrs["points_source"] == "stored"
+
+    def test_legacy_nine_column_csv_computes_on_load(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "legacy9.csv"
+        csv_file.write_text(
+            'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None\n'
+        )
+
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
+
+        assert df[COL_NET_POINTS].iloc[0] == 3
+        assert df.attrs["points_source"] == "computed_on_load"
+
     def test_unexpected_width_raises_clear_error(self, tmp_path) -> None:
         csv_file: Path = tmp_path / "weird.csv"
         csv_file.write_text("a,b,c,d,e,f,g,h,i,j")

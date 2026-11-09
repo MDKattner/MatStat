@@ -12,6 +12,7 @@ import pytest
 sys.path.append(str(Path(__file__).parent.parent))
 
 import scripts.helpers as helpers
+from scripts.helpers import MatchOutcomeConflictError
 from scripts.web import configs, stats
 
 from conftest import FakeContext
@@ -106,6 +107,43 @@ class TestProcessVideoSafely:
         assert "boom" in data
 
 
+class TestRulesetStatus:
+    """Tests for the manifest/active ruleset comparison."""
+
+    def test_missing_manifest_is_not_stale(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+
+        status: dict[str, Any] = stats.ruleset_status()
+
+        assert status["stale"] is False
+        assert status["compiled_ruleset"] == ""
+        assert status["active_ruleset"]
+
+    def test_hash_mismatch_sets_stale_without_mutating_points(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
+        monkeypatch.setattr(stats, "LoadAppConfig", lambda: helpers._DefaultAppConfig())
+        (dirs["csv"] / "manifest.json").write_text(json.dumps({
+            "ruleset": "OldStyle",
+            "ruleset_hash": "deadbeef",
+            "generated_at": "2026-01-01T00:00:00+00:00",
+        }))
+        csv_file: Path = dirs["csv"] / "Alice.csv"
+        csv_file.write_text(
+            'a.mkv:1,0,6,A,collar tie,double,nothing,T,None,99,123,W\n'
+        )
+
+        status: dict[str, Any] = stats.ruleset_status()
+        df = helpers.MakeFormattedDataFrame(csv_file)
+
+        assert status["stale"] is True
+        assert status["compiled_ruleset"] == "OldStyle"
+        assert status["active_ruleset"] == "Folkstyle"
+        assert df[helpers.COL_NET_POINTS].iloc[0] == 99
+        assert df[helpers.COL_ADJUSTED_NET_POINTS].iloc[0] == 123
+
+
 class TestRunCompileStatsJob:
     """Tests for stats.run_compile_stats_job — the job body."""
 
@@ -172,8 +210,9 @@ class TestRunCompileStatsJob:
         result: dict[str, Any] = stats.run_compile_stats_job(FakeContext(), ["Alice"])
 
         assert result["wrestlers"] == {"Alice": 1}
-        assert len(result["errors"]) == 1
-        assert "Jane Doe" in result["errors"][0]
+        assert result["errors"] == []
+        assert len(result["warnings"]) == 1
+        assert "Jane Doe" in result["warnings"][0]
         assert (tmp_path / "csv" / "Alice.csv").is_file()
         assert not (tmp_path / "csv" / "Jane Doe.csv").exists()
 
@@ -187,49 +226,144 @@ class TestRunCompileStatsJob:
         assert result["wrestlers"] == {"Alice": 0}
         assert not (tmp_path / "csv" / "Alice.csv").exists()
 
-    def test_unknown_wrestler_reported(self, tmp_path, monkeypatch) -> None:
+    def test_unknown_wrestler_preserves_existing_csv(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / "guest.mkv").write_bytes(b"x")
+        stale: Path = tmp_path / "csv" / "Jane Doe.csv"
+        stale.write_text("old-data")
         _mock_make_name_and_csv(monkeypatch, {"guest.mkv": ("Jane Doe", "", "row")})
 
         result: dict[str, Any] = stats.run_compile_stats_job(FakeContext(), ["Alice"])
 
         assert result["wrestlers"] == {"Alice": 0}
-        assert len(result["errors"]) == 1
-        assert "Jane Doe" in result["errors"][0]
-        assert not (tmp_path / "csv" / "Jane Doe.csv").exists()
+        assert result["errors"] == []
+        assert "Jane Doe" in result["wrestlers_stale"]
+        assert "Jane Doe" in result["warnings"][0]
+        assert stale.read_text() == "old-data"
+        manifest = json.loads((tmp_path / "csv" / "manifest.json").read_text())
+        assert manifest["wrestlers"]["Jane Doe"]["stale"] is True
 
-    def test_processing_failure_reported(self, tmp_path, monkeypatch) -> None:
+    def test_processing_failure_aborts_without_writing(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / "bad.mkv").write_bytes(b"x")
+        existing: Path = tmp_path / "csv" / "Alice.csv"
+        existing.write_text("old-data")
 
-        def broken(path: Path) -> tuple[str, str]:
+        def broken(path: Path) -> tuple[str, str, str]:
             raise OSError("corrupt")
 
         monkeypatch.setattr(stats, "MakeNameAndCSV", broken)
 
-        result: dict[str, Any] = stats.run_compile_stats_job(FakeContext(), ["Alice"])
+        with pytest.raises(RuntimeError, match="bad.mkv"):
+            stats.run_compile_stats_job(FakeContext(), ["Alice"])
 
-        assert result["wrestlers"] == {"Alice": 0}
-        assert len(result["errors"]) == 1
-        assert "bad.mkv" in result["errors"][0]
+        assert existing.read_text() == "old-data"
+        assert not (tmp_path / "csv" / "manifest.json").exists()
 
-    def test_no_videos_reports_idle(self, tmp_path, monkeypatch) -> None:
+    def test_no_videos_clears_stale_csvs(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
+        stale: Path = tmp_path / "csv" / "Alice.csv"
+        stale.write_text("old-data")
         ctx: FakeContext = FakeContext()
 
         result: dict[str, Any] = stats.run_compile_stats_job(ctx, ["Alice"])
 
-        assert result == {"videos_processed": 0, "wrestlers": {"Alice": 0}, "errors": []}
-        assert ctx.reports[-1] == (100, "No tagged videos found.")
+        assert result["videos_processed"] == 0
+        assert result["wrestlers"] == {"Alice": 0}
+        assert result["errors"] == []
+        assert not stale.exists()
+        manifest = json.loads((tmp_path / "csv" / "manifest.json").read_text())
+        assert manifest["wrestlers"]["Alice"]["rows"] == 0
+        assert ctx.reports[-1] == (100, "Compiled 0 videos.")
 
-    def test_missing_dir_treated_as_no_videos(self, tmp_path, monkeypatch) -> None:
+    def test_missing_dir_is_fatal(self, tmp_path, monkeypatch) -> None:
         dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
+        existing: Path = dirs["csv"] / "Alice.csv"
+        existing.write_text("old-data")
         dirs["taged"].rmdir()
+
+        with pytest.raises(FileNotFoundError, match="Tagged video directory"):
+            stats.run_compile_stats_job(FakeContext(), ["Alice"])
+
+        assert existing.read_text() == "old-data"
+        assert not (tmp_path / "csv" / "manifest.json").exists()
+
+    def test_manifest_records_sources_and_ruleset(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        (tmp_path / "taged" / "a.mkv").write_bytes(b"x")
+        _mock_make_name_and_csv(monkeypatch, {
+            "a.mkv": ("Alice", "2026-08-01",
+                      "a.mkv:1,0,10,A,collar tie,double,nothing,T,None"),
+        })
 
         result: dict[str, Any] = stats.run_compile_stats_job(FakeContext(), ["Alice"])
 
-        assert result["videos_processed"] == 0
+        assert result["manifest"] == "manifest.json"
+        manifest = json.loads((tmp_path / "csv" / "manifest.json").read_text())
+        assert manifest["schema_version"] == 1
+        assert manifest["ruleset"]
+        assert len(manifest["ruleset_hash"]) == 64
+        assert manifest["sources"][0]["file"] == "a.mkv"
+        assert manifest["sources"][0]["status"] == "ok"
+        assert manifest["wrestlers"]["Alice"]["rows"] == 1
+
+    def test_atomic_replace_failure_preserves_csv(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        (tmp_path / "taged" / "a.mkv").write_bytes(b"x")
+        existing: Path = tmp_path / "csv" / "Alice.csv"
+        existing.write_text("old-data")
+        _mock_make_name_and_csv(monkeypatch, {
+            "a.mkv": ("Alice", "", "a.mkv:1,0,10,A,collar tie,double,nothing,T,None"),
+        })
+
+        def broken_replace(src, dst) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(stats.os, "replace", broken_replace)
+
+        result: dict[str, Any] = stats.run_compile_stats_job(FakeContext(), ["Alice"])
+
+        assert existing.read_text() == "old-data"
+        assert any("Alice.csv" in error for error in result["errors"])
+
+    def test_conflicting_existing_csv_blocks_commit(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        (tmp_path / "taged" / "a.mkv").write_bytes(b"x")
+        conflicting: Path = tmp_path / "csv" / "Alice.csv"
+        conflicting.write_text(
+            '"a.mkv:1",0,6,A,collar tie,"double","sprawl","T","E",2,2,W\n'
+            '"a.mkv:2",6,12,D,standing,"sprawl","sweep single","E","T",-2,-2,L'
+        )
+        _mock_make_name_and_csv(monkeypatch, {
+            "a.mkv": ("Alice", "", "a.mkv:1,0,10,A,collar tie,double,nothing,T,None"),
+        })
+
+        with pytest.raises(MatchOutcomeConflictError, match="a.mkv"):
+            stats.run_compile_stats_job(FakeContext(), ["Alice"])
+
+        assert "a.mkv:1" in conflicting.read_text()
+        assert not (tmp_path / "csv" / "manifest.json").exists()
+
+    def test_force_overrides_conflict_and_warns(self, tmp_path, monkeypatch) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        (tmp_path / "taged" / "a.mkv").write_bytes(b"x")
+        conflicting: Path = tmp_path / "csv" / "Alice.csv"
+        conflicting.write_text(
+            '"a.mkv:1",0,6,A,collar tie,"double","sprawl","T","E",2,2,W\n'
+            '"a.mkv:2",6,12,D,standing,"sprawl","sweep single","E","T",-2,-2,L'
+        )
+        _mock_make_name_and_csv(monkeypatch, {
+            "a.mkv": ("Alice", "", "a.mkv:1,0,10,A,collar tie,double,nothing,T,None"),
+        })
+
+        result: dict[str, Any] = stats.run_compile_stats_job(
+            FakeContext(), ["Alice"], force=True
+        )
+
+        assert result["warnings"]
+        assert any("force" in warning.lower() for warning in result["warnings"])
+        assert conflicting.read_text().startswith("a.mkv:1,0,10,A")
+        assert (tmp_path / "csv" / "manifest.json").is_file()
 
     def test_cancelled_stops_early(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)

@@ -6,7 +6,7 @@ for the *entire* transcode before playing anything), ffmpeg emits a live
 playlist plus ~4-second segments. Playback can begin as soon as the first
 segment exists while ffmpeg keeps encoding the rest in the background.
 
-Layout under tmp/preview/hls/{source.name}/:
+Layout under tmp/preview/hls/{stem}-{identity-key}/:
 
     prog.m3u8                 live playlist (stub until segments appear)
     segments/seg_%05d.ts      4-second MPEG-TS segments
@@ -18,6 +18,7 @@ in-flight map deduplicates concurrent transcode requests for the same source.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import shutil
 import threading
@@ -42,9 +43,36 @@ _IN_FLIGHT: dict[Path, str] = {}
 _LOCK: threading.Lock = threading.Lock()
 
 
+def source_cache_key(source: Path) -> str:
+    """Return a stable identity key for a source video's preview cache.
+
+    The key mixes the resolved path with the file's modification time and
+    size, so two videos with the same basename in different directories (or a
+    re-tagged file with the same name) never share a cache directory.
+
+    Args:
+        source: The source video path.
+
+    Returns:
+        A short hex digest; the unresolved path is only used when the file is
+        missing.
+    """
+    try:
+        stat = source.stat()
+        identity: str = f"{source.resolve()}|{stat.st_mtime_ns}|{stat.st_size}"
+    except OSError:
+        identity = str(source.resolve())
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+
+
 def hls_dir_path(source: Path) -> Path:
     """The directory holding a source video's HLS output."""
-    return PREVIEW_DIR / "hls" / source.name
+    return PREVIEW_DIR / "hls" / f"{source.stem}-{source_cache_key(source)}"
+
+
+def purge_preview(source: Path) -> None:
+    """Remove a source video's cached HLS preview, if any."""
+    shutil.rmtree(hls_dir_path(source), ignore_errors=True)
 
 
 def playlist_path(source: Path) -> Path:

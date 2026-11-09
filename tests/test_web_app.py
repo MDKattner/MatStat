@@ -83,6 +83,59 @@ class TestVideoListing:
         assert resp.json() == {"files": []}
 
 
+class TestDeleteVideo:
+    """Tests for DELETE /api/videos/{dir}/{file} and reel deletion."""
+
+    def test_deletes_tagged_video_and_preview(self, client, tmp_path) -> None:
+        video: Path = tmp_path / "taged" / "a.mkv"
+        video.write_bytes(b"x")
+        transcode.prepare_hls(video)
+
+        resp = client.delete("/api/videos/taged/a.mkv")
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "deleted": "a.mkv", "needs_recompile": True, "job_id": None,
+        }
+        assert not video.exists()
+        assert not transcode.hls_dir_path(video).exists()
+
+    def test_untagged_delete_does_not_request_recompile(self, client, tmp_path) -> None:
+        video: Path = tmp_path / "untaged" / "a.mkv"
+        video.write_bytes(b"x")
+
+        resp = client.delete("/api/videos/untaged/a.mkv")
+
+        assert resp.status_code == 200
+        assert resp.json()["needs_recompile"] is False
+        assert not video.exists()
+
+    def test_unknown_dir_404(self, client) -> None:
+        assert client.delete("/api/videos/nope/a.mkv").status_code == 404
+
+    def test_missing_file_404(self, client) -> None:
+        assert client.delete("/api/videos/taged/nope.mkv").status_code == 404
+
+    def test_invalid_name_400(self, client) -> None:
+        resp = client.delete("/api/videos/taged/a%5Cb.mkv")
+        assert resp.status_code == 400
+
+    def test_deletes_reel(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(web_app, "clips_dir", tmp_path / "clips")
+        reel: Path = tmp_path / "clips" / "reel.mkv"
+        reel.write_bytes(b"x")
+
+        resp = client.delete("/api/clips/reel.mkv")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"deleted": "reel.mkv"}
+        assert not reel.exists()
+
+    def test_missing_reel_404(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(web_app, "clips_dir", tmp_path / "clips")
+        assert client.delete("/api/clips/nope.mkv").status_code == 404
+
+
 class TestPreviewFlow:
     """Tests for the progressive HLS preview endpoints."""
 

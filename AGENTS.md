@@ -2,16 +2,27 @@
 
 ## Core Concepts
 - **Frontend**: Sole frontend is a FastAPI web app (`scripts/web/`). No CLI or desktop GUI exists.
-- **Environment**: NixOS (`nix-shell`) or `pipenv` for non-NixOS.
+- **Environment**: Nix flake (`nix develop`) on NixOS or any system with flakes enabled, or `pipenv` for a non-Nix setup.
 - **No Build/Lint/Format System**: Style is enforced manually.
 
 ## Development Commands
 ```bash
-# Launch (NixOS)
+# Enter dev shell (flake provides Python, ffmpeg, mkvtoolnix, pytest, Playwright/Chromium)
+nix develop
+
+# Launch (from inside the dev shell)
 MATSTAT_AUTH=off uvicorn scripts.web.app:app --reload
 
 # Run Tests
-pytest
+pytest                 # fast suite; browser tests excluded
+pytest -m browser      # Playwright + axe UI suite
+```
+
+The dev shell's `shellHook` also defines inspection helpers:
+```bash
+matstat-meta  vids/taged/*.mkv            # Tagged-video title + chapter metadata
+matstat-csv   stats/wrestler_data/*.csv   # Compiled CSV shape as loaded by helpers
+matstat-stats stats/wrestler_data/*.csv   # Move/initiation stats overview
 ```
 
 ## Code Style & Conventions
@@ -27,10 +38,11 @@ pytest
 - **Configs**: JSON in `cfg/` (never commit real wrestler PII). Loaders in `helpers.py` (e.g., `LoadAppConfig`).
 - **DataFrame Querying**: Use `QueryBuilder` from `scripts/helpers.py` for all DataFrame filtering. Chainable API with 10 filter methods + `apply()` for sort/pagination. Never hand-roll ad-hoc filter logic.
 - **Frontend Components**: Shared UI lives in `scripts/web/static/js/components.js`. Use `queryPanel` for unified filter UIs (Search + Combine Clips). Use `el()` for all DOM construction.
-- **Tab Structure**: Tabs mount into `#tab-*` roots via `mount*(root)`. Each tab owns a state object, loads config via `loadOptions()`/`loadConfigs()`, and listens to `"configs-updated"` window events.
+- **Tab Structure**: Tabs mount into `#<tab>-root` elements via `mount*(root)`. Each tab owns a state object, loads config via `loadOptions()`/`loadConfigs()`, and listens to `"configs-updated"` window events.
 
 ## Testing
-- **Setup**: `pytest`.
+- **Setup**: `pytest`. The default run excludes `browser`-marked tests; run `pytest -m browser` for the Playwright suite (Chromium is supplied by the Nix flake).
+- **Browser harness**: `tests/test_browser_smoke.py` launches uvicorn with `MATSTAT_ROOT` pointed at a temp data tree, so tests never touch real `vids/`/`stats/`/`cfg/`. The `axe` checks skip when `axe-playwright-python` is not installed.
 - **Import Hack**: Every test file MUST include:
   ```python
   import sys
@@ -44,7 +56,7 @@ pytest
 All `COL_*` constants are defined in `scripts/helpers.py`. Key columns:
 - `COL_ORIGIN` (index), `COL_START_TIME`, `COL_END_TIME`, `COL_ATTACKING` (bool)
 - `COL_TIE_UP` (str, dual-wrestler format: `"yours:theirs"`), `COL_TEAM_MOVES`, `COL_OPPONENT_MOVES` (list[str])
-- `COL_NET_POINTS`, `COL_ADJUSTED_NET_POINTS` (int16, recomputed on load)
+- `COL_NET_POINTS`, `COL_ADJUSTED_NET_POINTS` (int16; stored values are trusted on load, recomputed only for legacy 9-column CSVs)
 - `COL_MATCH_RESULT` (`"W"` / `"L"` / `""`), `COL_MATCH_DATE` (`"YYYY-MM-DD"` / `""`)
 - `COL_MATCH_DURATION` (computed by `QueryBuilder.duration_filter`, not stored in CSV)
 
@@ -68,12 +80,24 @@ df = (
 ```
 
 ## API Endpoints (Data)
-- `POST /api/search` — `SearchQuery` body, returns `{ count, matches }`. Supports all QueryBuilder fields.
+- `POST /api/search` — `QuerySpec` body, returns `{ count, matches }`.
 - `POST /api/search/export` — Same body, returns CSV blob.
-- `POST /api/clips/find` — `FindRequest` body. Legacy path (filter_type + filter_item) or QueryBuilder path (filter_item empty).
-- `POST /api/combine-clips` — Single reel job. Uses `filter_type` + `filter_item`.
-- `POST /api/combine-clips/batch` — Multi-wrestler reel job.
+- `POST /api/clips/find` — `QuerySpec` body; returns `{ wrestlers, count, matches }`.
+- `POST /api/combine-clips` — Single reel job from a `QuerySpec` (`wrestlers` must have exactly one name).
+- `POST /api/combine-clips/batch` — Multi-wrestler reel job from one `QuerySpec`.
+- `DELETE /api/videos/{dir}/{file}` — Delete an `untaged`/`taged` video; `recompile=true` re-tabulates.
+- `DELETE /api/clips/{file}` — Delete a generated reel.
+- `GET /api/reels` — List generated reels grouped by base name with all versions.
+- `GET /api/reports/latest` — Freshness/provenance metadata for the latest report.
+- `GET /api/stats/provenance` — Compiled vs active ruleset status (never mutates points).
 - `GET /api/config` — Full config (moves, ties, wrestlers, teams, rulesets).
+
+All query routes share `scripts/web/query.py`: `QuerySpec` (extra fields forbidden) and
+`apply_query(df, spec, wrestler)`. There is no legacy `filter_type`/`filter_item` shape;
+unknown/retired fields return `422`. `origins` selects an exact row set.
+`QuerySpec` holds `wrestlers`, `attack_mode`, `tie_up`, `opp_tie`, `team_move`,
+`opp_move`, `move_match` (`substring`/`exact`), `match_result`, date/points/duration
+ranges, `sort_by`/`ascending`/`limit`/`offset`, and `origins`.
 
 ## Frontend Components
 - `el(tag, attrs, children)` — DOM element factory (all DOM built programmatically).

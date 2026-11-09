@@ -1,19 +1,17 @@
 """Search job for the web app — query all wrestler tagged data.
 
-Every wrestler's
-compiled CSV is loaded via ``LoadAllWrestlerData`` and filtered through a
-``QueryBuilder`` chain. The matching sequences are returned as JSON or
-exported as CSV.
+Every wrestler's compiled CSV is loaded via ``LoadAllWrestlerData`` and filtered
+through the shared ``apply_query`` implementation. The matching sequences are
+returned as JSON or exported as CSV.
 """
 
 from __future__ import annotations
 
 import csv
 import io
-from typing import Any, Literal
+from typing import Any
 
 import pandas as pd
-from pydantic import BaseModel
 
 from scripts.helpers import (
     COL_ADJUSTED_NET_POINTS,
@@ -26,11 +24,12 @@ from scripts.helpers import (
     COL_TIE_UP,
     LoadAllWrestlerData,
     MakeFormattedDataFrame,
-    QueryBuilder,
     csv_dir,
 )
+from scripts.web.query import QuerySpec, apply_query, selected_wrestlers
 
-AttackMode = Literal["All", "Attacking", "Defending"]
+# Kept as an alias for existing imports; QuerySpec is the only request shape.
+SearchQuery = QuerySpec
 
 _CSV_FIELDS: list[str] = [
     "wrestler",
@@ -44,34 +43,6 @@ _CSV_FIELDS: list[str] = [
     "opponent_moves",
     "adjusted_net_points",
 ]
-
-
-class SearchQuery(BaseModel):
-    """Payload for POST /api/search — the filter criteria.
-
-    ``min_points``/``max_points`` bound the adjusted net points range (net
-    points plus the pin bonus), matching PCA dot coloring and report stats.
-    ``min_raw_points``/``max_raw_points`` bound the raw net points range.
-    """
-
-    wrestler: str = ""
-    attack_mode: AttackMode = "All"
-    tie_up: str = ""
-    team_move: str = ""
-    opp_move: str = ""
-    min_points: int = -20
-    max_points: int = 20
-    match_result: str = ""
-    min_date: str = ""
-    max_date: str = ""
-    min_raw_points: int = -20
-    max_raw_points: int = 20
-    min_duration: int | None = None
-    max_duration: int | None = None
-    sort_by: str = ""
-    ascending: bool = True
-    limit: int | None = None
-    offset: int = 0
 
 
 def list_wrestlers() -> list[str]:
@@ -92,53 +63,34 @@ def _join_list(value: Any) -> str:
     return ""
 
 
-def _build_query(query: SearchQuery, df: pd.DataFrame) -> pd.DataFrame:
-    """Apply all SearchQuery filters to a single wrestler DataFrame via QueryBuilder."""
-    qb: QueryBuilder = (
-        QueryBuilder(df)
-        .attack_filter(query.attack_mode)
-        .tie_filter(query.tie_up)
-        .team_move_filter(query.team_move)
-        .opp_move_filter(query.opp_move)
-        .match_result_filter(query.match_result)
-        .date_range_filter(query.min_date, query.max_date)
-        .adjusted_net_points_filter(query.min_points, query.max_points)
-        .net_points_filter(query.min_raw_points, query.max_raw_points)
-    )
-    if query.min_duration is not None or query.max_duration is not None:
-        qb.duration_filter(query.min_duration, query.max_duration)
-    sort_col: str = query.sort_by.strip() or None
-    return qb.apply(
-        sort_by=sort_col,
-        ascending=query.ascending,
-        limit=query.limit,
-        offset=query.offset,
-    )
+def _load_frames(spec: QuerySpec) -> dict[str, pd.DataFrame]:
+    """Load the CSV frames selected by ``spec`` (all when none are named)."""
+    names: list[str] = selected_wrestlers(spec)
+    if not names:
+        return LoadAllWrestlerData(csv_dir)
+    frames: dict[str, pd.DataFrame] = {}
+    for name in names:
+        target = csv_dir / f"{name}.csv"
+        if target.is_file():
+            frames[name] = MakeFormattedDataFrame(target)
+    return frames
 
 
-def execute_search(query: SearchQuery) -> list[dict[str, Any]]:
-    """Run a search across all compiled wrestler data.
+def execute_search(query: QuerySpec) -> list[dict[str, Any]]:
+    """Run a search across the selected compiled wrestler data.
 
     Args:
-        query: The filter criteria.
+        query: The shared filter specification.
 
     Returns:
         A list of match dicts (wrestler, origin, video, times, attacking,
         tie_up, team_moves, opponent_moves, adjusted_net_points).
     """
-    # Single-wrestler fast path: load only the requested CSV.
-    if query.wrestler and query.wrestler != "All":
-        target = csv_dir / f"{query.wrestler}.csv"
-        all_data: dict[str, pd.DataFrame] = (
-            {query.wrestler: MakeFormattedDataFrame(target)} if target.is_file() else {}
-        )
-    else:
-        all_data = LoadAllWrestlerData(csv_dir)
-
+    all_data: dict[str, pd.DataFrame] = _load_frames(query)
     rows: list[dict[str, Any]] = []
 
     for wrestler_name, df in all_data.items():
-        subset: pd.DataFrame = _build_query(query, df)
+        subset: pd.DataFrame = apply_query(df, query, wrestler_name)
 
         for index, row in subset.iterrows():
             rows.append({

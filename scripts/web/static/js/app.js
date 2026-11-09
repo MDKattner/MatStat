@@ -565,6 +565,45 @@ function initConfigEditor() {
   });
 }
 
+// ---------- Ruleset provenance banner ----------
+
+/**
+ * Keep a persistent banner in sync with the compiled data's ruleset.
+ *
+ * The banner appears only when the compiled CSVs were produced under a
+ * different ruleset than the one currently active. It never changes any
+ * stored points; it simply tells the user to re-tabulate when they want the
+ * active ruleset reflected in new values.
+ */
+function initRulesetBanner() {
+  const banner = document.getElementById("ruleset-banner");
+  if (!banner) return;
+
+  async function refresh() {
+    try {
+      const { ok, body } = await fetchJson("/api/stats/provenance");
+      if (!ok || !body.stale) {
+        banner.hidden = true;
+        banner.textContent = "";
+        return;
+      }
+      const compiled = body.compiled_ruleset || "an older ruleset";
+      const active = body.active_ruleset || "the active ruleset";
+      banner.textContent =
+        `Compiled data uses "${compiled}" but "${active}" is active. ` +
+        "Existing point values are unchanged; re-tabulate to apply the active ruleset.";
+      banner.hidden = false;
+    } catch {
+      banner.hidden = true;
+    }
+  }
+
+  refresh();
+  window.addEventListener("tab-shown", refresh);
+  window.addEventListener("configs-updated", refresh);
+  window.addEventListener("stats-updated", refresh);
+}
+
 // ---------- Boot ----------
 
 function boot() {
@@ -582,6 +621,7 @@ function boot() {
   safe("initStatus", initStatus);
   safe("initAbout", initAbout);
   safe("initConfigEditor", initConfigEditor);
+  safe("initRulesetBanner", initRulesetBanner);
   safe("mountAudit", () => mountAudit(document.getElementById("audit-root")));
   safe("mountCombineClips", () => mountCombineClips(document.getElementById("combine-clips-root")));
   safe("mountPca", () => mountPca(document.getElementById("pca-root")));
