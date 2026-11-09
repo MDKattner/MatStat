@@ -21,6 +21,8 @@ let
       exec python -m uvicorn scripts.web.app:app \
         --host "''${MATSTAT_HOST:-127.0.0.1}" \
         --port "''${MATSTAT_PORT:-8000}" \
+        --proxy-headers \
+        --forwarded-allow-ips "''${MATSTAT_FORWARDED_ALLOW_IPS:-127.0.0.1}" \
         "$@"
     '';
   };

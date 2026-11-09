@@ -41,6 +41,7 @@ matstat-stats stats/wrestler_data/*.csv   # Move/initiation stats overview
 - **Video Preview**: HLS progressive streaming (`scripts.web.transcode`).
 - **Configs**: JSON in `cfg/` (never commit real wrestler PII). Loaders in `helpers.py` (e.g., `LoadAppConfig`).
 - **DataFrame Querying**: Use `QueryBuilder` from `scripts/helpers.py` for all DataFrame filtering. Chainable API with 10 filter methods + `apply()` for sort/pagination. Never hand-roll ad-hoc filter logic.
+- **Edge Middleware**: `scripts/web/app.py` owns the security-header, CSRF-origin, upload-size, and auth-gate middleware. The security-header middleware is defined last so it wraps every short-circuit response. Public probes and the login script live in `_PUBLIC_PATHS`; upload limits are module globals (`_UPLOAD_MAX_BYTES`, etc.) and are monkeypatched in tests.
 - **Frontend Components**: Shared UI lives in `scripts/web/static/js/components.js`. Use `queryPanel` for unified filter UIs (Search + Combine Clips). Use `el()` for all DOM construction.
 - **Tab Structure**: Tabs mount into `#<tab>-root` elements via `mount*(root)`. Each tab owns a state object, loads config via `loadOptions()`/`loadConfigs()`, and listens to `"configs-updated"` window events.
 
@@ -84,6 +85,9 @@ df = (
 ```
 
 ## API Endpoints (Data)
+- `GET /healthz` — public liveness probe (bypasses auth).
+- `GET /readyz` — public readiness probe; checks data root, config, and ffmpeg (bypasses auth).
+- `POST /api/videos` — Batch upload; enforces `MATSTAT_MAX_UPLOAD_MB`, `MATSTAT_MAX_REQUEST_MB`, `MATSTAT_MAX_UPLOAD_FILES`, extension allowlist, free-space reserve, and an ffprobe video check.
 - `POST /api/search` — `QuerySpec` body, returns `{ count, matches }`.
 - `POST /api/search/export` — Same body, returns CSV blob.
 - `POST /api/clips/find` — `QuerySpec` body; returns `{ wrestlers, count, matches }`.

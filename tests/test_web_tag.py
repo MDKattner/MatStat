@@ -13,6 +13,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from conftest import FakeContext
 
 from scripts.helpers import ChapterSequence
+from scripts.web import app as web_app
 from scripts.web import configs
 from scripts.web import tag
 from scripts.web import transcode
@@ -331,7 +332,8 @@ class TestRunTagJob:
 class TestUploadRoutes:
     """Tests for POST /api/videos — batch video upload into the untagged pool."""
 
-    def test_upload_writes_file(self, client, tmp_path) -> None:
+    def test_upload_writes_file(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(web_app, "_is_valid_video", lambda _path: True)
         resp = client.post(
             "/api/videos",
             files={"files": ("match.mkv", b"video-bytes", "video/x-matroska")},
@@ -343,7 +345,8 @@ class TestUploadRoutes:
         }
         assert (tmp_path / "untaged" / "match.mkv").read_bytes() == b"video-bytes"
 
-    def test_upload_batch_multiple_files(self, client, tmp_path) -> None:
+    def test_upload_batch_multiple_files(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(web_app, "_is_valid_video", lambda _path: True)
         resp = client.post(
             "/api/videos",
             files=[
@@ -406,7 +409,8 @@ class TestUploadRoutes:
         assert body["results"][0]["status"] == "error"
         assert "Invalid file name" in body["results"][0]["detail"]
 
-    def test_upload_batch_mixed_results(self, client, tmp_path) -> None:
+    def test_upload_batch_mixed_results(self, client, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(web_app, "_is_valid_video", lambda _path: True)
         (tmp_path / "untaged" / "existing.mkv").write_bytes(b"old")
         resp = client.post(
             "/api/videos",

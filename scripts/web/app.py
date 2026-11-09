@@ -10,7 +10,7 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -28,6 +28,7 @@ os.chdir(_project_root)
 
 from scripts.helpers import (
     AppConfig,
+    GetVideoCodecs,
     Roster,
     RosterToDict,
     clips_dir,
@@ -70,6 +71,69 @@ _SAFE_NAME_RE: re.Pattern[str] = re.compile(r"^[^/\\:,\x00-\x1f\x7f]+$")
 
 # HLS segment files are named seg_00000.ts, seg_00001.ts, ...
 _SEGMENT_RE: re.Pattern[str] = re.compile(r"^seg_\d{5}\.ts$")
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    """Read a positive integer from the environment, falling back on garbage."""
+    raw: str = os.environ.get(name, "").strip()
+    try:
+        value: int = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+# Upload guards. Limits are configurable so a deployment can match its disk
+# and proxy capacity without editing code. ``MAX_REQUEST_BYTES`` is a coarse
+# Content-Length gate; ``MAX_UPLOAD_BYTES`` is enforced per file while copying
+# and is the number that actually protects the media pool.
+_UPLOAD_MAX_BYTES: int = _env_positive_int("MATSTAT_MAX_UPLOAD_MB", 4096) * 1024 * 1024
+_REQUEST_MAX_BYTES: int = _env_positive_int("MATSTAT_MAX_REQUEST_MB", 8192) * 1024 * 1024
+_MIN_FREE_BYTES: int = _env_positive_int("MATSTAT_MIN_FREE_MB", 1024) * 1024 * 1024
+_MAX_UPLOAD_FILES: int = _env_positive_int("MATSTAT_MAX_UPLOAD_FILES", 20)
+
+# Only real video containers may enter the pool. Extend the allowlist with
+# ``MATSTAT_ALLOWED_EXTENSIONS=".mkv,.mp4,..."`` when a deployment needs it.
+_ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
+    ext.strip().lower()
+    for ext in os.environ.get(
+        "MATSTAT_ALLOWED_EXTENSIONS", ".mkv,.mp4,.mov,.webm,.m4v"
+    ).split(",")
+    if ext.strip()
+)
+
+# HSTS is only sent over HTTPS and is disabled with MATSTAT_HSTS_MAX_AGE=0.
+try:
+    _HSTS_MAX_AGE: int = max(
+        0, int(os.environ.get("MATSTAT_HSTS_MAX_AGE", "31536000") or 0)
+    )
+except ValueError:
+    _HSTS_MAX_AGE = 31536000
+
+# A strict, same-origin policy. Inline styles remain allowed for Plotly (which
+# injects them) and script-src is limited to same-origin files.
+_CSP: str = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "font-src 'self' data:; "
+    "media-src 'self' blob:; "
+    "connect-src 'self' ws: wss:; "
+    "worker-src 'self' blob:; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+
+_SAFE_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+
+# Unauthenticated GETs: probes plus the login page's external script (the page
+# itself is public, so its script must be loadable before a session exists).
+_PUBLIC_PATHS: frozenset[str] = frozenset(
+    {"/healthz", "/readyz", "/static/js/login.js"}
+)
 
 # The log panel is removed from the web UI unless logging is explicitly
 # enabled (the web analog of the pre-web --visible-logging flag).
@@ -132,6 +196,28 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
 @app.middleware("http")
+async def _request_size_guard(request: Request, call_next) -> Response:
+    """Reject oversized upload requests before multipart parsing spools them.
+
+    A chunked request without ``Content-Length`` still gets the per-file limit
+    inside the upload handler; this is the cheap first line of defense.
+    """
+    if request.method == "POST" and request.url.path == "/api/videos":
+        declared: str = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > _REQUEST_MAX_BYTES:
+            return JSONResponse(
+                {
+                    "detail": (
+                        "Upload request exceeds the configured "
+                        f"{_REQUEST_MAX_BYTES // (1024 * 1024)} MB limit"
+                    )
+                },
+                status_code=413,
+            )
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def _no_stale_cache(request: Request, call_next) -> Response:
     """Revalidate HTML/CSS/JS on every load so cached assets never go stale.
 
@@ -158,7 +244,8 @@ async def _auth_gate(request: Request, call_next) -> Response:
     if auth.enabled():
         path: str = request.url.path
         public: bool = (
-            (request.method == "GET" and path == "/login")
+            (request.method == "GET" and path in _PUBLIC_PATHS)
+            or (request.method == "GET" and path == "/login")
             or (request.method == "POST" and path == "/api/auth/login")
             or (request.method == "POST" and path == "/api/auth/logout")
         )
@@ -167,6 +254,54 @@ async def _auth_gate(request: Request, call_next) -> Response:
                 return JSONResponse({"detail": "Not authenticated"}, status_code=401)
             return RedirectResponse(url="/login", status_code=302)
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _csrf_origin_guard(request: Request, call_next) -> Response:
+    """Reject state-changing requests whose ``Origin`` disagrees with Host.
+
+    Browsers send ``Origin`` on cross-site POST/PUT/DELETE requests, so a
+    mismatch is a CSRF attempt. Missing ``Origin`` is allowed for non-browser
+    clients (curl, scripts, tests); SameSite=Lax still protects cookies.
+    """
+    if request.method not in _SAFE_METHODS:
+        origin: str = request.headers.get("origin", "")
+        if origin:
+            origin_host: str = urlsplit(origin).netloc.lower()
+            request_host: str = request.headers.get("host", "").lower()
+            if not request_host or origin_host != request_host:
+                return JSONResponse(
+                    {"detail": "Cross-origin request rejected"},
+                    status_code=403,
+                )
+    return await call_next(request)
+
+
+# Defined last so it is the outermost middleware (FastAPI inserts new
+# middleware at the front of the stack): headers cover redirects and the
+# short-circuit 401/403/413 responses too.
+@app.middleware("http")
+async def _security_headers(request: Request, call_next) -> Response:
+    """Attach baseline browser-hardening headers to every response.
+
+    ``Content-Security-Policy`` is strict: scripts must be same-origin files
+    (the login page's script lives in ``static/js/login.js``), while inline
+    styles stay allowed for Plotly. HSTS is only sent when the request arrived
+    over HTTPS (directly or via a trusted proxy).
+    """
+    response: Response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+    )
+    response.headers.setdefault("Content-Security-Policy", _CSP)
+    if _HSTS_MAX_AGE > 0 and request.url.scheme == "https":
+        response.headers.setdefault(
+            "Strict-Transport-Security", f"max-age={_HSTS_MAX_AGE}"
+        )
+    return response
 
 
 def _resolve_preview_source(dir_name: str, file_name: str) -> Path:
@@ -340,6 +475,49 @@ def _strip_auth_ui(html: str) -> str:
     return html
 
 
+def _dir_writable(path: Path) -> bool:
+    """Return True when a probe file can be created and removed in ``path``."""
+    probe: Path = path / f".matstat-ready-{uuid.uuid4().hex}"
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe.write_bytes(b"")
+        probe.unlink()
+        return True
+    except OSError:
+        probe.unlink(missing_ok=True)
+        return False
+
+
+@app.get("/healthz", response_model=None)
+async def liveness() -> dict[str, str]:
+    """Public liveness probe: the process is up and serving HTTP."""
+    return {"status": "ok"}
+
+
+@app.get("/readyz", response_model=None)
+async def readiness() -> Response:
+    """Public readiness probe with no sensitive detail.
+
+    Checks the data root is writable, the config can be loaded (missing
+    config falls back to defaults), and ffmpeg is on PATH.
+    """
+    checks: dict[str, str] = {
+        "data_root": "ok" if await run_in_threadpool(_dir_writable, _UPLOAD_DIR) else "error",
+        "config": "ok",
+        "ffmpeg": "ok" if shutil.which("ffmpeg") is not None else "error",
+    }
+    try:
+        configs.load_app_config()
+    except Exception:
+        logging.exception("Readiness config check failed")
+        checks["config"] = "error"
+    ready: bool = all(value == "ok" for value in checks.values())
+    return JSONResponse(
+        {"status": "ok" if ready else "unavailable", "checks": checks},
+        status_code=200 if ready else 503,
+    )
+
+
 @app.get("/api/health")
 async def health() -> dict[str, str]:
     """Liveness probe used by the frontend and tests."""
@@ -404,6 +582,43 @@ async def delete_video(
     }
 
 
+def _is_valid_video(path: Path) -> bool:
+    """True when ffprobe can find at least one video stream in ``path``."""
+    return bool(GetVideoCodecs(path).get("video"))
+
+
+def _copy_upload(file: UploadFile, dest: Path, max_bytes: int) -> str | None:
+    """Copy a spooled upload to ``dest`` with a hard byte cap.
+
+    Returns an error message (and removes the partial file) on failure, or
+    ``None`` on success.
+    """
+    written: int = 0
+    try:
+        with open(dest, "wb") as out:
+            while True:
+                chunk: bytes = file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise ValueError("too large")
+                out.write(chunk)
+    except ValueError:
+        dest.unlink(missing_ok=True)
+        return f"File exceeds the {max_bytes // (1024 * 1024)} MB upload limit"
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        return f"Upload failed: {e}"
+    return None
+
+
+def _disk_has_room(required_bytes: int) -> bool:
+    """True when the upload can land without crossing the free-space reserve."""
+    free: int = shutil.disk_usage(_UPLOAD_DIR).free
+    return free - required_bytes >= _MIN_FREE_BYTES
+
+
 @app.post("/api/videos", response_model=None)
 async def upload_videos(files: list[UploadFile] | None = File(default=None)) -> dict[str, Any]:
     """Upload one or more video files into the untagged pool.
@@ -411,11 +626,21 @@ async def upload_videos(files: list[UploadFile] | None = File(default=None)) -> 
     Each file is handled independently: per-file results report whether it was
     uploaded, collided with an existing name, or failed, so a bad or duplicate
     file never blocks the rest of the batch. A request with no files is a 400.
+    Files must have an allowed video extension, fit the size cap, and pass an
+    ffprobe check before they join the pool.
     """
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
+    if len(files) > _MAX_UPLOAD_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many files in one request (max {_MAX_UPLOAD_FILES})",
+        )
 
     _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    existing: set[str] = {
+        p.name.lower() for p in _UPLOAD_DIR.iterdir() if p.is_file()
+    }
     results: list[dict[str, Any]] = []
     for file in files:
         file_name: str = file.filename or ""
@@ -425,21 +650,41 @@ async def upload_videos(files: list[UploadFile] | None = File(default=None)) -> 
             result["detail"] = "Invalid file name"
             results.append(result)
             continue
-        dest: Path = _UPLOAD_DIR / file_name
-        if dest.exists():
+        extension: str = Path(file_name).suffix.lower()
+        if extension not in _ALLOWED_EXTENSIONS:
+            result["status"] = "error"
+            result["detail"] = (
+                f"Unsupported video type '{extension or 'none'}'. Allowed: "
+                + ", ".join(sorted(_ALLOWED_EXTENSIONS))
+            )
+            results.append(result)
+            continue
+        if file_name.lower() in existing:
             result["status"] = "conflict"
             result["detail"] = f"File already exists: {file_name}"
             results.append(result)
             continue
-        try:
-            with open(dest, "wb") as out:
-                shutil.copyfileobj(file.file, out)
-        except Exception as e:
-            dest.unlink(missing_ok=True)
+        required: int = getattr(file, "size", None) or 0
+        if not _disk_has_room(required):
             result["status"] = "error"
-            result["detail"] = f"Upload failed: {e}"
+            result["detail"] = "Not enough free disk space for this upload"
             results.append(result)
             continue
+
+        dest: Path = _UPLOAD_DIR / file_name
+        error: str | None = await run_in_threadpool(
+            _copy_upload, file, dest, _UPLOAD_MAX_BYTES
+        )
+        if error is None and not await run_in_threadpool(_is_valid_video, dest):
+            dest.unlink(missing_ok=True)
+            error = "File is not a readable video"
+        if error is not None:
+            result["status"] = "error"
+            result["detail"] = error
+            results.append(result)
+            continue
+
+        existing.add(file_name.lower())
         logging.info(f"Uploaded video: {file_name}")
         result["status"] = "ok"
         results.append(result)

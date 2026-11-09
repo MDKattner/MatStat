@@ -85,6 +85,44 @@ in
       description = "Open the app port in the firewall. Prefer a reverse proxy instead.";
     };
 
+    forwardedAllowIps = lib.mkOption {
+      type = lib.types.str;
+      default = "127.0.0.1,::1";
+      example = "127.0.0.1,::1";
+      description = ''
+        Proxy addresses allowed to set `X-Forwarded-*` headers. Keep this to
+        loopback when a reverse proxy runs on the same host; it makes login
+        rate limiting and logs use the real client IP.
+      '';
+    };
+
+    maxUploadMb = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 4096;
+      description = "Maximum size of a single uploaded video in MB.";
+    };
+
+    maxRequestMb = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 8192;
+      description = ''
+        Maximum total upload request size in MB. Also enforced at the Caddy
+        proxy when {option}`services.matstat.virtualHost` is set.
+      '';
+    };
+
+    minFreeMb = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 1024;
+      description = "Free-space reserve in MB that uploads may not consume.";
+    };
+
+    maxUploadFiles = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 20;
+      description = "Maximum number of files in one upload request.";
+    };
+
     auth = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -181,6 +219,11 @@ in
         MATSTAT_SESSION_HOURS = toString cfg.sessionHours;
         MATSTAT_SECURE_COOKIE = if secureCookie then "1" else "0";
         MATSTAT_VISIBLE_LOGGING = if cfg.visibleLogging then "1" else "0";
+        MATSTAT_FORWARDED_ALLOW_IPS = cfg.forwardedAllowIps;
+        MATSTAT_MAX_UPLOAD_MB = toString cfg.maxUploadMb;
+        MATSTAT_MAX_REQUEST_MB = toString cfg.maxRequestMb;
+        MATSTAT_MIN_FREE_MB = toString cfg.minFreeMb;
+        MATSTAT_MAX_UPLOAD_FILES = toString cfg.maxUploadFiles;
       } // cfg.extraEnvironment;
 
       serviceConfig = {
@@ -227,6 +270,9 @@ in
     services.caddy = lib.mkIf (cfg.virtualHost != null) {
       enable = true;
       virtualHosts.${cfg.virtualHost}.extraConfig = ''
+        request_body {
+          max_size ${toString (cfg.maxRequestMb * 1024 * 1024)}
+        }
         reverse_proxy ${proxyHost}:${toString cfg.port}
       '';
     };

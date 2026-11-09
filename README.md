@@ -173,8 +173,30 @@ Behavior knobs (all optional):
 
 -   `MATSTAT_AUTH=off` — disable authentication entirely (trusted LAN/local only).
 -   `MATSTAT_SESSION_HOURS=12` — how long a login stays valid (default 12 hours). Only **one session is active at a time**; a second login while one is active is rejected until the first is logged out or expires.
+-   `MATSTAT_SECRET=...` — optional cookie-signing key. Set it so changing `MATSTAT_PASSWORD` does not invalidate sessions; leave unset to key cookies off the password.
 -   `MATSTAT_SECURE_COOKIE=1` — set the `Secure` attribute on the session cookie (required over HTTPS).
 -   `MATSTAT_ROOT=/path` — data root for `cfg/`, `vids/`, and `stats/` (defaults to the current directory; browser tests use it to isolate their temp tree).
+-   `MATSTAT_FORWARDED_ALLOW_IPS=127.0.0.1,::1` — proxy addresses trusted to set `X-Forwarded-*`. Keep loopback when the proxy is local; this is what makes login rate limiting and logs see the real client IP.
+-   `MATSTAT_MAX_UPLOAD_MB=4096` / `MATSTAT_MAX_REQUEST_MB=8192` — per-file and total upload caps. Oversized requests are rejected with `413`; oversized files fail individually without entering the pool.
+-   `MATSTAT_MAX_UPLOAD_FILES=20` — maximum files in one upload request.
+-   `MATSTAT_ALLOWED_EXTENSIONS=.mkv,.mp4,.mov,.webm,.m4v` — accepted upload extensions (case-insensitive).
+-   `MATSTAT_MIN_FREE_MB=1024` — free-space reserve that uploads may not consume.
+-   `MATSTAT_HSTS_MAX_AGE=31536000` — HSTS max-age sent over HTTPS; set `0` to disable.
+
+Uploads are additionally validated with `ffprobe` before they join the untagged pool, so renaming a non-video file to `.mkv` does not work.
+
+### Health and readiness probes
+
+Two unauthenticated probes are available for reverse proxies and service managers:
+
+-   `GET /healthz` — liveness; always `{"status":"ok"}` while the process serves HTTP.
+-   `GET /readyz` — readiness; checks the data root is writable, the config loads, and `ffmpeg` is on `PATH`. Returns `200` when ready and `503` with per-check status otherwise. It never exposes paths or roster data.
+
+The SPA's own `/api/health` endpoint remains behind the authentication gate.
+
+### Browser hardening
+
+Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a restrictive `Permissions-Policy`, and a same-origin `Content-Security-Policy` (scripts must be external files; inline styles stay allowed for Plotly). HSTS is added automatically when the request arrives over HTTPS. Cross-origin `POST`/`PUT`/`DELETE` requests are rejected with `403`, complementing the `SameSite=Lax` session cookie.
 
 ### Deploy on NixOS with the flake
 
@@ -217,9 +239,11 @@ The module keeps data in `/var/lib/matstat` by default (`cfg/`, `vids/`, `stats/
 
 -   `stateDir` — writable data root (default `/var/lib/matstat`).
 -   `host` / `port` — bind address (default `127.0.0.1:8000`); keep it local when using Caddy.
--   `virtualHost` — Caddy virtual host; enables Caddy and defaults `secureCookie` to `true`.
+-   `virtualHost` — Caddy virtual host; enables Caddy and defaults `secureCookie` to `true`. Caddy also enforces `maxRequestMb` with `request_body`.
 -   `openFirewall` — open the app port directly (off by default; prefer the proxy).
--   `sessionHours`, `visibleLogging`, `extraEnvironment` — corresponding `MATSTAT_*` knobs.
+-   `forwardedAllowIps` — proxy addresses trusted for `X-Forwarded-*` (default `127.0.0.1,::1`).
+-   `maxUploadMb`, `maxRequestMb`, `maxUploadFiles`, `minFreeMb` — upload guards mirrored to the app environment.
+-   `sessionHours`, `visibleLogging`, `extraEnvironment` — corresponding `MATSTAT_*` knobs. Put `MATSTAT_SECRET=...` in `passwordFile` to keep sessions valid across password changes.
 -   `package` — override the flake package.
 
 On non-NixOS hosts, build and run the same package directly:
@@ -239,6 +263,32 @@ Because the app is password-only and single-session, it is meant to sit **behind
 > MatStat runs a single process: jobs, cancellation, sessions, and in-flight transcodes are held in memory. Do not add multiple uvicorn workers.
 
 > Use the local dev commands above with `MATSTAT_AUTH=off` unless you actually want to exercise the login flow.
+
+### Backup and restore
+
+The deployment's irreplaceable data is `cfg/` (rulesets and the PII roster) and `stats/` (compiled wrestler CSVs and reports). `vids/` is large media; back it up according to your retention policy, and expect to re-transcode previews after a restore since `tmp/` is scratch.
+
+A filesystem-consistent backup is easiest with the service stopped:
+
+```bash
+sudo systemctl stop matstat
+sudo tar -C /var/lib/matstat -czf /backup/matstat-$(date +%F).tar.gz cfg stats vids
+sudo systemctl start matstat
+curl -fsS http://127.0.0.1:8000/readyz
+```
+
+For recurring backups, point restic/borg at `/var/lib/matstat` and exclude `tmp/` and `MatStat.log`. If you cannot stop the service, snapshot the filesystem or accept that an upload or reel being written at that moment may be partial.
+
+Restore into a fresh host:
+
+```bash
+sudo systemctl stop matstat
+sudo tar -C /var/lib/matstat -xzf /backup/matstat-YYYY-MM-DD.tar.gz
+sudo chown -R matstat:matstat /var/lib/matstat
+sudo systemctl start matstat
+```
+
+Then confirm `/readyz` returns `200`, open the app, and check that **Match Outcomes**/reports show the expected date range. Restoring `cfg/` before the first start prevents the module's default-config seeding from racing your restore.
 
 ## Module Overview
 

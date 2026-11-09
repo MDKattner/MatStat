@@ -9,8 +9,9 @@ instance.
 Sessions are single: at most one active login is allowed at a time
 (``MATSTAT_SESSION_HOURS``, default 12). A second login while one is active is
 rejected. Sessions are held in memory and die with the process. The cookie is
-a random session id signed with HMAC-SHA256 keyed off the password, so clients
-cannot forge or tamper with it.
+a random session id signed with HMAC-SHA256, keyed by ``MATSTAT_SECRET`` when
+set (otherwise the password), so changing the password does not invalidate
+existing sessions when a separate secret is configured.
 """
 
 from __future__ import annotations
@@ -42,6 +43,9 @@ _last_cleanup: float = 0.0
 # module globals per-test (see tests/conftest.py).
 _AUTH_OFF: bool = os.environ.get("MATSTAT_AUTH", "").lower() in ("0", "false", "off", "no")
 _PASSWORD: str | None = os.environ.get("MATSTAT_PASSWORD") or None
+# Optional stable cookie-signing key. When absent, the password is used (so a
+# password change logs everyone out, which is the safe legacy behavior).
+_SECRET: str | None = os.environ.get("MATSTAT_SECRET") or None
 SESSION_TTL: float = float(os.environ.get("MATSTAT_SESSION_HOURS", _DEFAULT_SESSION_HOURS)) * 3600.0
 SECURE_COOKIE: bool = os.environ.get("MATSTAT_SECURE_COOKIE", "").lower() in (
     "1", "true", "yes", "on",
@@ -59,7 +63,7 @@ class LoginRequest(BaseModel):
 
 
 def _signing_key() -> bytes:
-    return hashlib.sha256((_PASSWORD or "").encode("utf-8")).digest()
+    return hashlib.sha256((_SECRET or _PASSWORD or "").encode("utf-8")).digest()
 
 
 def _sign(session_id: str) -> str:

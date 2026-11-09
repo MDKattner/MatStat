@@ -42,6 +42,28 @@ class TestAuthConfig:
         auth_module.check_configured()
 
 
+class TestSigningKey:
+    """Tests for the optional MATSTAT_SECRET cookie-signing key."""
+
+    def test_secret_is_used_when_set(self, monkeypatch) -> None:
+        monkeypatch.setattr(auth_module, "_PASSWORD", "password")
+        monkeypatch.setattr(auth_module, "_SECRET", "stable-secret")
+        signature: str = auth_module._sign("session-id")
+        assert auth_module._valid(f"session-id.{signature}") == "session-id"
+
+        monkeypatch.setattr(auth_module, "_SECRET", "different-secret")
+        assert auth_module._valid(f"session-id.{signature}") is None
+
+    def test_password_is_fallback_when_secret_absent(self, monkeypatch) -> None:
+        monkeypatch.setattr(auth_module, "_PASSWORD", "password")
+        monkeypatch.setattr(auth_module, "_SECRET", None)
+        signature: str = auth_module._sign("session-id")
+        assert auth_module._valid(f"session-id.{signature}") == "session-id"
+
+        monkeypatch.setattr(auth_module, "_PASSWORD", "new-password")
+        assert auth_module._valid(f"session-id.{signature}") is None
+
+
 class TestLogin:
     """Tests for the login/logout API and single-session lock."""
 
@@ -106,6 +128,12 @@ class TestAuthGate:
         assert resp.status_code == 200
         assert "MatStat" in resp.text
         assert 'id="password"' in resp.text
+        assert 'src="/static/js/login.js"' in resp.text
+
+    def test_login_script_public(self, auth_client) -> None:
+        resp = auth_client.get("/static/js/login.js")
+        assert resp.status_code == 200
+        assert "login-form" in resp.text
 
     def test_login_page_redirects_when_authenticated(self, auth_client) -> None:
         auth_client.post("/api/auth/login", json={"password": "test-secret"})
@@ -122,6 +150,16 @@ class TestAuthGate:
         resp = auth_client.get("/static/js/app.js", follow_redirects=False)
         assert resp.status_code == 302
         assert resp.headers["location"] == "/login"
+
+    def test_liveness_probe_is_public(self, auth_client) -> None:
+        resp = auth_client.get("/healthz")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+    def test_readiness_probe_is_public(self, auth_client) -> None:
+        resp = auth_client.get("/readyz")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
 
     def test_unauthenticated_api_401(self, auth_client) -> None:
         resp = auth_client.get("/api/health")

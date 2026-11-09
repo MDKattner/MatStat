@@ -48,6 +48,133 @@ class TestHealthAndStatic:
         assert resp.status_code == 404
 
 
+class TestDeploymentHardening:
+    """Tests for public probes, security headers, CSRF, and upload guards."""
+
+    def test_liveness_is_public_and_minimal(self, client) -> None:
+        resp = client.get("/healthz")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+    def test_readiness_reports_checks(self, client) -> None:
+        resp = client.get("/readyz")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert body["checks"]["config"] == "ok"
+        assert body["checks"]["data_root"] == "ok"
+
+    def test_readiness_503_when_data_root_unwritable(self, client, monkeypatch) -> None:
+        monkeypatch.setattr(web_app, "_dir_writable", lambda _path: False)
+        resp = client.get("/readyz")
+        assert resp.status_code == 503
+        assert resp.json()["checks"]["data_root"] == "error"
+
+    def test_security_headers_on_api(self, client) -> None:
+        resp = client.get("/api/health")
+        assert resp.headers["x-content-type-options"] == "nosniff"
+        assert resp.headers["x-frame-options"] == "DENY"
+        assert resp.headers["referrer-policy"] == "no-referrer"
+        assert "script-src 'self'" in resp.headers["content-security-policy"]
+        assert "frame-ancestors 'none'" in resp.headers["content-security-policy"]
+        # Plain HTTP must not send HSTS.
+        assert "strict-transport-security" not in resp.headers
+
+    def test_security_headers_cover_redirects(self, auth_client) -> None:
+        resp = auth_client.get("/", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["x-content-type-options"] == "nosniff"
+
+    def test_cross_origin_write_rejected(self, client) -> None:
+        resp = client.post(
+            "/api/auth/login",
+            json={"password": "x"},
+            headers={"Origin": "https://evil.example"},
+        )
+        assert resp.status_code == 403
+        assert "Cross-origin" in resp.json()["detail"]
+
+    def test_same_origin_write_allowed(self, client) -> None:
+        resp = client.post(
+            "/api/auth/login",
+            json={"password": "x"},
+            headers={"Origin": "http://testserver"},
+        )
+        assert resp.status_code == 200
+
+    def test_oversized_request_413(self, client, monkeypatch) -> None:
+        monkeypatch.setattr(web_app, "_REQUEST_MAX_BYTES", 10)
+        resp = client.post(
+            "/api/videos",
+            files=[("files", ("a.mkv", b"x" * 100, "video/x-matroska"))],
+        )
+        assert resp.status_code == 413
+
+    def test_upload_rejects_unknown_extension(self, client) -> None:
+        resp = client.post(
+            "/api/videos",
+            files=[("files", ("notes.txt", b"hello", "text/plain"))],
+        )
+        assert resp.status_code == 200
+        result = resp.json()["results"][0]
+        assert result["status"] == "error"
+        assert "Unsupported video type" in result["detail"]
+
+    def test_upload_rejects_unreadable_video(self, client, monkeypatch) -> None:
+        monkeypatch.setattr(web_app, "_is_valid_video", lambda _path: False)
+        resp = client.post(
+            "/api/videos",
+            files=[("files", ("a.mkv", b"not-a-video", "video/x-matroska"))],
+        )
+        result = resp.json()["results"][0]
+        assert result["status"] == "error"
+        assert result["detail"] == "File is not a readable video"
+
+    def test_upload_enforces_per_file_size(self, client, monkeypatch) -> None:
+        monkeypatch.setattr(web_app, "_UPLOAD_MAX_BYTES", 4)
+        resp = client.post(
+            "/api/videos",
+            files=[("files", ("a.mkv", b"x" * 100, "video/x-matroska"))],
+        )
+        result = resp.json()["results"][0]
+        assert result["status"] == "error"
+        assert "upload limit" in result["detail"]
+        assert not (web_app._UPLOAD_DIR / "a.mkv").exists()
+
+    def test_upload_accepts_valid_video(self, client, monkeypatch) -> None:
+        monkeypatch.setattr(web_app, "_is_valid_video", lambda _path: True)
+        resp = client.post(
+            "/api/videos",
+            files=[("files", ("a.mkv", b"video-bytes", "video/x-matroska"))],
+        )
+        body = resp.json()
+        assert body["uploaded"] == 1
+        assert body["results"][0]["status"] == "ok"
+        assert (web_app._UPLOAD_DIR / "a.mkv").read_bytes() == b"video-bytes"
+
+    def test_upload_collision_is_case_insensitive(self, client, monkeypatch) -> None:
+        monkeypatch.setattr(web_app, "_is_valid_video", lambda _path: True)
+        (web_app._UPLOAD_DIR / "Match.MKV").write_bytes(b"x")
+        resp = client.post(
+            "/api/videos",
+            files=[("files", ("match.mkv", b"y", "video/x-matroska"))],
+        )
+        result = resp.json()["results"][0]
+        assert result["status"] == "conflict"
+
+    def test_upload_caps_file_count(self, client, monkeypatch) -> None:
+        monkeypatch.setattr(web_app, "_MAX_UPLOAD_FILES", 1)
+        resp = client.post(
+            "/api/videos",
+            files=[
+                ("files", ("a.mkv", b"a", "video/x-matroska")),
+                ("files", ("b.mkv", b"b", "video/x-matroska")),
+            ],
+        )
+        assert resp.status_code == 400
+        assert "Too many files" in resp.json()["detail"]
+
+
 class TestVideoListing:
     """Tests for the video directory listing endpoint."""
 
