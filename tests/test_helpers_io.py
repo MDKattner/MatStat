@@ -11,22 +11,28 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from scripts.helpers import (
     COL_ATTACKING, COL_START_TIME, COL_END_TIME, COL_TIE_UP,
-    COL_TEAM_MOVES, COL_OPPONENT_MOVES, COL_TEAM_SCORES, COL_OPPONENT_SCORES, COL_NET_POINTS,
-    MakeNameAndCSV, GetVidDuration, NameProbe, FilterVideos,
+    COL_TEAM_MOVES, COL_OPPONENT_MOVES, COL_TEAM_SCORES, COL_OPPONENT_SCORES,
+    COL_NET_POINTS, COL_ADJUSTED_NET_POINTS, COL_MATCH_RESULT, COL_MATCH_DATE,
+    MakeNameAndCSV, GetVidDuration,
     MakeFormattedDataFrame, LoadAllWrestlerData,
 )
 
 
 # ---------- MakeNameAndCSV ----------
 
-def _make_fake_ffprobe_output(chapter_lines: list[str], name: str = "Test Wrestler") -> str:
+def _make_fake_ffprobe_output(
+    chapter_lines: list[str], name: str = "Test Wrestler", match_date: str = ""
+) -> str:
     """Build a fake ffprobe -of csv stdout string."""
     lines: list[str] = []
     for i, title in enumerate(chapter_lines, start=1):
         lines.append(
             f"chapter,{i},1/1000000000,0,0.000000,6000000000,6.000000,{title}"
         )
-    lines.append(f"format,{name}")
+    tail: str = f"format,{name}"
+    if match_date:
+        tail += f",{match_date}"
+    lines.append(tail)
     return "\n".join(lines)
 
 
@@ -43,9 +49,24 @@ class TestMakeNameAndCSV:
             return subprocess.CompletedProcess([], 0, FAKE_CHAPTER_CSV, "")
 
         monkeypatch.setattr(subprocess, "run", mock_run)
-        name, data = MakeNameAndCSV(Path("fake.mkv"))
+        name, match_date, data = MakeNameAndCSV(Path("fake.mkv"))
         assert name == "Test Wrestler"
+        assert match_date == ""
         assert "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None" in data
+
+    def test_parses_match_date(self, monkeypatch) -> None:
+        csv_output: str = _make_fake_ffprobe_output([
+            '"A,collar tie,double,nothing,T,None"',
+        ], name="Dated Wrestler", match_date="2026-08-01")
+
+        def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess([], 0, csv_output, "")
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        name, match_date, data = MakeNameAndCSV(Path("dated.mkv"))
+        assert name == "Dated Wrestler"
+        assert match_date == "2026-08-01"
+        assert "dated.mkv:1,0,6,A,collar tie,double,nothing,T,None" in data
 
     def test_multiple_chapters(self, monkeypatch) -> None:
         csv_output: str = _make_fake_ffprobe_output([
@@ -57,8 +78,9 @@ class TestMakeNameAndCSV:
             return subprocess.CompletedProcess([], 0, csv_output, "")
 
         monkeypatch.setattr(subprocess, "run", mock_run)
-        name, data = MakeNameAndCSV(Path("multi.mkv"))
+        name, match_date, data = MakeNameAndCSV(Path("multi.mkv"))
         assert name == "Multi Wrestler"
+        assert match_date == ""
         lines = data.strip().split("\n")
         assert len(lines) == 2
 
@@ -72,7 +94,7 @@ class TestMakeNameAndCSV:
             return subprocess.CompletedProcess([], 0, csv_output, "")
 
         monkeypatch.setattr(subprocess, "run", mock_run)
-        name, data = MakeNameAndCSV(Path("filter.mkv"))
+        name, match_date, data = MakeNameAndCSV(Path("filter.mkv"))
         lines = data.strip().split("\n")
         assert len(lines) == 1
         assert "EMPTY" not in data
@@ -82,8 +104,9 @@ class TestMakeNameAndCSV:
             raise subprocess.CalledProcessError(1, "ffprobe")
 
         monkeypatch.setattr(subprocess, "run", mock_run)
-        name, data = MakeNameAndCSV(Path("fail.mkv"))
+        name, match_date, data = MakeNameAndCSV(Path("fail.mkv"))
         assert name == ""
+        assert match_date == ""
         assert data == ""
 
     def test_empty_output_returns_empty(self, monkeypatch) -> None:
@@ -91,8 +114,9 @@ class TestMakeNameAndCSV:
             return subprocess.CompletedProcess([], 0, "", "")
 
         monkeypatch.setattr(subprocess, "run", mock_run)
-        name, data = MakeNameAndCSV(Path("empty.mkv"))
+        name, match_date, data = MakeNameAndCSV(Path("empty.mkv"))
         assert name == ""
+        assert match_date == ""
         assert data == ""
 
     def test_only_empty_chapters(self, monkeypatch) -> None:
@@ -104,8 +128,9 @@ class TestMakeNameAndCSV:
             return subprocess.CompletedProcess([], 0, csv_output, "")
 
         monkeypatch.setattr(subprocess, "run", mock_run)
-        name, data = MakeNameAndCSV(Path("only_empty.mkv"))
+        name, match_date, data = MakeNameAndCSV(Path("only_empty.mkv"))
         assert name == "Only Empty"
+        assert match_date == ""
         assert data == ""
 
 
@@ -145,104 +170,6 @@ class TestGetVidDuration:
         monkeypatch.setattr(subprocess, "run", mock_run)
         result: int = GetVidDuration(Path("fake.mkv"))
         assert result == 0
-
-
-# ---------- NameProbe ----------
-
-class TestNameProbe:
-    """Tests for NameProbe — ffprobe title extraction."""
-
-    def test_returns_name(self, monkeypatch) -> None:
-        def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
-            return subprocess.CompletedProcess([], 0, "John Smith", "")
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-        result: str = NameProbe(Path("fake.mkv"))
-        assert result == "John Smith"
-
-    def test_failure_returns_empty(self, monkeypatch) -> None:
-        def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
-            raise subprocess.CalledProcessError(1, "ffprobe")
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-        result: str = NameProbe(Path("fake.mkv"))
-        assert result == ""
-
-
-# ---------- FilterVideos ----------
-
-class TestFilterVideos:
-    """Tests for FilterVideos — iterates tagged dir, filters by name."""
-
-    def test_returns_matching_videos(self, monkeypatch, tmp_path) -> None:
-        from scripts.helpers import taged_dir as orig_taged_dir
-
-        video_dir: Path = tmp_path / "vids" / "taged"
-        video_dir.mkdir(parents=True)
-        (video_dir / "alice.mkv").write_text("")
-        (video_dir / "bob.mkv").write_text("")
-
-        monkeypatch.setattr("scripts.helpers.taged_dir", video_dir)
-
-        name_map: dict[str, str] = {
-            "alice.mkv": "Alice",
-            "bob.mkv": "Bob",
-        }
-
-        original_name_probe = NameProbe.__wrapped__ if hasattr(NameProbe, "__wrapped__") else None
-
-        def mock_name_probe(path: Path) -> str:
-            return name_map.get(path.name, "")
-
-        monkeypatch.setattr("scripts.helpers.NameProbe", mock_name_probe)
-
-        result: list[Path] = FilterVideos("Alice")
-        assert len(result) == 1
-        assert result[0].name == "alice.mkv"
-
-    def test_no_match_returns_empty(self, monkeypatch, tmp_path) -> None:
-        from scripts.helpers import taged_dir as orig_taged_dir
-
-        video_dir: Path = tmp_path / "vids" / "taged"
-        video_dir.mkdir(parents=True)
-        (video_dir / "alice.mkv").write_text("")
-
-        monkeypatch.setattr("scripts.helpers.taged_dir", video_dir)
-        monkeypatch.setattr("scripts.helpers.NameProbe", lambda p: "Alice")
-
-        result: list[Path] = FilterVideos("Nobody")
-        assert result == []
-
-
-# ---------- _ProcessVideoSafely ----------
-
-class TestProcessVideoSafely:
-    """Tests for workers._ProcessVideoSafely — multiprocessing-safe wrapper."""
-
-    def test_returns_name_and_data(self, monkeypatch) -> None:
-        from scripts.qt_app.workers import _ProcessVideoSafely
-
-        def mock_make_name_and_csv(path: Path) -> tuple[str, str]:
-            return ("Alice", "csv data")
-
-        monkeypatch.setattr("scripts.qt_app.workers.MakeNameAndCSV", mock_make_name_and_csv)
-
-        name, data = _ProcessVideoSafely(Path("alice.mkv"))
-        assert name == "Alice"
-        assert data == "csv data"
-
-    def test_returns_error_on_exception(self, monkeypatch) -> None:
-        from scripts.qt_app.workers import _ProcessVideoSafely
-
-        def mock_make_name_and_csv(path: Path) -> tuple[str, str]:
-            raise RuntimeError("boom")
-
-        monkeypatch.setattr("scripts.qt_app.workers.MakeNameAndCSV", mock_make_name_and_csv)
-
-        name, data = _ProcessVideoSafely(Path("broken.mkv"))
-        assert name is None
-        assert "broken.mkv" in data
-        assert "boom" in data
 
 
 # ---------- MakeFormattedDataFrame ----------
@@ -301,6 +228,8 @@ class TestMakeFormattedDataFrame:
         df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
         assert COL_NET_POINTS in df.columns
         assert df[COL_NET_POINTS].iloc[0] == 4  # T(3) + N2(2) - E(1)
+        assert COL_ADJUSTED_NET_POINTS in df.columns
+        assert df[COL_ADJUSTED_NET_POINTS].iloc[0] == 4  # no pins in fixture
 
     def test_converts_time_columns_to_int(self, tmp_path) -> None:
         csv_file: Path = tmp_path / "test.csv"
@@ -315,6 +244,98 @@ class TestMakeFormattedDataFrame:
         csv_file.write_text("")
         df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
         assert len(df) == 0
+
+    CSV_CONTENT_12COL: str = (
+        'vid.mkv:1,0,6,A,collar tie:underhook,high crotch,sprawl,T,None,3,3,W\n'
+        'vid.mkv:2,6,12,D,standing:front headlock,sprawl,sweep single,None,T,-3,-3,L'
+    )
+
+    def test_loads_wl_column(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "wl.csv"
+        csv_file.write_text(self.CSV_CONTENT_12COL)
+
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
+        assert COL_MATCH_RESULT in df.columns
+        assert df[COL_MATCH_RESULT].iloc[0] == "W"
+        assert df[COL_MATCH_RESULT].iloc[1] == "L"
+        assert df[COL_NET_POINTS].iloc[0] == 3
+        assert df[COL_NET_POINTS].iloc[1] == -3
+
+    def test_empty_result_becomes_empty_string(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "empty_result.csv"
+        csv_file.write_text(
+            'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,\n'
+        )
+
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
+        assert df[COL_MATCH_RESULT].iloc[0] == ""
+
+    def test_legacy_11_col_csv_loads(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "legacy.csv"
+        csv_file.write_text(
+            'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3\n'
+        )
+
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
+        assert COL_NET_POINTS in df.columns
+        assert COL_ADJUSTED_NET_POINTS in df.columns
+        assert COL_MATCH_RESULT not in df.columns
+
+    CSV_CONTENT_13COL: str = (
+        'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,W,2026-08-01\n'
+        'vid.mkv:2,6,12,D,standing,sprawl,sweep single,None,T,-3,-3,L,'
+    )
+
+    def test_loads_match_date_column(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "dated.csv"
+        csv_file.write_text(self.CSV_CONTENT_13COL)
+
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
+        assert COL_MATCH_DATE in df.columns
+        assert df[COL_MATCH_DATE].iloc[0] == "2026-08-01"
+        assert df[COL_MATCH_DATE].iloc[1] == ""
+
+    def test_mixed_12_and_13_col_rows_loads(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "mixed.csv"
+        csv_file.write_text(
+            "vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,W\n"
+            "vid.mkv:2,6,12,D,standing,sprawl,sweep single,None,T,-3,-3,L,2026-08-01"
+        )
+
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
+        assert COL_MATCH_DATE in df.columns
+        assert df[COL_MATCH_DATE].iloc[0] == ""
+        assert df[COL_MATCH_DATE].iloc[1] == "2026-08-01"
+
+    def test_stored_points_are_trusted_verbatim(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "stored.csv"
+        csv_file.write_text(
+            'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,99,123\n'
+        )
+
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
+
+        assert df[COL_NET_POINTS].iloc[0] == 99
+        assert df[COL_ADJUSTED_NET_POINTS].iloc[0] == 123
+        assert df.attrs["points_source"] == "stored"
+
+    def test_legacy_nine_column_csv_computes_on_load(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "legacy9.csv"
+        csv_file.write_text(
+            'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None\n'
+        )
+
+        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
+
+        assert df[COL_NET_POINTS].iloc[0] == 3
+        assert df.attrs["points_source"] == "computed_on_load"
+
+    def test_unexpected_width_raises_clear_error(self, tmp_path) -> None:
+        csv_file: Path = tmp_path / "weird.csv"
+        csv_file.write_text("a,b,c,d,e,f,g,h,i,j")
+
+        with pytest.raises(ValueError, match="column"):
+            MakeFormattedDataFrame(csv_file)
 
 
 # ---------- LoadAllWrestlerData ----------
@@ -350,46 +371,3 @@ class TestLoadAllWrestlerData:
         result: dict[str, pd.DataFrame] = LoadAllWrestlerData(tmp_path)
         assert "Alice" in result
         assert len(result) == 1
-
-
-# ---------- _load_config_items ----------
-
-class TestLoadConfigItems:
-    """Tests for _load_config_items from widgets.py."""
-
-    def test_loads_items_skipping_comments(self, tmp_path) -> None:
-        from scripts.qt_app.widgets import _load_config_items
-
-        cfg: Path = tmp_path / "test.config"
-        cfg.write_text(
-            "# This is a comment\n"
-            "  # indented comment\n"
-            "\n"
-            "  move one  \n"
-            "move two\n"
-            "   \n"
-        )
-        items: list[str] = _load_config_items(cfg)
-        assert items == ["move one", "move two"]
-
-    def test_empty_file(self, tmp_path) -> None:
-        from scripts.qt_app.widgets import _load_config_items
-
-        cfg: Path = tmp_path / "empty.config"
-        cfg.write_text("")
-        items: list[str] = _load_config_items(cfg)
-        assert items == []
-
-    def test_all_comments(self, tmp_path) -> None:
-        from scripts.qt_app.widgets import _load_config_items
-
-        cfg: Path = tmp_path / "comments.config"
-        cfg.write_text("# comment 1\n# comment 2\n")
-        items: list[str] = _load_config_items(cfg)
-        assert items == []
-
-    def test_file_not_found(self, tmp_path) -> None:
-        from scripts.qt_app.widgets import _load_config_items
-
-        items: list[str] = _load_config_items(tmp_path / "nonexistent.config")
-        assert items == []

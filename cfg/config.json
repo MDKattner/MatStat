@@ -1,0 +1,341 @@
+{
+  "active_ruleset": "Folkstyle",
+  "moves": [
+    "nothing",
+    "high crotch",
+    "double",
+    "blast double",
+    "sweep single",
+    "snatch single",
+    "low single",
+    "ankle pick",
+    "knee pick",
+    "firemans carry",
+    "oklahoma",
+    "lat drop",
+    "headlock",
+    "hip toss",
+    "inside trip",
+    "outside trip",
+    "foot sweep",
+    "arm spin",
+    "pinch headlock",
+    "whizzer kick",
+    "salto",
+    "duck under",
+    "super duck",
+    "arm drag",
+    "shuck",
+    "slide by",
+    "elbow pass",
+    "throw by",
+    "shovel snow",
+    "go behind",
+    "crusher",
+    "gator roll",
+    "gator bacon",
+    "head pinch",
+    "pancake",
+    "dresser dump",
+    "firemans dump",
+    "head bowling",
+    "belly whizzer",
+    "assassin",
+    "sprawl",
+    "elevator",
+    "crotch lock",
+    "chest wrap",
+    "whizzer",
+    "metzger",
+    "magic stick",
+    "chin whip",
+    "lat whip",
+    "whip over",
+    "merkle",
+    "flying squirrel",
+    "leg shelf",
+    "leg pass",
+    "step over",
+    "quarter nelson",
+    "limp arm",
+    "chop",
+    "spiral ride",
+    "claw ride",
+    "far knee far ankle",
+    "waist ankle",
+    "head lever",
+    "thigh pry",
+    "lift mat return",
+    "forward trip mat return",
+    "backward trip mat return",
+    "tilt mat return",
+    "tea kettle",
+    "crotch lift",
+    "broomstick mat return",
+    "drop down",
+    "two on one tilt",
+    "bar arm tilt",
+    "ball and chain tilt",
+    "cheap tilt",
+    "jonesy tilt",
+    "half nelson",
+    "power half",
+    "three quarter nelson",
+    "reverse half",
+    "bar arm",
+    "turk",
+    "spladle",
+    "guillotine",
+    "butcher",
+    "jungle ride",
+    "suck back",
+    "near side cradle",
+    "far side cradle",
+    "stand up",
+    "jump up",
+    "switch",
+    "granby",
+    "funk roll",
+    "peterson",
+    "sit out",
+    "hip heist",
+    "quad pod",
+    "knee slide",
+    "submarine",
+    "roll through",
+    "fat man roll",
+    "change over",
+    "kick out",
+    "leg slip",
+    "head hunt"
+  ],
+  "ties": [
+    "standing no tie",
+    "post",
+    "collar tie",
+    "club",
+    "inside control",
+    "outside control",
+    "mixed control",
+    "wrist control",
+    "defending wrist control",
+    "two on one",
+    "defending two on one",
+    "russian tie",
+    "defending russian tie",
+    "underhook",
+    "double unders",
+    "body lock",
+    "over under",
+    "overhook",
+    "double overs",
+    "front headlock",
+    "short defense",
+    "waterfall (grounded)",
+    "waterfall (lifted)",
+    "seatbelt (whizzer)",
+    "seatbelt (underhook)",
+    "regular ride",
+    "behind a sit out",
+    "ankle ride",
+    "leg ride",
+    "double boots",
+    "claw",
+    "mat return position",
+    "optional ride",
+    "sit out",
+    "in base",
+    "flat",
+    "defending legs"
+  ],
+  "rulesets": {
+    "Folkstyle": {
+      "description": "USA Wrestling folkstyle (college / high school)",
+      "pin_points": 13,
+      "outcomes": {
+        "None": {
+          "points": 0,
+          "description": "Nothing",
+          "counts_as_pin": false
+        },
+        "T": {
+          "points": 3,
+          "description": "Takedown",
+          "counts_as_pin": false
+        },
+        "E": {
+          "points": 1,
+          "description": "Escape (earned only)",
+          "counts_as_pin": false
+        },
+        "R": {
+          "points": 2,
+          "description": "Reversal",
+          "counts_as_pin": false
+        },
+        "N2": {
+          "points": 2,
+          "description": "Two nearfall",
+          "counts_as_pin": false
+        },
+        "N3": {
+          "points": 3,
+          "description": "Three nearfall",
+          "counts_as_pin": false
+        },
+        "N4": {
+          "points": 4,
+          "description": "Four nearfall",
+          "counts_as_pin": false
+        },
+        "N5": {
+          "points": 5,
+          "description": "Five nearfall",
+          "counts_as_pin": false
+        },
+        "PIN": {
+          "points": 0,
+          "description": "Pin",
+          "counts_as_pin": true
+        },
+        "P1": {
+          "points": 1,
+          "description": "Penalty and one point",
+          "counts_as_pin": false
+        },
+        "P2": {
+          "points": 2,
+          "description": "Penalty and two points",
+          "counts_as_pin": false
+        },
+        "S": {
+          "points": 0,
+          "description": "Stalling",
+          "counts_as_pin": false
+        }
+      }
+    },
+    "Freestyle": {
+      "description": "UWW freestyle (no pins for points; tech fall at 10)",
+      "pin_points": 9,
+      "outcomes": {
+        "None": {
+          "points": 0,
+          "description": "Nothing",
+          "counts_as_pin": false
+        },
+        "T": {
+          "points": 2,
+          "description": "Takedown",
+          "counts_as_pin": false
+        },
+        "E": {
+          "points": 1,
+          "description": "Escape",
+          "counts_as_pin": false
+        },
+        "R": {
+          "points": 1,
+          "description": "Reversal",
+          "counts_as_pin": false
+        },
+        "N2": {
+          "points": 2,
+          "description": "Exposure (2 pts)",
+          "counts_as_pin": false
+        },
+        "N4": {
+          "points": 4,
+          "description": "Exposure (4 pts)",
+          "counts_as_pin": false
+        },
+        "N5": {
+          "points": 5,
+          "description": "Match-deciding exposure",
+          "counts_as_pin": false
+        },
+        "PIN": {
+          "points": 0,
+          "description": "Pin / fall",
+          "counts_as_pin": true
+        },
+        "P1": {
+          "points": 1,
+          "description": "Caution and one point",
+          "counts_as_pin": false
+        },
+        "P2": {
+          "points": 2,
+          "description": "Caution and two points",
+          "counts_as_pin": false
+        },
+        "S": {
+          "points": 0,
+          "description": "Stalling",
+          "counts_as_pin": false
+        }
+      }
+    },
+    "Greco-Roman": {
+      "description": "UWW Greco-Roman (no leg attacks; tech fall at 8)",
+      "pin_points": 7,
+      "outcomes": {
+        "None": {
+          "points": 0,
+          "description": "Nothing",
+          "counts_as_pin": false
+        },
+        "T": {
+          "points": 2,
+          "description": "Takedown",
+          "counts_as_pin": false
+        },
+        "E": {
+          "points": 1,
+          "description": "Escape",
+          "counts_as_pin": false
+        },
+        "R": {
+          "points": 1,
+          "description": "Reversal",
+          "counts_as_pin": false
+        },
+        "N2": {
+          "points": 2,
+          "description": "Exposure (2 pts)",
+          "counts_as_pin": false
+        },
+        "N4": {
+          "points": 4,
+          "description": "Exposure (4 pts)",
+          "counts_as_pin": false
+        },
+        "N5": {
+          "points": 5,
+          "description": "Match-deciding exposure",
+          "counts_as_pin": false
+        },
+        "PIN": {
+          "points": 0,
+          "description": "Pin / fall",
+          "counts_as_pin": true
+        },
+        "P1": {
+          "points": 1,
+          "description": "Caution and one point",
+          "counts_as_pin": false
+        },
+        "P2": {
+          "points": 2,
+          "description": "Caution and two points",
+          "counts_as_pin": false
+        },
+        "S": {
+          "points": 0,
+          "description": "Stalling",
+          "counts_as_pin": false
+        }
+      }
+    }
+  }
+}

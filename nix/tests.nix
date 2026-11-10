@@ -1,0 +1,15 @@
+{ self, pkgs, python }:
+
+# Run the fast (non-browser) pytest suite against the flake source. The
+# browser suite is opt-in and needs Playwright + Chromium, so it stays in the
+# development shell rather than the sandboxed check.
+pkgs.runCommand "matstat-tests" {
+  nativeBuildInputs = [ python pkgs.ffmpeg pkgs.mkvtoolnix ];
+} ''
+  cp -r ${self} source
+  chmod -R u+w source
+  cd source
+  export HOME=$TMPDIR
+  python -m pytest -q
+  touch $out
+''

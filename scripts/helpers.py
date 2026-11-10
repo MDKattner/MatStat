@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 import logging
+import re
+import shlex
+import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Literal, overload
 
 import numpy as np
 import pandas as pd
@@ -24,6 +29,17 @@ COL_OPPONENT_MOVES: str = "Opponent Moves"
 COL_TEAM_SCORES: str = "Team Scores"
 COL_OPPONENT_SCORES: str = "Opponent Scores"
 COL_NET_POINTS: str = "Net Points"
+COL_ADJUSTED_NET_POINTS: str = "Adjusted Net Points"
+COL_MATCH_RESULT: str = "W/L"
+COL_MATCH_DATE: str = "Match Date"
+COL_MATCH_DURATION: str = "Duration"
+
+# Title storage conventions for tagged videos. Single mode stores the bare
+# wrestler name (optionally suffixed with " (W)" / " (L)"); dual mode joins the
+# two names with TITLE_DELIMITER and puts " (W)" on the winner's name.
+TITLE_DELIMITER: str = " / "
+WIN_MARKER: str = " (W)"
+LOSS_MARKER: str = " (L)"
 
 # ---- Global paths ----
 
@@ -39,26 +55,354 @@ log_file: Path = Path("MatStat.log")
 logging.basicConfig(filename=log_file, level=logging.DEBUG,
                     format="%(asctime)s:%(levelname)s:%(message)s")
 
-# ---- Scoring map ----
+# ---- JSON configuration (cfg/config.json) ----
 
-score_to_pts: dict[str, np.int16] = {
-    "None": np.int16(0),
-
-    "T": np.int16(3),
-    "E": np.int16(1),
-    "R": np.int16(2),
-    "N2": np.int16(2),
-    "N3": np.int16(3),
-    "N4": np.int16(4),
-    "N5": np.int16(5),
+# Fallback scoring map used when cfg/config.json is missing or corrupt. Values
+# match the historical folkstyle defaults so net-point math stays stable.
+DEFAULT_FOLKSTYLE_OUTCOMES: dict[str, dict[str, object]] = {
+    "None": {"points": 0, "description": "Nothing"},
+    "T": {"points": 3, "description": "Takedown"},
+    "E": {"points": 1, "description": "Escape (earned only)"},
+    "R": {"points": 2, "description": "Reversal"},
+    "N2": {"points": 2, "description": "Two nearfall"},
+    "N3": {"points": 3, "description": "Three nearfall"},
+    "N4": {"points": 4, "description": "Four nearfall"},
+    "N5": {"points": 5, "description": "Five nearfall"},
     # Pins are tabulated separately so they are not factored into net points
-    "PIN": np.int16(0),
-
-    "P1": np.int16(1),
-    "P2": np.int16(2),
-
-    "S": np.int16(0)
+    "PIN": {"points": 0, "description": "Pin", "counts_as_pin": True},
+    "P1": {"points": 1, "description": "Penalty and one point"},
+    "P2": {"points": 2, "description": "Penalty and two points"},
+    "S": {"points": 0, "description": "Stalling"},
 }
+
+
+@dataclass
+class OutcomeSpec:
+    """A single scorebook outcome: code -> point value within a ruleset."""
+
+    points: np.int16
+    description: str = ""
+    counts_as_pin: bool = False
+
+
+@dataclass
+class Ruleset:
+    """A wrestling ruleset and its outcome scoring map."""
+
+    name: str
+    description: str = ""
+    pin_points: int = 0
+    outcomes: dict[str, OutcomeSpec] = field(default_factory=dict)
+
+
+@dataclass
+class AppConfig:
+    """The app config: shared move/tie lists plus per-ruleset scoring maps."""
+
+    active_ruleset: str
+    moves: list[str] = field(default_factory=list)
+    ties: list[str] = field(default_factory=list)
+    rulesets: dict[str, Ruleset] = field(default_factory=dict)
+
+
+@dataclass
+class Roster:
+    """Wrestler names and team membership (a wrestler may be in many teams)."""
+
+    wrestlers: list[str] = field(default_factory=list)
+    teams: dict[str, list[str]] = field(default_factory=dict)
+
+
+def _DefaultAppConfig() -> AppConfig:
+    """Build the fallback config used when config.json is missing or corrupt."""
+    folkstyle: Ruleset = Ruleset(
+        name="Folkstyle",
+        description="USA Wrestling folkstyle (college / high school)",
+        pin_points=13,
+        outcomes={
+            code: OutcomeSpec(
+                points=np.int16(spec["points"]),
+                description=str(spec.get("description", "")),
+                counts_as_pin=bool(spec.get("counts_as_pin", False)),
+            )
+            for code, spec in DEFAULT_FOLKSTYLE_OUTCOMES.items()
+        },
+    )
+    return AppConfig(
+        active_ruleset="Folkstyle", moves=[], ties=[], rulesets={"Folkstyle": folkstyle}
+    )
+
+
+def _ParsePinPoints(raw: object) -> int:
+    """Parse a ruleset's pin bonus, tolerating missing or invalid values.
+
+    Args:
+        raw: The raw ruleset dict from the JSON config.
+
+    Returns:
+        The pin bonus in points, or 0 when absent/unparseable (migration-safe).
+    """
+    if not isinstance(raw, dict):
+        return 0
+    try:
+        return int(raw.get("pin_points", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _ParseAppConfig(data: object) -> AppConfig:
+    """Parse a loaded JSON value into an AppConfig, tolerating malformed sections."""
+    fallback: AppConfig = _DefaultAppConfig()
+    if not isinstance(data, dict):
+        return fallback
+
+    moves: list[str] = [str(m).strip() for m in data.get("moves", []) if str(m).strip()]
+    ties: list[str] = [str(t).strip() for t in data.get("ties", []) if str(t).strip()]
+
+    rulesets: dict[str, Ruleset] = {}
+    raw_rulesets: object = data.get("rulesets", {})
+    if isinstance(raw_rulesets, dict):
+        for name, raw in raw_rulesets.items():
+            name_str: str = str(name).strip()
+            if not name_str or not isinstance(raw, dict):
+                continue
+            outcomes: dict[str, OutcomeSpec] = {}
+            raw_outcomes: object = raw.get("outcomes", {})
+            if isinstance(raw_outcomes, dict):
+                for code, spec in raw_outcomes.items():
+                    code_str: str = str(code).strip()
+                    if not code_str or not isinstance(spec, dict):
+                        continue
+                    try:
+                        points: np.int16 = np.int16(spec["points"])
+                    except (KeyError, TypeError, ValueError, OverflowError):
+                        continue
+                    outcomes[code_str] = OutcomeSpec(
+                        points=points,
+                        description=str(spec.get("description", "")),
+                        counts_as_pin=bool(spec.get("counts_as_pin", False)),
+                    )
+            rulesets[name_str] = Ruleset(
+                name=name_str,
+                description=str(raw.get("description", "")),
+                pin_points=_ParsePinPoints(raw),
+                outcomes=outcomes,
+            )
+
+    if not rulesets:
+        rulesets = fallback.rulesets
+    active: str = str(data.get("active_ruleset", "")).strip()
+    if active not in rulesets:
+        active = next(iter(rulesets), fallback.active_ruleset)
+    return AppConfig(active_ruleset=active, moves=moves, ties=ties, rulesets=rulesets)
+
+
+def AppConfigToDict(cfg: AppConfig) -> dict[str, object]:
+    """Serialize an AppConfig to a JSON-compatible dict."""
+    return {
+        "active_ruleset": cfg.active_ruleset,
+        "moves": cfg.moves,
+        "ties": cfg.ties,
+        "rulesets": {
+            name: {
+                "description": ruleset.description,
+                "pin_points": int(ruleset.pin_points),
+                "outcomes": {
+                    code: {
+                        "points": int(spec.points),
+                        "description": spec.description,
+                        "counts_as_pin": spec.counts_as_pin,
+                    }
+                    for code, spec in ruleset.outcomes.items()
+                },
+            }
+            for name, ruleset in cfg.rulesets.items()
+        },
+    }
+
+
+def _WriteJsonWithBackup(config_path: Path, data: dict[str, object]) -> None:
+    """Write a JSON dict atomically, keeping a ``.bak`` copy of the previous file."""
+    if config_path.is_file():
+        try:
+            shutil.copy2(config_path, config_path.with_suffix(config_path.suffix + ".bak"))
+        except OSError as e:
+            logging.warning(f"Could not create backup for {config_path}: {e}")
+    tmp_path: Path = config_path.with_suffix(config_path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(data, indent=2) + "\n")
+    tmp_path.replace(config_path)
+
+
+def LoadAppConfig(config_path: Path | None = None) -> AppConfig:
+    """Load the app config (moves, ties, rulesets) from a JSON file.
+
+    Falls back to the built-in folkstyle defaults when the file is missing or
+    unparseable, so scoring logic always has a map to use.
+
+    Args:
+        config_path: Path to the JSON config. Defaults to cfg/config.json.
+
+    Returns:
+        A populated AppConfig.
+    """
+    if config_path is None:
+        config_path = cfg_dir / "config.json"
+    try:
+        data: object = json.loads(config_path.read_text())
+        return _ParseAppConfig(data)
+    except (OSError, json.JSONDecodeError) as e:
+        logging.warning(f"Could not load app config {config_path}: {e}; using defaults")
+        return _DefaultAppConfig()
+
+
+def SaveAppConfig(cfg: AppConfig, config_path: Path | None = None) -> None:
+    """Persist an AppConfig as JSON, backing up the previous file first.
+
+    Args:
+        cfg: The config to write.
+        config_path: Target path; defaults to cfg/config.json.
+    """
+    if config_path is None:
+        config_path = cfg_dir / "config.json"
+    _WriteJsonWithBackup(config_path, AppConfigToDict(cfg))
+
+
+def GetActiveRuleset(config_path: Path | None = None) -> Ruleset:
+    """Return the currently active ruleset."""
+    cfg: AppConfig = LoadAppConfig(config_path)
+    return cfg.rulesets.get(cfg.active_ruleset, next(iter(cfg.rulesets.values())))
+
+
+_ACTIVE_PIN_CODES: frozenset[str] = frozenset()
+score_to_pts: dict[str, np.int16] = {}
+active_pin_points: int = 0
+_last_scoring_mtime: float = 0.0
+
+
+def ReloadScoringMap() -> None:
+    """Refresh the module-level scoring map from the active ruleset.
+
+    Called at import time and before tabulating net points so CSV loads reflect
+    the currently selected ruleset. Skips the disk read when config.json
+    hasn't changed since the last reload.
+    """
+    global score_to_pts, _ACTIVE_PIN_CODES, active_pin_points, _last_scoring_mtime
+    config_path: Path = cfg_dir / "config.json"
+    try:
+        mtime: float = config_path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    if mtime == _last_scoring_mtime and score_to_pts:
+        return
+    _last_scoring_mtime = mtime
+    active: Ruleset = GetActiveRuleset()
+    score_to_pts = {code: spec.points for code, spec in active.outcomes.items()}
+    _ACTIVE_PIN_CODES = frozenset(
+        code for code, spec in active.outcomes.items() if spec.counts_as_pin
+    )
+    active_pin_points = int(active.pin_points)
+
+
+ReloadScoringMap()
+
+
+def _ParseRoster(data: object) -> Roster:
+    """Parse a loaded JSON value into a Roster, deduping names and members."""
+    roster: Roster = Roster()
+    if not isinstance(data, dict):
+        return roster
+    seen: set[str] = set()
+    for name in data.get("wrestlers", []):
+        cleaned: str = str(name).strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            roster.wrestlers.append(cleaned)
+    raw_teams: object = data.get("teams", {})
+    if isinstance(raw_teams, dict):
+        for team, members in raw_teams.items():
+            team_name: str = str(team).strip()
+            if not team_name:
+                continue
+            member_list: list[str] = []
+            member_seen: set[str] = set()
+            if isinstance(members, list):
+                for member in members:
+                    cleaned = str(member).strip()
+                    if cleaned and cleaned not in member_seen:
+                        member_seen.add(cleaned)
+                        member_list.append(cleaned)
+            roster.teams[team_name] = member_list
+    return roster
+
+
+def RosterToDict(roster: Roster) -> dict[str, object]:
+    """Serialize a Roster to a JSON-compatible dict."""
+    return {"wrestlers": list(roster.wrestlers), "teams": dict(roster.teams)}
+
+
+def LoadRoster(config_path: Path | None = None) -> Roster:
+    """Load the wrestler roster (names + team membership) from a JSON file.
+
+    Falls back to a ``.example`` sibling when the real file is absent, so a
+    fresh clone (where the real file is gitignored) still has a roster.
+
+    Args:
+        config_path: Path to the roster JSON. Defaults to cfg/Wrestlers.json.
+
+    Returns:
+        A Roster (empty when no file exists anywhere).
+    """
+    if config_path is None:
+        config_path = cfg_dir / "Wrestlers.json"
+    candidates: list[Path] = [
+        config_path,
+        config_path.with_suffix(config_path.suffix + ".example"),
+    ]
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            return _ParseRoster(json.loads(candidate.read_text()))
+        except (OSError, json.JSONDecodeError) as e:
+            logging.warning(f"Could not load roster {candidate}: {e}")
+    return Roster()
+
+
+def SaveRoster(roster: Roster, config_path: Path | None = None) -> None:
+    """Persist a Roster as JSON, dropping team members not on the wrestler list.
+
+    Args:
+        roster: The roster to write.
+        config_path: Target path; defaults to cfg/Wrestlers.json.
+    """
+    normalized: Roster = Roster(
+        wrestlers=[w for w in dict.fromkeys(roster.wrestlers) if w.strip()],
+        teams={},
+    )
+    known: set[str] = set(normalized.wrestlers)
+    for team, members in roster.teams.items():
+        team_name: str = team.strip()
+        if not team_name:
+            continue
+        kept: list[str] = []
+        for member in dict.fromkeys(members):
+            member_name: str = member.strip()
+            if member_name in known:
+                kept.append(member_name)
+            else:
+                logging.warning(
+                    f"Roster team '{team_name}' references unknown wrestler "
+                    f"'{member_name}'; dropping"
+                )
+        normalized.teams[team_name] = kept
+    if config_path is None:
+        config_path = cfg_dir / "Wrestlers.json"
+    _WriteJsonWithBackup(config_path, RosterToDict(normalized))
+
+
+def LoadWrestlerNames(config_path: Path | None = None) -> list[str]:
+    """Return the list of wrestler names (without team membership)."""
+    return list(LoadRoster(config_path).wrestlers)
 
 # Create directories that are not tracked by git
 csv_dir.mkdir(parents=True, exist_ok=True)
@@ -94,7 +438,7 @@ class ChapterSequence:
     def MakeEmptyChap(cls: type[ChapterSequence], start: int, end: int) -> ChapterSequence:
         """Create a filler chapter to pad time between sequences.
 
-        Ffmpeg can corrupt timing data if there are gaps in the timeline,
+        FFmpeg can corrupt timing data if there are gaps in the timeline,
         so these empty chapters are used to fill them.
 
         Args:
@@ -132,10 +476,10 @@ class ChapterSequence:
                                    end_time=int(float(args[2])),
                                    attack_defend=args[3] == "A",
                                    tie_up=args[4],
-                                   team_moves=args[5].split(":"),
-                                   op_moves=args[6].split(":"),
-                                   team_scores=args[7].split(":"),
-                                   op_scores=args[8].split(":"))
+                                   team_moves=args[5].split(":") if args[5] else [],
+                                   op_moves=args[6].split(":") if args[6] else [],
+                                   team_scores=args[7].split(":") if args[7] else [],
+                                   op_scores=args[8].split(":") if args[8] else [])
         except (IndexError, ValueError) as e:
             logging.warning(f"Could not parse CSV row: {csv_str!r} — {e}")
             return ChapterSequence.MakeEmptyChap(0, 0)
@@ -146,8 +490,7 @@ class ChapterSequence:
         """Create the chapter title string as formatted for ffmpeg metadata.
 
         Returns:
-            A string representing the chapter's title, with colon-delimited
-            fields escaped for ffmpeg.
+            A string representing the chapter's title, with colon-delimited fields.
         """
         team_moves_str: str = ":".join(self.team_moves)
         op_moves_str: str = ":".join(self.op_moves)
@@ -198,90 +541,6 @@ class ChapterSequence:
                 f"title={self.MakeTitle()}\n")
 
 
-def SelectFromConfig(file_name: str, desc: str, multi: bool = False) -> str:
-    """Present a list from a config file to the user via fzf.
-
-    Deprecated: the CLI is being retired. GUI equivalents are the config-backed
-    selectors in `scripts.qt_app.widgets` (MultiSelector, CheckboxListWidget,
-    ConfigComboBox).
-
-    Args:
-        file_name: The name of the configuration file (e.g., "Wrestlers.config").
-        desc: A description to display as the header in the fzf menu.
-        multi: If True, allow multiple selections (--multi); otherwise single.
-
-    Returns:
-        The selected item(s), newline-separated if multi. Empty string on cancel.
-    """
-    config_path: Path = cfg_dir / file_name
-    multi_flag: str = "--multi" if multi else "--no-multi"
-    fzf_cmd: str = (
-        f"sed 's/#.*//' '{config_path}' | grep -G '\\S' | sed 's/[[:space:]]\\+$//' | "
-        f"fzf --header='{desc}' --header-border=bold --header-label-pos=top {multi_flag} "
-        f"--preview='cat {config_path}' --preview-window=70%"
-    )
-    try:
-        logging.debug(f"Executing fzf command: {fzf_cmd}")
-        result: str = subprocess.run(
-            fzf_cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            check=True
-        ).stdout.strip()
-        logging.info(f"Selected from config '{file_name}': {result}")
-        return result
-    except subprocess.CalledProcessError:
-        logging.warning(f"User made no selection for config: {file_name}")
-        return ""
-
-
-def SelectMultiFromConfig(file_name: str, desc: str) -> str:
-    """Convenience wrapper around SelectFromConfig for multi selection.
-
-    Deprecated: the CLI is being retired; see SelectFromConfig.
-    """
-    return SelectFromConfig(file_name, desc, multi=True)
-
-
-def GetTimeFromUsr(msg: str) -> int:
-    """Get a time from the user, formatted as mins:secs, and handle invalid input.
-
-    Deprecated: the CLI is being retired. The GUI uses `TimeInput` (QTimeEdit)
-    in `scripts.qt_app.widgets`.
-
-    This function will repeatedly prompt the user until a valid time format
-    is entered.
-
-    Args:
-        msg: The message to display to the user as a prompt.
-
-    Returns:
-        The time in seconds.
-    """
-    first_attempt: bool = True
-    while True:
-        if first_attempt:
-            logging.info(f"Asking user for a time with the following message: {msg}")
-            first_attempt = False
-
-        user_input: str = input(msg)
-        logging.debug(f"User entered for time: '{user_input}'")
-
-        try:
-            mins: int
-            secs: int
-            mins, secs = map(int, user_input.split(':'))
-            total_seconds: int = mins * 60 + secs
-            logging.info(
-                f"Successfully parsed time: {mins}m {secs}s ({total_seconds}s).")
-            return total_seconds  # exit point
-        except ValueError:
-            logging.warning(f"Invalid time format entered: '{user_input}'")
-            print(
-                f"\nInvalid format: '{user_input}'. Please use the format 'mins:secs' (e.g., '1:32').\n")
-
-
 def GetVidDuration(path_to_vid: Path) -> int:
     """Return the video duration in seconds, rounded down.
 
@@ -291,7 +550,7 @@ def GetVidDuration(path_to_vid: Path) -> int:
     Returns:
         The duration of the video in seconds. Returns 0 on failure.
     """
-    ffprobe_cmd: str = f"ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 '{path_to_vid}'"
+    ffprobe_cmd: str = f"ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 {shlex.quote(str(path_to_vid))}"
     logging.debug(f"Executing ffprobe command for duration: {ffprobe_cmd}")
     try:
         duration_str: str = subprocess.run(ffprobe_cmd,
@@ -308,34 +567,6 @@ def GetVidDuration(path_to_vid: Path) -> int:
         return 0
 
 
-def NameProbe(path_to_vid: Path) -> str:
-    """Return the title field of the video file.
-
-    With the formatting enforced by the film tagging process, this title
-    will be the name of the wrestler.
-
-    Args:
-        path_to_vid: The path to the video file.
-
-    Returns:
-        The title string embedded in the video file, or empty string on failure.
-    """
-    ffprobe_cmd: str = f"ffprobe -v error -select_streams v:0 -show_entries format_tags=title -of default=nw=1:nk=1 '{path_to_vid}'"
-    logging.debug(f"Executing ffprobe command for name probe: {ffprobe_cmd}")
-    try:
-        name: str = subprocess.run(ffprobe_cmd,
-                                   shell=True,
-                                   capture_output=True,
-                                   text=True,
-                                   check=True
-                                   ).stdout.strip()
-        logging.info(f"Probed name for '{path_to_vid}': {name}")
-        return name
-    except subprocess.CalledProcessError as e:
-        logging.warning(f"NameProbe failed for '{path_to_vid}': {e}")
-        return ""
-
-
 def GetVideoCodecs(path_to_vid: Path) -> dict[str, str]:
     """Probe video and audio codec names from a video file.
 
@@ -348,27 +579,22 @@ def GetVideoCodecs(path_to_vid: Path) -> dict[str, str]:
     """
     result: dict[str, str] = {}
     try:
-        vcodec_cmd: str = (
-            "ffprobe -v error -select_streams v:0 -show_entries "
-            "stream=codec_name -of default=nw=1:nk=1 "
-            f"'{path_to_vid}'"
+        cmd: str = (
+            "ffprobe -v error -show_entries stream=index,codec_name "
+            "-of csv=nw=1:nk=1 "
+            f"{shlex.quote(str(path_to_vid))}"
         )
-        vcodec: str = subprocess.run(
-            vcodec_cmd, shell=True, capture_output=True, text=True, check=True
+        output: str = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, check=True
         ).stdout.strip()
-        if vcodec:
-            result['video'] = vcodec
-
-        acodec_cmd: str = (
-            "ffprobe -v error -select_streams a:0 -show_entries "
-            "stream=codec_name -of default=nw=1:nk=1 "
-            f"'{path_to_vid}'"
-        )
-        acodec: str = subprocess.run(
-            acodec_cmd, shell=True, capture_output=True, text=True, check=True
-        ).stdout.strip()
-        if acodec:
-            result['audio'] = acodec
+        for line in output.splitlines():
+            parts: list[str] = line.split(",")
+            if len(parts) == 2:
+                idx, codec = parts
+                if idx == "0":
+                    result["video"] = codec
+                elif idx == "1":
+                    result["audio"] = codec
     except (subprocess.CalledProcessError, OSError) as e:
         logging.warning(f"GetVideoCodecs failed for '{path_to_vid}': {e}")
 
@@ -400,49 +626,12 @@ def LoadAllWrestlerData(data_dir: Path | None = None) -> dict[str, pd.DataFrame]
     return result
 
 
-def FilterVideos(wrestler_name: str) -> list[Path]:
-    """Return a list of paths to tagged videos matching a wrestler's name.
+def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str, str]:
+    """Extract wrestler name, match date, and chapter data into a CSV string.
 
-    Deprecated: the CLI is being retired; this function has no current callers.
-    The GUI filters tagged videos per-wrestler when generating clips.
-
-    Searches the `vids/taged` directory for videos that have `wrestler_name`
-    in their title metadata field.
-
-    Args:
-        wrestler_name: The name of the wrestler to filter by.
-
-    Returns:
-        A list of Path objects for video files matching the wrestler's name.
-    """
-    logging.info(f"Filtering videos for wrestler: {wrestler_name}")
-
-    try:
-        vids: list[Path] = sorted(taged_dir.iterdir())
-    except FileNotFoundError:
-        logging.warning(f"Tagged videos directory not found: {taged_dir}")
-        return []
-
-    filtered: list[Path] = []
-    for vid in vids:
-        if not vid.is_file():
-            continue
-        try:
-            if NameProbe(vid) == wrestler_name:
-                filtered.append(vid)
-        except Exception as e:
-            logging.warning(f"Could not probe '{vid.name}': {e}")
-            continue
-
-    logging.info(f"Found {len(filtered)} videos for '{wrestler_name}'")
-    return filtered
-
-
-def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str]:
-    """Extract wrestler name and chapter data into a CSV string.
-
-    This function uses ffprobe to get the video's title (wrestler name) and
-    all chapter metadata, formatting the chapter data into a custom CSV string.
+    This function uses ffprobe to get the video's title (wrestler name), the
+    optional ``matchdate`` format tag (YYYY-MM-DD), and all chapter metadata,
+    formatting the chapter data into a custom CSV string.
 
     Args:
         path_to_vid: The path to the video file to process.
@@ -450,11 +639,14 @@ def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str]:
     Returns:
         A tuple containing:
         - The wrestler's name (str).
+        - The embedded match date (str, "YYYY-MM-DD", "" when absent).
         - A multi-line CSV string of the chapter data, suitable for DataFrame loading.
     """
-    # This command outputs the title field of the metadata as the last line
-    ffprobe_command: str = ("ffprobe -v error -show_chapters -show_entries format_tags=title "
-                            f"-of csv '{path_to_vid}'")
+    # This command outputs the title and matchdate fields of the metadata as
+    # the last line: "format,<title>[,<YYYY-MM-DD>]".
+    ffprobe_command: str = ("ffprobe -v error -show_chapters "
+                            "-show_entries format_tags=title:format_tags=matchdate "
+                            f"-of csv {shlex.quote(str(path_to_vid))}")
     logging.debug(
         f"Executing ffprobe command for MakeNameAndCSV: {ffprobe_command}")
 
@@ -468,14 +660,21 @@ def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str]:
         ).stdout.strip().splitlines()
     except subprocess.CalledProcessError as e:
         logging.error(f"MakeNameAndCSV ffprobe failed for '{path_to_vid}': {e}")
-        return ("", "")
+        return ("", "", "")
 
     if not lines:
         logging.warning(f"MakeNameAndCSV: no output from ffprobe for '{path_to_vid}'")
-        return ("", "")
+        return ("", "", "")
 
-    name_out: str = lines.pop().removeprefix("format,")
+    name_line: str = lines.pop().removeprefix("format,")
+    name_out: str = name_line
+    match_date: str = ""
+    date_parts: list[str] = name_line.rsplit(",", 1)
+    if len(date_parts) == 2 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_parts[1]):
+        name_out = date_parts[0]
+        match_date = date_parts[1]
     logging.debug(f"Extracted wrestler name: {name_out}")
+    logging.debug(f"Extracted match date: {match_date}")
 
     csv_rows: list[str] = []
     for line in lines:
@@ -496,27 +695,54 @@ def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str]:
 
             csv_rows.append(
                 f"{path_to_vid.name}:{chap_id},{start_time},{end_time},{title}")
-        except IndexError:
+        except (IndexError, ValueError, OverflowError):
             logging.warning(
                 f"Could not parse the following line properly: {line}")
             continue
 
     logging.info(
         f"Generated CSV data for '{path_to_vid.name}' with {len(csv_rows)} rows.")
-    return (name_out, "\n".join(csv_rows))
+    return (name_out, match_date, "\n".join(csv_rows))
+
+
+def ValidateMatchDate(match_date: str) -> str:
+    """Validate a match date value, returning it stripped ("" is allowed).
+
+    Args:
+        match_date: The raw match date value ("YYYY-MM-DD" or "").
+
+    Returns:
+        The trimmed match date.
+
+    Raises:
+        ValueError: If the value is neither empty nor a valid YYYY-MM-DD date.
+    """
+    cleaned: str = match_date.strip()
+    if cleaned:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", cleaned) is None:
+            raise ValueError(f"Invalid match date: {match_date}")
+        try:
+            datetime.strptime(cleaned, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError(f"Invalid match date: {match_date}")
+    return cleaned
 
 
 def MakeFormattedDataFrame(csv_path: Path) -> pd.DataFrame:
     """Initialize a pandas DataFrame from a wrestler's CSV file.
 
-    This function reads a CSV file, converts colon-delimited columns into lists, and sets
-    appropriate data types.
+    Reads a CSV file, converts colon-delimited columns into lists, and sets
+    appropriate data types. Compiled CSVs carrying stored Net Points and
+    Adjusted Net Points columns (11+ columns) keep those values verbatim, so a
+    ruleset change never rewrites historical numbers on read. Legacy 9-column
+    CSVs have no stored points and are computed on load.
 
     Args:
         csv_path: The path to the CSV file to load.
 
     Returns:
-        A pandas DataFrame with the parsed and structured data.
+        A pandas DataFrame with the parsed and structured data. Its ``attrs``
+        record ``points_source`` ("stored" or "computed_on_load").
     """
     logging.info(f"Loading CSV from '{csv_path}' into DataFrame.")
     column_names: list[str] = [
@@ -530,6 +756,24 @@ def MakeFormattedDataFrame(csv_path: Path) -> pd.DataFrame:
         COL_TEAM_SCORES,
         COL_OPPONENT_SCORES
     ]
+    first_lines: list[str] = [
+        line for line in csv_path.read_text().splitlines() if line.strip()
+    ]
+    n_cols: int = max(
+        (line.count(",") + 1 for line in first_lines),
+        default=9,
+    )
+    if n_cols not in (9, 11, 12, 13):
+        raise ValueError(
+            f"Unsupported CSV width for '{csv_path}': {n_cols} columns "
+            f"(expected 9, 11, 12, or 13)"
+        )
+    if n_cols >= 11:
+        column_names = column_names + [COL_NET_POINTS, COL_ADJUSTED_NET_POINTS]
+    if n_cols >= 12:
+        column_names = column_names + [COL_MATCH_RESULT]
+    if n_cols >= 13:
+        column_names = column_names + [COL_MATCH_DATE]
     df: pd.DataFrame = pd.read_csv(
         csv_path,
         header=None,
@@ -547,20 +791,170 @@ def MakeFormattedDataFrame(csv_path: Path) -> pd.DataFrame:
             COL_OPPONENT_SCORES: str,
         },
     )
-
     list_columns: list[str] = [COL_TEAM_MOVES, COL_OPPONENT_MOVES,
                                COL_TEAM_SCORES, COL_OPPONENT_SCORES]
-
     for col in list_columns:
-        df[col] = df[col].str.split(':')
-
-    # Convert the attack/defend to bool
+        df[col] = df[col].apply(
+            lambda value: str(value).split(":") if pd.notna(value) and value != "" else [])
     df[COL_ATTACKING] = df[COL_ATTACKING] == "A"
+    if COL_MATCH_RESULT in df.columns:
+        df[COL_MATCH_RESULT] = df[COL_MATCH_RESULT].fillna("").astype(str)
+    if COL_MATCH_DATE in df.columns:
+        df[COL_MATCH_DATE] = df[COL_MATCH_DATE].fillna("").astype(str)
     logging.info(
         f"Successfully loaded DataFrame from '{csv_path}' with shape: {df.shape}")
-
-    TabulateNetPoints(df)
+    ReloadScoringMap()
+    if COL_NET_POINTS in df.columns and COL_ADJUSTED_NET_POINTS in df.columns:
+        df[COL_NET_POINTS] = (
+            pd.to_numeric(df[COL_NET_POINTS], errors="coerce")
+            .fillna(0)
+            .astype("int16")
+        )
+        df[COL_ADJUSTED_NET_POINTS] = (
+            pd.to_numeric(df[COL_ADJUSTED_NET_POINTS], errors="coerce")
+            .fillna(0)
+            .astype("int16")
+        )
+        df.attrs["points_source"] = "stored"
+    else:
+        TabulateNetPoints(df)
+        TabulateAdjustedNetPoints(df)
+        df.attrs["points_source"] = "computed_on_load"
     return df
+
+
+def BuildTagTitle(
+    wrestler: str,
+    opponent: str | None = None,
+    match_result: str = "",
+) -> str:
+    """Build the format ``title`` tag stored on a tagged video.
+
+    Single mode (no opponent): the wrestler's name, with `` (W)`` or `` (L)``
+    appended when the match result is known. Dual mode: both names joined by
+    ``TITLE_DELIMITER`` with `` (W)`` on the winner's name (draws carry no
+    marker). ``match_result`` describes the tagged wrestler's result, so a loss
+    in dual mode marks the opponent as the winner.
+
+    Args:
+        wrestler: The tagged wrestler's name.
+        opponent: The opponent's name for dual-wrestler mode, else None.
+        match_result: The tagged wrestler's result: "", "W", or "L".
+
+    Returns:
+        The title string to store as the video's format title tag.
+
+    Raises:
+        ValueError: If ``match_result`` is not one of "", "W", or "L".
+    """
+    if match_result not in ("", "W", "L"):
+        raise ValueError(f"Invalid match result: {match_result!r}")
+    wrestler_clean: str = wrestler.strip()
+    opponent_clean: str = opponent.strip() if opponent else ""
+    if opponent_clean:
+        if match_result == "W":
+            return f"{wrestler_clean}{WIN_MARKER}{TITLE_DELIMITER}{opponent_clean}"
+        if match_result == "L":
+            return f"{wrestler_clean}{TITLE_DELIMITER}{opponent_clean}{WIN_MARKER}"
+        return f"{wrestler_clean}{TITLE_DELIMITER}{opponent_clean}"
+    if match_result == "W":
+        return f"{wrestler_clean}{WIN_MARKER}"
+    if match_result == "L":
+        return f"{wrestler_clean}{LOSS_MARKER}"
+    return wrestler_clean
+
+
+def ParseTaggedName(title: str) -> tuple[str, str | None, str]:
+    """Parse a tagged video's format title into wrestler, opponent, and result.
+
+    Args:
+        title: The format title read back from a tagged video.
+
+    Returns:
+        A ``(wrestler, opponent, result)`` tuple. ``opponent`` is None for
+        single-wrestler titles; ``result`` is "", "W", or "L" describing the
+        tagged wrestler's result (derived from which name carries the marker,
+        so in dual mode a ``(W)`` on the opponent's name yields "L").
+    """
+    parts: list[str] = title.split(TITLE_DELIMITER, maxsplit=1)
+    wrestler: str = parts[0]
+    result: str = ""
+    if wrestler.endswith(WIN_MARKER):
+        result = "W"
+        wrestler = wrestler[: -len(WIN_MARKER)]
+    elif wrestler.endswith(LOSS_MARKER):
+        result = "L"
+        wrestler = wrestler[: -len(LOSS_MARKER)]
+    if len(parts) == 1:
+        return (wrestler.strip(), None, result)
+    opponent: str = parts[1]
+    if opponent.endswith(WIN_MARKER):
+        opponent = opponent[: -len(WIN_MARKER)]
+        if result == "":
+            result = "L"
+    return (wrestler.strip(), opponent.strip(), result)
+
+
+def BuildTieEntry(your_tie: str, opp_tie: str | None = None) -> str:
+    """Build the tie-up value stored in a sequence's chapter title.
+
+    Dual mode pairs the wrestlers' tie-ups with a colon; single mode stores the
+    bare tie-up name.
+
+    Args:
+        your_tie: The tagged wrestler's starting tie/position.
+        opp_tie: The opponent's tie/position for dual mode, else None.
+
+    Returns:
+        The tie-up value (``"yours:theirs"`` in dual mode).
+    """
+    your_clean: str = your_tie.strip()
+    if opp_tie and opp_tie.strip():
+        return f"{your_clean}:{opp_tie.strip()}"
+    return your_clean
+
+
+def SwapPerspectiveCSV(csv_data: str) -> str:
+    """Rewrite a compiled wrestler CSV from the opponent's perspective.
+
+    Reverses the attacking flag, swaps the team/opponent move and score
+    columns, flips the colon-paired tie-up, negates the stored net/adjusted
+    points, and inverts the match-result column so the same rows describe the
+    opponent. Rows that do not match the 12-field compiled schema (or the
+    13-field schema with a match date) pass through unchanged. A 13-field row
+    keeps its width even when the match date is empty, so a mixed set of dated
+    and undated rows stays parseable.
+
+    Args:
+        csv_data: The multi-line compiled CSV string for a wrestler.
+
+    Returns:
+        The same CSV re-expressed from the opponent's perspective.
+    """
+    swapped: list[str] = []
+    for line in csv_data.splitlines():
+        parts: list[str] = line.split(",")
+        if len(parts) not in (12, 13):
+            swapped.append(line)
+            continue
+        (origin, start, end, attack, tie, team_moves, op_moves,
+         team_scores, op_scores, net, adjusted, result) = parts[:12]
+        match_date: str = parts[12] if len(parts) == 13 else ""
+        tie_pair: list[str] = tie.split(":")
+        new_tie: str = ":".join(reversed(tie_pair)) if len(tie_pair) > 1 else tie
+        new_net: str = str(-int(net)) if net else ""
+        new_adjusted: str = str(-int(adjusted)) if adjusted else ""
+        new_result: str = "L" if result == "W" else ("W" if result == "L" else result)
+        fields: list[str] = [
+            origin, start, end,
+            "D" if attack == "A" else "A",
+            new_tie, op_moves, team_moves, op_scores, team_scores,
+            new_net, new_adjusted, new_result,
+        ]
+        if len(parts) == 13:
+            fields.append(match_date)
+        swapped.append(",".join(fields))
+    return "\n".join(swapped)
 
 
 def CalculateNetPoints(row: pd.Series) -> np.int16:
@@ -571,7 +965,7 @@ def CalculateNetPoints(row: pd.Series) -> np.int16:
         row: The sequence, represented by a pd.Series, being scored.
 
     Returns:
-        The sum of the points scored.
+        The net points scored (team scores minus opponent scores).
     """
     logging.debug(f"Summing the net points of the row: {row}")
     sum_val: np.int16 = np.int16(0)
@@ -606,6 +1000,43 @@ def TabulateNetPoints(df_in: pd.DataFrame) -> None:
     df_in[COL_NET_POINTS] = df_in.apply(CalculateNetPoints, axis=1)
 
 
+def AdjustedNetPoints(row: pd.Series) -> np.int16:
+    """Net points plus the active ruleset's pin bonus for a sequence.
+
+    Each pin in the sequence adds ``active_pin_points`` when the wrestler
+    scored it (COL_TEAM_SCORES) and subtracts it when the opponent scored it
+    (COL_OPPONENT_SCORES). Pin codes come from the active ruleset's
+    ``counts_as_pin`` outcomes.
+
+    Args:
+        row: The sequence, represented by a pd.Series, being scored.
+
+    Returns:
+        The adjusted net points (net points plus the pin bonus).
+    """
+    net: np.int16 = CalculateNetPoints(row)
+    team_pinned: bool = isinstance(row[COL_TEAM_SCORES], list) and any(
+        score in _ACTIVE_PIN_CODES for score in row[COL_TEAM_SCORES]
+    )
+    opp_pinned: bool = isinstance(row[COL_OPPONENT_SCORES], list) and any(
+        score in _ACTIVE_PIN_CODES for score in row[COL_OPPONENT_SCORES]
+    )
+    bonus: int = (1 if team_pinned else 0) - (1 if opp_pinned else 0)
+    return np.int16(net + active_pin_points * bonus)
+
+
+def TabulateAdjustedNetPoints(df_in: pd.DataFrame) -> None:
+    """Adds a column with the adjusted net points from the sequence, in place.
+
+    Args:
+        df_in: The DataFrame being changed.
+
+    Returns:
+        None
+    """
+    df_in[COL_ADJUSTED_NET_POINTS] = df_in.apply(AdjustedNetPoints, axis=1)
+
+
 def _MoveFilter(move: str, column: str) -> Callable[[pd.Series], pd.Series | None]:
     """Return a function that filters rows where `move` is present in `column`.
 
@@ -619,64 +1050,175 @@ def _MoveFilter(move: str, column: str) -> Callable[[pd.Series], pd.Series | Non
     return lambda row: row if move in row[column] else None
 
 
-def DidMove(move: str) -> Callable[[pd.Series], pd.Series | None]:
-    """Convenience wrapper around _MoveFilter for team moves."""
-    return _MoveFilter(move, COL_TEAM_MOVES)
-
-
-def DefendedMove(move: str) -> Callable[[pd.Series], pd.Series | None]:
-    """Convenience wrapper around _MoveFilter for opponent moves."""
-    return _MoveFilter(move, COL_OPPONENT_MOVES)
-
-
-def MoveCounts(df_in: pd.DataFrame, column: str) -> dict[str, int]:
-    """Returns a dictionary from move names to how often they appear in `column`.
-    Unused moves are not included as keys.
+def _SequenceHasPin(sequence: object) -> bool:
+    """Return whether one score list contains a pin code.
 
     Args:
-        df_in: The DataFrame the moves are being counted from.
-        column: The column to count from (e.g. COL_TEAM_MOVES or COL_OPPONENT_MOVES).
+        sequence: A sequence's score list (e.g. ``["T", "PIN"]``).
 
     Returns:
-        The dictionary of moves and frequencies.
+        True when the list contains a code from the active ruleset's pin set.
     """
-    dict_out: dict[str, int] = {}
-    for move_list in df_in[column]:
-        for move in move_list:
-            dict_out.setdefault(move, 0)
-            dict_out[move] += 1
-    return dict_out
-
-
-def MoveUsageCounts(df_in: pd.DataFrame) -> dict[str, int]:
-    """Convenience wrapper around MoveCounts for team moves."""
-    return MoveCounts(df_in, COL_TEAM_MOVES)
-
-
-def MoveDefenseCounts(df_in: pd.DataFrame) -> dict[str, int]:
-    """Convenience wrapper around MoveCounts for opponent moves."""
-    return MoveCounts(df_in, COL_OPPONENT_MOVES)
+    if not isinstance(sequence, list):
+        return False
+    return any(score in _ACTIVE_PIN_CODES for score in sequence)
 
 
 def PinCount(df_in: pd.DataFrame, column: str) -> int:
-    """Counts how many times "PIN" appears in `column` entries.
+    """Count the number of sequences containing a pin in ``column``.
+
+    A sequence counts at most once, and only when it contains a score code
+    from the active ruleset's ``counts_as_pin`` outcomes (e.g. "PIN" in
+    Folkstyle). This matches the "Number of Pins" column in the move
+    DataFrames, which is per-sequence (a pin ends the match).
 
     Args:
         df_in: The DataFrame to search.
         column: The column to search (e.g. COL_TEAM_SCORES or COL_OPPONENT_SCORES).
 
     Returns:
-        The number of pins found.
+        The number of sequences that contain a pin.
     """
-    pins_count: int = 0
-    for sequence in df_in[column]:
-        if isinstance(sequence, list) and "PIN" in sequence:
-            pins_count += 1
-    return pins_count
+    return sum(1 for sequence in df_in[column] if _SequenceHasPin(sequence))
+
+
+def _PinMatchCount(df_in: pd.DataFrame, column: str) -> int:
+    """Count distinct matches in which at least one sequence contains a pin.
+
+    Args:
+        df_in: The DataFrame to search.
+        column: The score column to inspect.
+
+    Returns:
+        The number of distinct match keys with a pin in ``column``.
+    """
+    return len({
+        MatchKey(origin)
+        for origin, sequence in zip(df_in.index, df_in[column])
+        if _SequenceHasPin(sequence)
+    })
+
+
+@dataclass(frozen=True)
+class MatchConflict:
+    """A match whose sequence rows disagree about the win/loss result."""
+
+    wrestler: str
+    video: str
+    results: tuple[str, ...]
+
+    def describe(self) -> str:
+        """Return a human-readable description for errors and the UI."""
+        joined: str = ", ".join(self.results)
+        return f"'{self.wrestler}' — '{self.video}' has conflicting results ({joined})"
+
+
+class MatchOutcomeConflictError(ValueError):
+    """Raised when one match carries contradictory W/L results.
+
+    Contradictory data is never averaged or silently dropped: the report and
+    tabulation refuse to proceed until the source CSV or tagged video is fixed.
+    """
+
+    def __init__(self, conflicts: list[MatchConflict]) -> None:
+        self.conflicts: list[MatchConflict] = conflicts
+        details: str = "; ".join(conflict.describe() for conflict in conflicts)
+        super().__init__(f"Conflicting match results: {details}")
+
+
+def MatchKey(origin: object) -> str:
+    """Derive the match key (video prefix) from an Origin index value."""
+    return str(origin).split(":")[0]
+
+
+def _MatchResults(df_in: pd.DataFrame) -> dict[str, str]:
+    """Map each match key to its single non-blank result.
+
+    Blank rows are ignored (they mean "not recorded for this sequence"), so a
+    match may legitimately contain ``W`` and ``""`` rows.
+
+    Args:
+        df_in: A formatted sequence DataFrame.
+
+    Returns:
+        A dict of video key to "W"/"L"; matches without a result are absent.
+    """
+    results: dict[str, str] = {}
+    for origin, result in zip(df_in.index, df_in[COL_MATCH_RESULT]):
+        value: str = str(result).strip()
+        if value in ("W", "L"):
+            results[MatchKey(origin)] = value
+    return results
+
+
+def ValidateMatchOutcomes(frames: dict[str, pd.DataFrame]) -> list[MatchConflict]:
+    """Find matches whose sequence rows disagree about the result.
+
+    Args:
+        frames: A mapping of wrestler name to its formatted sequence DataFrame.
+
+    Returns:
+        Every conflict found, in wrestler then video order. An empty list means
+        the data is consistent.
+    """
+    conflicts: list[MatchConflict] = []
+    for name, df_in in frames.items():
+        if COL_MATCH_RESULT not in df_in.columns:
+            continue
+        buckets: dict[str, set[str]] = {}
+        for origin, result in zip(df_in.index, df_in[COL_MATCH_RESULT]):
+            value: str = str(result).strip()
+            if value in ("W", "L"):
+                buckets.setdefault(MatchKey(origin), set()).add(value)
+        for video, values in buckets.items():
+            if len(values) > 1:
+                conflicts.append(
+                    MatchConflict(name, video, tuple(sorted(values)))
+                )
+    return conflicts
+
+
+def _MoveAttribution(
+    df_in: pd.DataFrame, move_column: str
+) -> dict[str, dict[str, float | int]]:
+    """Accumulate per-move occurrence counts and attributed net points.
+
+    Each sequence's net and adjusted net points are distributed across the
+    moves it lists: a move appearing k times in a sequence with n non-"nothing"
+    moves receives k / n of that sequence's points. The "nothing" sentinel
+    move is excluded entirely, so it never appears in move-level tables.
+
+    Args:
+        df_in: The input DataFrame.
+        move_column: The column containing moves to analyse.
+
+    Returns:
+        A dict mapping each move to {"count", "net", "adjusted"}.
+    """
+    out: dict[str, dict[str, float | int]] = {}
+    for _, row in df_in.iterrows():
+        moves: list[str] = [move for move in row[move_column] if move != "nothing"]
+        if not moves:
+            continue
+        weight: float = 1.0 / len(moves)
+        net: float = float(row[COL_NET_POINTS])
+        adjusted: float = float(row[COL_ADJUSTED_NET_POINTS])
+        for move in moves:
+            entry: dict[str, float | int] = out.setdefault(
+                move, {"count": 0, "net": 0.0, "adjusted": 0.0}
+            )
+            entry["count"] = int(entry["count"]) + 1
+            entry["net"] = float(entry["net"]) + net * weight
+            entry["adjusted"] = float(entry["adjusted"]) + adjusted * weight
+    return out
 
 
 def _GenerateMoveDF(df_in: pd.DataFrame, move_column: str) -> pd.DataFrame:
     """Shared implementation for GenerateOffenseDF and GenerateDefenseDF.
+
+    Points are attributed per move occurrence (see _MoveAttribution), so the
+    net/adjusted sums and their averages share a common occurrence
+    denominator.
 
     Args:
         df_in: The input DataFrame.
@@ -686,29 +1228,39 @@ def _GenerateMoveDF(df_in: pd.DataFrame, move_column: str) -> pd.DataFrame:
         A DataFrame with move-level statistics.
     """
     header: list[str] = [
-        "Count",
-        "Net Pts",
+        "Count (occ.)",
+        "Net Points",
+        "Adjusted Net Pts",
         "Average Net Points",
+        "Average Adjusted Net Points",
         "Number of Pins",
         "Times Pinned"
     ]
-    move_list: list[tuple[str, int]] = list(MoveCounts(df_in, move_column).items())
-    move_list.sort(key=lambda x: x[1], reverse=True)
+    attribution: dict[str, dict[str, float | int]] = _MoveAttribution(df_in, move_column)
+    move_list: list[tuple[str, dict[str, float | int]]] = sorted(
+        attribution.items(), key=lambda item: int(item[1]["count"]), reverse=True
+    )
     df_dict: dict[str, list[int | float]] = {}
 
-    for (move, count) in move_list:
+    for (move, agg) in move_list:
         move_frame: pd.DataFrame = df_in.apply(
             _MoveFilter(move, move_column), axis=1, result_type='broadcast'
         ).query(f"`{COL_START_TIME}` >= 0")
-        net_pt_sum: int = int(move_frame[COL_NET_POINTS].sum())
+        count: int = int(agg["count"])
+        net_pt_sum: float = float(agg["net"])
+        adjusted_sum: float = float(agg["adjusted"])
         df_dict[move] = [
             count,
             net_pt_sum,
+            adjusted_sum,
             net_pt_sum / count,
+            adjusted_sum / count,
             PinCount(move_frame, COL_TEAM_SCORES),
             PinCount(move_frame, COL_OPPONENT_SCORES),
         ]
-    return pd.DataFrame.from_dict(df_dict, orient='index', columns=header)
+    df_out: pd.DataFrame = pd.DataFrame.from_dict(df_dict, orient='index', columns=header)
+    df_out.index.name = "Move"
+    return df_out
 
 
 def GenerateOffenseDF(df_in: pd.DataFrame) -> pd.DataFrame:
@@ -735,37 +1287,596 @@ def GenerateDefenseDF(df_in: pd.DataFrame) -> pd.DataFrame:
     return _GenerateMoveDF(df_in, COL_OPPONENT_MOVES)
 
 
-def GenerateInitiationDF(df_in: pd.DataFrame) -> pd.DataFrame:
-    """Creates a DataFrame with stats based on initiation, ie. who starts an attack.
+def _InitiationStats(df_in: pd.DataFrame) -> dict[str, float | int]:
+    """Compute the initiation metrics for a subset of sequence rows.
 
     Args:
-        df_in: The DataFrame that stats are being extracted from
+        df_in: The DataFrame (or subset) that stats are being extracted from
 
     Returns:
-        The DataFrame with the relevant stats
+        A dict mapping each initiation metric name to its value
     """
     attack_df: pd.DataFrame = df_in[df_in[COL_ATTACKING]]
     defend_df: pd.DataFrame = df_in[~df_in[COL_ATTACKING]]
     attack_count: int = len(attack_df)
     total_count: int = len(df_in)
     attack_ratio: float = attack_count / total_count if total_count > 0 else 0.0
-    net_attack: int = int(attack_df[COL_NET_POINTS].sum()) if attack_count > 0 else 0
-    net_defend: int = int(defend_df[COL_NET_POINTS].sum()) if len(defend_df) > 0 else 0
-    avg_attack: float = float(attack_df[COL_NET_POINTS].mean()) if attack_count > 0 else 0.0
-    avg_defend: float = float(defend_df[COL_NET_POINTS].mean()) if len(defend_df) > 0 else 0.0
-    df_dict: dict[str, list[float | int]] = {
-        "Attack Count": [attack_count],
-        "Defense Count": [len(defend_df)],
-        "Attacks / Sequences": [attack_ratio],
-        "Net Points Attacking": [net_attack],
-        "Net Points Defending": [net_defend],
-        "Average Net Points Attacking": [avg_attack],
-        "Average Net Points Defending": [avg_defend],
+    net_attack: int = int(attack_df[COL_ADJUSTED_NET_POINTS].sum()) if attack_count > 0 else 0
+    net_defend: int = int(defend_df[COL_ADJUSTED_NET_POINTS].sum()) if len(defend_df) > 0 else 0
+    avg_attack: float = float(attack_df[COL_ADJUSTED_NET_POINTS].mean()) if attack_count > 0 else 0.0
+    avg_defend: float = float(defend_df[COL_ADJUSTED_NET_POINTS].mean()) if len(defend_df) > 0 else 0.0
+    raw_net_attack: int = int(attack_df[COL_NET_POINTS].sum()) if attack_count > 0 else 0
+    raw_net_defend: int = int(defend_df[COL_NET_POINTS].sum()) if len(defend_df) > 0 else 0
+    raw_avg_attack: float = float(attack_df[COL_NET_POINTS].mean()) if attack_count > 0 else 0.0
+    raw_avg_defend: float = float(defend_df[COL_NET_POINTS].mean()) if len(defend_df) > 0 else 0.0
+    return {
+        "Sequences": total_count,
+        "Attack Count": attack_count,
+        "Defense Count": len(defend_df),
+        "Attacks / Sequences": attack_ratio,
+        "Net Points Attacking": raw_net_attack,
+        "Net Points Defending": raw_net_defend,
+        "Average Net Points Attacking": raw_avg_attack,
+        "Average Net Points Defending": raw_avg_defend,
+        "Adjusted Net Points Attacking": net_attack,
+        "Adjusted Net Points Defending": net_defend,
+        "Average Adjusted Net Points Attacking": avg_attack,
+        "Average Adjusted Net Points Defending": avg_defend,
     }
-    return pd.DataFrame.from_dict(df_dict, orient='columns')
 
-def GenerateMoveMatrix() -> pd.DataFrame:
+
+def GenerateInitiationDFBySegment(df_in: pd.DataFrame) -> pd.DataFrame:
+    """Creates an initiation DataFrame split by match result segment.
+
+    Rows are bucketed by COL_MATCH_RESULT ("W" / "L"); rows without a result
+    ("" or a legacy CSV without the column) contribute only to the All and
+    Unrecorded rows.
+
+    Args:
+        df_in: The DataFrame that stats are being extracted from
+
+    Returns:
+        A 4-row DataFrame indexed by ["All", "Wins", "Losses", "Unrecorded"]
+        with the initiation metric columns from _InitiationStats
+    """
+    if COL_MATCH_RESULT in df_in.columns:
+        result_col: pd.Series = df_in[COL_MATCH_RESULT]
+        wins_df: pd.DataFrame = df_in[result_col == "W"]
+        losses_df: pd.DataFrame = df_in[result_col == "L"]
+        unrecorded_df: pd.DataFrame = df_in[~result_col.isin(["W", "L"])]
+    else:
+        wins_df = df_in.iloc[0:0]
+        losses_df = df_in.iloc[0:0]
+        unrecorded_df = df_in
+    segments: dict[str, pd.DataFrame] = {
+        "All": df_in,
+        "Wins": wins_df,
+        "Losses": losses_df,
+        "Unrecorded": unrecorded_df,
+    }
+    df_out: pd.DataFrame = pd.DataFrame.from_dict(
+        {segment: _InitiationStats(subset) for segment, subset in segments.items()},
+        orient="index",
+    )
+    df_out.index.name = "Segment"
+    return df_out
+
+
+def GenerateRatesDF(df_in: pd.DataFrame) -> pd.DataFrame:
+    """Compute per-match rates for a wrestler's sequence data.
+
+    Matches are the distinct video prefixes of the Origin index (the
+    "video.mkv" part of "video.mkv:chap"). Every rate divides by the match
+    count so wrestlers with more tagged sequences per match are not rewarded.
+    Time-based rates are intentionally omitted because sequence times are not
+    a reliable match-length record.
+
+    Args:
+        df_in: The sequence DataFrame.
+
+    Returns:
+        A single-row DataFrame (index name "Metric") holding the per-match
+        rates as columns.
+    """
+    matches: int = len({str(origin).split(":")[0] for origin in df_in.index})
+    total_count: int = len(df_in)
+    attack_count: int = int(df_in[COL_ATTACKING].sum()) if total_count > 0 else 0
+    divisor: float = float(matches) if matches > 0 else 1.0
+    rates: dict[str, float | int] = {
+        "Matches": matches,
+        "Net Points per Match": round(float(df_in[COL_NET_POINTS].sum()) / divisor, 2),
+        "Adj. Net Points per Match": round(
+            float(df_in[COL_ADJUSTED_NET_POINTS].sum()) / divisor, 2
+        ),
+        "Attacks per Match": round(attack_count / divisor, 2),
+        "Defenses per Match": round((total_count - attack_count) / divisor, 2),
+        "Pins per Match": round(_PinMatchCount(df_in, COL_TEAM_SCORES) / divisor, 2),
+        "Times Pinned per Match": round(
+            _PinMatchCount(df_in, COL_OPPONENT_SCORES) / divisor, 2
+        ),
+    }
+    df_out: pd.DataFrame = pd.DataFrame.from_dict(
+        {name: [value] for name, value in rates.items()}, orient="columns"
+    )
+    df_out.index.name = "Metric"
+    return df_out
+
+
+def GenerateTeamSummaryDF(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Build the Team Summary block from per-wrestler sequence frames.
+
+    Each wrestler's per-match rates are computed via GenerateRatesDF; the
+    z-score of every rate column (population standard deviation, zeros when a
+    column has no variance) is appended per wrestler, and a final "Team Mean"
+    row holds the team's mean of the base rate columns.
+
+    Args:
+        frames: A mapping of wrestler name to its formatted sequence DataFrame.
+
+    Returns:
+        A DataFrame indexed by wrestler (index name "Wrestler") with the rate
+        columns, their "(z)" z-score columns, and a "Team Mean" row.
+    """
+    rows: list[dict[str, float | int]] = []
+    for name, df_in in frames.items():
+        rates_row: pd.Series = GenerateRatesDF(df_in).iloc[0]
+        rows.append(
+            {
+                column: int(value) if column == "Matches" else float(value)
+                for column, value in rates_row.items()
+            }
+        )
+    if not rows:
+        template: dict[str, float | int] = {
+            "Matches": 0,
+            "Net Points per Match": 0.0,
+            "Adj. Net Points per Match": 0.0,
+            "Attacks per Match": 0.0,
+            "Defenses per Match": 0.0,
+            "Pins per Match": 0.0,
+            "Times Pinned per Match": 0.0,
+        }
+        empty_out: pd.DataFrame = pd.DataFrame(columns=list(template))
+        empty_out.index.name = "Wrestler"
+        empty_out.loc["Team Mean"] = template
+        return empty_out
+    out: pd.DataFrame = pd.DataFrame.from_records(rows)
+    out.insert(0, "Wrestler", list(frames.keys()))
+    out = out.set_index("Wrestler")
+    base_columns: list[str] = [column for column in out.columns if column != "Matches"]
+    for column in base_columns:
+        values: np.ndarray = out[column].to_numpy(dtype=float)
+        column_mean: float = float(values.mean())
+        column_std: float = float(values.std())
+        z_scores: np.ndarray = (
+            np.zeros_like(values)
+            if column_std == 0.0
+            else (values - column_mean) / column_std
+        )
+        out[f"{column} (z)"] = np.round(z_scores, 2)
+    mean_row: dict[str, float] = {
+        column: float(out[column].mean())
+        for column in out.columns
+        if not column.endswith(" (z)")
+    }
+    out.loc["Team Mean"] = mean_row
+    return out
+
+
+def GenerateMatchOutcomesDF(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Build the consolidated Match Outcomes block from per-wrestler frames.
+
+    A match is the distinct video prefix of the Origin index, so a match with
+    several tagged sequences counts once. Each match contributes one outcome
+    ("W", "L", or unrecorded); contradictory results raise
+    ``MatchOutcomeConflictError`` instead of being tallied. The win rate is
+    wins / recorded and is blank (NaN) when no outcome is recorded. Pins and
+    times-pinned count distinct matches containing a pin.
+
+    Args:
+        frames: A mapping of wrestler name to its formatted sequence DataFrame.
+
+    Returns:
+        A DataFrame indexed by wrestler (index name "Wrestler") with the
+        columns "Matches", "W", "L", "Unrecorded", "Recorded", "Win Rate",
+        "Pins", and "Times Pinned".
+
+    Raises:
+        MatchOutcomeConflictError: If any match has contradictory W/L results.
+    """
+    conflicts: list[MatchConflict] = ValidateMatchOutcomes(frames)
+    if conflicts:
+        raise MatchOutcomeConflictError(conflicts)
+
+    rows: list[dict[str, Any]] = []
+    for name, df_in in frames.items():
+        match_keys: list[str] = [MatchKey(origin) for origin in df_in.index]
+        matches: int = len(set(match_keys))
+        results: dict[str, str] = (
+            _MatchResults(df_in) if COL_MATCH_RESULT in df_in.columns else {}
+        )
+        wins: int = sum(1 for result in results.values() if result == "W")
+        losses: int = sum(1 for result in results.values() if result == "L")
+        recorded: int = wins + losses
+        unrecorded: int = matches - recorded
+        win_rate: float = float("nan") if recorded == 0 else wins / recorded
+        rows.append({
+            "Wrestler": name,
+            "Matches": matches,
+            "W": wins,
+            "L": losses,
+            "Unrecorded": unrecorded,
+            "Recorded": recorded,
+            "Win Rate": round(win_rate, 2) if recorded > 0 else win_rate,
+            "Pins": _PinMatchCount(df_in, COL_TEAM_SCORES),
+            "Times Pinned": _PinMatchCount(df_in, COL_OPPONENT_SCORES),
+        })
+    out: pd.DataFrame = pd.DataFrame.from_records(rows)
+    if out.empty:
+        out = pd.DataFrame({
+            "Wrestler": [],
+            "Matches": [],
+            "W": [],
+            "L": [],
+            "Unrecorded": [],
+            "Recorded": [],
+            "Win Rate": [],
+            "Pins": [],
+            "Times Pinned": [],
+        })
+    return out.set_index("Wrestler")
+
+def GenerateMoveMatrix(
+    df_in: pd.DataFrame,
+    move_column: str,
+    min_occurrences: int = 3,
+    group_key: list[Any] | None = None,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Build a move-count matrix from a DataFrame of sequence rows.
+
+    Each row of the returned matrix mirrors ``df_in``'s index (the Origin
+    string, e.g. "video.mkv:3"); columns are the kept moves and entries are
+    int16 counts of how many times that move appears in that row's move list
+    (duplicates within one sequence count). The literal move "nothing" is
+    dropped before counting, and moves appearing in fewer than
+    ``min_occurrences`` distinct rows are dropped (the rare-move PCA
+    mitigation). When ``group_key`` is given, filtering counts distinct groups
+    instead of distinct rows — the "matches" PCA layout passes (wrestler,
+    video) keys so a move must appear in enough matches to survive.
+
+    Args:
+        df_in: The sequence DataFrame; ``df_in[move_column]`` holds lists of
+            move names (from MakeFormattedDataFrame).
+        move_column: The column holding the move lists (COL_TEAM_MOVES or
+            COL_OPPONENT_MOVES).
+        min_occurrences: Minimum number of distinct rows (or groups) a move
+            must appear in to be kept as a matrix column.
+        group_key: Optional group labels aligned by row position (index i of
+            ``df_in`` maps to group_key[i]); when provided the rare-move filter
+            counts distinct group values per move instead of distinct rows.
+
+    Returns:
+        A (matrix, kept_moves) tuple: the int16 move-count matrix (index = the
+        Origin index, columns = sorted kept moves) and the sorted kept-move list.
+    """
+    # Group by unique row position (not index label) so duplicate Origin
+    # strings — e.g. the same "video.mkv:chap" appearing in a wrestler's CSV
+    # and the opponent's perspective-swapped CSV in dual mode — do not merge.
+    unique_index: pd.RangeIndex = pd.RangeIndex(len(df_in))
+    tmp: pd.DataFrame = df_in.reset_index(drop=True)
+    exploded: pd.Series = tmp[move_column].explode().dropna()
+    exploded = exploded[exploded != "nothing"]
+    presence: pd.DataFrame = (
+        pd.get_dummies(exploded).groupby(level=0).max().reindex(index=unique_index, fill_value=0)
+    )
+    if group_key is None:
+        counts: pd.Series = presence.sum(axis=0)
+    else:
+        grouped_index: pd.Index = pd.Index(group_key)[presence.index.to_numpy()]
+        counts = presence.groupby(grouped_index).max().sum(axis=0)
+    kept_moves: list[str] = sorted(
+        move for move, count in counts.items() if count >= min_occurrences
+    )
+    matrix: pd.DataFrame = (
+        pd.get_dummies(exploded)
+        .groupby(level=0)
+        .sum()
+        .reindex(index=unique_index, fill_value=0)
+        .reindex(columns=kept_moves, fill_value=0)
+        .astype(np.int16)
+    )
+    matrix = matrix.set_axis(df_in.index)
+    return (matrix, kept_moves)
+
+
+@overload
+def FirstPrincipalComponent(
+    matrix: pd.DataFrame,
+    standardize: bool,
+    *,
+    row_normalize: bool = ...,
+    return_loadings: Literal[False] = ...,
+) -> tuple[np.ndarray, float]: ...
+
+
+@overload
+def FirstPrincipalComponent(
+    matrix: pd.DataFrame,
+    standardize: bool,
+    *,
+    row_normalize: bool = ...,
+    return_loadings: Literal[True],
+) -> tuple[np.ndarray, float, np.ndarray]: ...
+
+
+def FirstPrincipalComponent(
+    matrix: pd.DataFrame,
+    standardize: bool,
+    row_normalize: bool = False,
+    return_loadings: bool = False,
+) -> tuple[np.ndarray, float] | tuple[np.ndarray, float, np.ndarray]:
+    """Compute the first principal component scores and explained variance.
+
+    Columns are mean-centered before the SVD. When ``standardize`` is True each
+    column is additionally divided by its standard deviation (zero-variance
+    columns are left as-is by dividing by 1.0). Standardization is only used for
+    the "matches" layout: the "sequences" layout runs covariance PCA (no
+    z-scoring) because column z-scoring on sparse near-binary rows over-amplifies
+    rare moves. When ``row_normalize`` is True each row is divided by its own
+    sum (zero-sum rows are left as-is) so rows are compared on move mix rather
+    than tagging volume. The component's sign is fixed so the largest-magnitude
+    loading is positive, making scores reproducible across library versions.
+
+    Args:
+        matrix: The move-count matrix (rows = sequences or matches).
+        standardize: Whether to z-score columns before the SVD.
+        row_normalize: Whether to divide each row by its sum before centering.
+        return_loadings: Whether to also return the component's loadings
+            (the first right singular vector).
+
+    Returns:
+        A (scores, explained_variance_ratio) tuple: scores are the projections
+        onto the first principal component (U[:, 0] * s[0], float64) and the
+        ratio is s[0]**2 / sum(s**2). If ``return_loadings`` is True the
+        loadings vector is returned as a third element. If the total variance is
+        zero, scores are all zeros and the ratio is 0.0.
+    """
+    x: np.ndarray = matrix.to_numpy(dtype=float)
+    if x.shape[0] == 0 or x.shape[1] == 0:
+        zeros: np.ndarray = np.zeros(x.shape[0], dtype=np.float64)
+        if return_loadings:
+            return (zeros, 0.0, np.zeros(x.shape[1], dtype=np.float64))
+        return (zeros, 0.0)
+    if row_normalize:
+        row_sums: np.ndarray = x.sum(axis=1)
+        row_sums[row_sums == 0.0] = 1.0
+        x = x / row_sums[:, None]
+    x = x - x.mean(axis=0)
+    if standardize:
+        col_std: np.ndarray = x.std(axis=0)
+        col_std[col_std == 0.0] = 1.0
+        x = x / col_std
+    u: np.ndarray
+    s: np.ndarray
+    vt: np.ndarray
+    u, s, vt = np.linalg.svd(x, full_matrices=False)
+    total_variance: float = float(np.sum(s**2))
+    if total_variance == 0.0:
+        zeros = np.zeros(x.shape[0], dtype=np.float64)
+        if return_loadings:
+            return (zeros, 0.0, np.zeros(x.shape[1], dtype=np.float64))
+        return (zeros, 0.0)
+    scores: np.ndarray = u[:, 0] * s[0]
+    loadings: np.ndarray = vt[0]
+    if loadings[np.argmax(np.abs(loadings))] < 0:
+        scores = -scores
+        loadings = -loadings
+    ratio: float = float(s[0] ** 2 / total_variance)
+    if return_loadings:
+        return (scores, ratio, loadings)
+    return (scores, ratio)
+
+
+# ---- QueryBuilder ----
+
+
+class QueryBuilder:
+    """Chainable filter / sort / paginate interface for wrestler DataFrames.
+
+    Each filter method narrows the internal subset in place and returns
+    ``self`` so calls can be chained::
+
+        df = (
+            QueryBuilder(frame)
+            .attack_filter("Attacking")
+            .tie_filter("front headlock")
+            .team_move_filter("half nelson")
+            .adjusted_net_points_filter(min=-5, max=10)
+            .apply(sort_by="Adjusted Net Points", ascending=False, limit=50)
+        )
+
+    Filters that accept a string value treat an empty string (or whitespace-
+    only) as a no-op, so callers can pass user input directly without
+    checking first.
     """
 
-    """
+    def __init__(self, df: pd.DataFrame) -> None:
+        self._df: pd.DataFrame = df
+        self._duration_computed: bool = False
+
+    # ---- internal helpers ----
+
+    def _ensure_duration(self) -> None:
+        """Add a computed Duration column if not already present."""
+        if self._duration_computed:
+            return
+        if COL_MATCH_DURATION not in self._df.columns:
+            self._df[COL_MATCH_DURATION] = (
+                self._df[COL_END_TIME] - self._df[COL_START_TIME]
+            ).astype("int16")
+        self._duration_computed = True
+
+    # ---- filter methods ----
+
+    def attack_filter(self, mode: str) -> QueryBuilder:
+        """Filter by attack mode: ``"All"``, ``"Attacking"``, or ``"Defending"``."""
+        if mode == "Attacking":
+            self._df = self._df[self._df[COL_ATTACKING]]
+        elif mode == "Defending":
+            self._df = self._df[~self._df[COL_ATTACKING]]
+        return self
+
+    def tie_filter(self, tie: str) -> QueryBuilder:
+        """Filter sequences by the tagged wrestler's starting tie.
+
+        Dual-wrestler sequences store ``"yours:theirs"``; the first element
+        (before the colon) is matched against *tie*.
+        """
+        tie = tie.strip()
+        if tie:
+            self._df = self._df[
+                self._df[COL_TIE_UP].str.split(":").str[0] == tie
+            ]
+        return self
+
+    def opp_tie_filter(self, tie: str) -> QueryBuilder:
+        """Filter sequences by the opponent's starting tie (after the colon)."""
+        tie = tie.strip()
+        if tie:
+            self._df = self._df[
+                self._df[COL_TIE_UP].str.split(":").str[1] == tie
+            ]
+        return self
+
+    def team_move_filter(self, move: str, exact: bool = False) -> QueryBuilder:
+        """Filter sequences by a move the wrestler used.
+
+        Args:
+            move: The move name to search for.
+            exact: When ``True`` the move must match an entire list item
+                exactly; when ``False`` a case-insensitive substring match
+                is used.
+        """
+        move = move.strip()
+        if not move:
+            return self
+        if exact:
+            self._df = self._df[self._df[COL_TEAM_MOVES].apply(
+                lambda moves: isinstance(moves, list) and move in moves
+            )]
+        else:
+            lower: str = move.lower()
+            self._df = self._df[self._df[COL_TEAM_MOVES].apply(
+                lambda moves: isinstance(moves, list)
+                and any(lower in str(m).lower() for m in moves)
+            )]
+        return self
+
+    def opp_move_filter(self, move: str, exact: bool = False) -> QueryBuilder:
+        """Filter sequences by a move the opponent used.
+
+        Args:
+            move: The move name to search for.
+            exact: When ``True`` the move must match an entire list item
+                exactly; when ``False`` a case-insensitive substring match
+                is used.
+        """
+        move = move.strip()
+        if not move:
+            return self
+        if exact:
+            self._df = self._df[self._df[COL_OPPONENT_MOVES].apply(
+                lambda moves: isinstance(moves, list) and move in moves
+            )]
+        else:
+            lower: str = move.lower()
+            self._df = self._df[self._df[COL_OPPONENT_MOVES].apply(
+                lambda moves: isinstance(moves, list)
+                and any(lower in str(m).lower() for m in moves)
+            )]
+        return self
+
+    def match_result_filter(self, result: str) -> QueryBuilder:
+        """Filter by match result: ``"W"``, ``"L"``, or ``""`` (unrecorded).
+
+        An empty or whitespace-only *result* is a no-op.
+        """
+        result = result.strip()
+        if result and COL_MATCH_RESULT in self._df.columns:
+            self._df = self._df[self._df[COL_MATCH_RESULT] == result]
+        return self
+
+    def date_range_filter(
+        self, min_date: str = "", max_date: str = ""
+    ) -> QueryBuilder:
+        """Filter sequences by match date range (inclusive).
+
+        Dates are ``YYYY-MM-DD`` strings; the comparison is lexicographic
+        which is correct for this format.  Empty strings are no-ops.
+        """
+        min_date = min_date.strip()
+        max_date = max_date.strip()
+        if COL_MATCH_DATE not in self._df.columns:
+            return self
+        if min_date:
+            self._df = self._df[self._df[COL_MATCH_DATE] >= min_date]
+        if max_date:
+            self._df = self._df[self._df[COL_MATCH_DATE] <= max_date]
+        return self
+
+    def duration_filter(
+        self, min_seconds: int | None = None, max_seconds: int | None = None
+    ) -> QueryBuilder:
+        """Filter sequences by duration (end_time - start_time) in seconds."""
+        self._ensure_duration()
+        if min_seconds is not None:
+            self._df = self._df[self._df[COL_MATCH_DURATION] >= min_seconds]
+        if max_seconds is not None:
+            self._df = self._df[self._df[COL_MATCH_DURATION] <= max_seconds]
+        return self
+
+    def net_points_filter(
+        self, min: int = -20, max: int = 20
+    ) -> QueryBuilder:
+        """Filter by raw net points range (inclusive)."""
+        col: pd.Series = self._df[COL_NET_POINTS]
+        self._df = self._df[(col >= min) & (col <= max)]
+        return self
+
+    def adjusted_net_points_filter(
+        self, min: int = -20, max: int = 20
+    ) -> QueryBuilder:
+        """Filter by adjusted net points range (inclusive)."""
+        col: pd.Series = self._df[COL_ADJUSTED_NET_POINTS]
+        self._df = self._df[(col >= min) & (col <= max)]
+        return self
+
+    # ---- sort + paginate ----
+
+    def apply(
+        self,
+        sort_by: str | None = None,
+        ascending: bool = True,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> pd.DataFrame:
+        """Apply all pending filters and return the resulting DataFrame.
+
+        Args:
+            sort_by: Optional column name to sort by.
+            ascending: Sort direction (default ``True``).
+            limit: Maximum number of rows to return (``None`` = all).
+            offset: Number of rows to skip before taking *limit*.
+
+        Returns:
+            A new filtered (and optionally sorted / paginated) DataFrame.
+        """
+        result: pd.DataFrame = self._df
+        if sort_by is not None and sort_by in result.columns:
+            result = result.sort_values(sort_by, ascending=ascending, kind="stable")
+        if offset:
+            result = result.iloc[offset:]
+        if limit is not None:
+            result = result.iloc[:limit]
+        return result
 

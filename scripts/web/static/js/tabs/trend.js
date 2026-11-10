@@ -1,0 +1,176 @@
+/**
+ * Trends tab — per-match points over a wrestler's season.
+ *
+ * Mounts into #trend-root. Pick a wrestler, a metric (net or adjusted points),
+ * and a rolling-average window, then load the Plotly line chart. Rows without
+ * a recorded match date are skipped and reported in the status line.
+ */
+
+import { el, ensurePlotly, fetchJson, showToast } from "../components.js";
+
+/**
+ * Mount the Trends tab into `root` (the #trend-root element).
+ */
+export function mountTrend(root) {
+  if (!root) return;
+  root.replaceChildren();
+
+  // ---------- State ----------
+
+  const state = {
+    wrestler: "",
+    metric: "net",
+    window: 5,
+  };
+
+  // ---------- Controls ----------
+
+  const wrestlerSelect = el("select", { class: "combo-input" });
+  const metricSelect = el("select", { class: "combo-input" }, [
+    el("option", { value: "net", text: "Net points" }),
+    el("option", { value: "adjusted", text: "Adjusted points" }),
+  ]);
+  const windowInput = el("input", {
+    type: "number",
+    class: "combo-input",
+    min: "1",
+    value: "5",
+  });
+
+  const wrestlerRow = el("div", { class: "row" }, [
+    el("label", { class: "field-label", text: "Wrestler:" }),
+    wrestlerSelect,
+  ]);
+  const metricRow = el("div", { class: "row" }, [
+    el("label", { class: "field-label", text: "Metric:" }),
+    metricSelect,
+  ]);
+  const windowRow = el("div", { class: "row" }, [
+    el("label", { class: "field-label", text: "Rolling avg window:" }),
+    windowInput,
+  ]);
+
+  const loadPlotBtn = el("button", { class: "btn", type: "button", text: "Load Chart" });
+  const statusLabel = el("p", { class: "status-label", text: "Load a chart to begin." });
+  const plotEl = el("div", { class: "pca-plot" });
+
+  /**
+   * Update the status label.
+   */
+  function setStatus(text) {
+    statusLabel.textContent = text;
+  }
+
+  // ---------- Plot ----------
+
+  // Monotonic load token: only the latest request may render, so a slow
+  // response cannot overwrite a newer chart (or stale results after the
+  // wrestler/metric/window changed mid-flight).
+  let loadSeq = 0;
+
+  /**
+   * Fetch and render the trend figure for the current controls.
+   */
+  async function loadPlot() {
+    if (!state.wrestler) {
+      setStatus("Select a wrestler.");
+      return;
+    }
+    const seq = ++loadSeq;
+    let Plotly;
+    try {
+      Plotly = await ensurePlotly();
+    } catch (err) {
+      showToast("Plotly failed to load (vendored file missing and CDN unreachable).", "error");
+      setStatus("Plotly failed to load.");
+      return;
+    }
+
+    const windowValue = parseInt(windowInput.value, 10);
+    const url =
+      `/api/trend?wrestler=${encodeURIComponent(state.wrestler)}` +
+      `&metric=${encodeURIComponent(state.metric)}` +
+      `&window=${Number.isFinite(windowValue) ? Math.max(1, windowValue) : 1}`;
+
+    setStatus("Loading chart...");
+    const { ok, body } = await fetchJson(url);
+    if (seq !== loadSeq) return;
+    if (!ok) {
+      const message = body.detail || "Could not load chart.";
+      showToast(message, "error");
+      setStatus(message);
+      return;
+    }
+
+    try {
+      const fig = JSON.parse(body.fig_json);
+      Plotly.newPlot(plotEl, fig.data, fig.layout, { responsive: true });
+    } catch (err) {
+      showToast("Could not render the chart.", "error");
+      setStatus("Could not render the chart.");
+      return;
+    }
+
+    const skipped =
+      body.skipped_rows > 0 ? ` (${body.skipped_rows} rows without a date skipped)` : "";
+    setStatus(
+      `${body.n_matches} matches plotted (${body.metric}, ${body.window}-match avg)${skipped}`
+    );
+  }
+
+  // ---------- Wiring ----------
+
+  wrestlerSelect.addEventListener("change", () => {
+    state.wrestler = wrestlerSelect.value;
+    loadPlot();
+  });
+  metricSelect.addEventListener("change", () => {
+    state.metric = metricSelect.value;
+    loadPlot();
+  });
+  windowInput.addEventListener("change", loadPlot);
+  loadPlotBtn.addEventListener("click", loadPlot);
+
+  /**
+   * Populate the wrestler select from the compiled-data listing.
+   */
+  async function loadWrestlers() {
+    try {
+      const { ok, body } = await fetchJson("/api/search/wrestlers");
+      if (!ok) return;
+      wrestlerSelect.replaceChildren();
+      for (const name of body.items || []) {
+        wrestlerSelect.appendChild(el("option", { value: name, text: name }));
+      }
+      if (body.items && body.items.length > 0) {
+        state.wrestler = body.items[0];
+        wrestlerSelect.value = state.wrestler;
+        loadPlot();
+      }
+    } catch (err) {
+      showToast("Could not load the wrestler list.", "error");
+      setStatus("Could not load the wrestler list.");
+    }
+  }
+
+  // ---------- Layout ----------
+
+  const controlsCard = el("fieldset", { class: "tag-card" }, [
+    el("legend", { text: "Controls" }),
+    wrestlerRow,
+    metricRow,
+    windowRow,
+    el("div", { class: "row" }, [loadPlotBtn]),
+    statusLabel,
+  ]);
+  const plotCard = el("section", { class: "tag-card plot-card" }, [plotEl]);
+  const left = el("div", { class: "tag-left" }, [controlsCard]);
+  const right = el("div", { class: "tag-right" }, [plotCard]);
+
+  root.appendChild(el("div", { class: "tag-film-grid" }, [left, right]));
+
+  // ---------- Boot ----------
+
+  window.addEventListener("configs-updated", loadWrestlers);
+  loadWrestlers();
+}

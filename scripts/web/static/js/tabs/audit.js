@@ -1,0 +1,713 @@
+/**
+ * Auditing tab — review and re-tag already-tagged videos.
+ *
+ * Mounts into #audit-root. Lists every tagged video with its embedded
+ * sequences (read back from the file metadata via GET /api/audit), previews
+ * the tagged video, and lets the user edit/add/remove sequences and re-tag the
+ * video in place (POST /api/audit/{file}/retag), which also recompiles stats.
+ */
+
+import {
+  checkList,
+  confirmModal,
+  el,
+  ensurePreview,
+  fetchJson,
+  filterList,
+  formatClock,
+  pollJob,
+  showToast,
+  timeInput,
+  videoPlayer,
+} from "../components.js";
+
+export function mountAudit(root) {
+  if (!root) return;
+  root.replaceChildren();
+
+  // ---------- State ----------
+
+  const state = {
+    videos: [],
+    data: null, // selected video: { name, wrestler, sequences }
+    editingIndex: -1,
+    retagging: false,
+    playerPosMs: 0,
+  };
+  let wrestlerNames = [];
+
+  // ---------- Components ----------
+
+  const videoList = filterList({
+    placeholder: "Type to filter logged videos...",
+    onChange: (fileName) => {
+      const data = state.videos.find((v) => v.name === fileName);
+      if (!data) return;
+      state.data = data;
+      state.editingIndex = -1;
+      wrestlerList.setSelected(data.wrestler || "");
+      opponentList.setItems(wrestlerNames.filter((w) => w !== (data.wrestler || "")));
+      opponentList.setSelected(data.opponent || "");
+      matchDateInput.value = data.match_date || "";
+      oppTie.node.hidden = !data.opponent;
+      if (!data.opponent) oppTie.clear();
+      setResult(data.result || "");
+      renderSequences();
+      resetDetails();
+      setStatus(`Selected video: ${fileName}`);
+      updateButtons();
+      updateTitlePreview();
+      loadPreview(fileName);
+    },
+  });
+
+  const player = videoPlayer({
+    onPosition: (ms) => { state.playerPosMs = ms; },
+  });
+
+  const wrestlerList = filterList({
+    placeholder: "Type to filter wrestlers...",
+    onChange: (name) => {
+      if (name && name === opponentList.selected) {
+        opponentList.clear();
+        oppTie.clear();
+        oppTie.node.hidden = true;
+      }
+      opponentList.setItems(wrestlerNames.filter((w) => w !== name));
+      updateTitlePreview();
+      updateButtons();
+    },
+  });
+
+  const opponentList = filterList({
+    placeholder: "Type to filter opponents...",
+    onChange: () => {
+      if (!opponentList.selected) oppTie.clear();
+      oppTie.node.hidden = !opponentList.selected;
+      updateTitlePreview();
+      updateButtons();
+    },
+  });
+
+  // Match result: "No Result" (default / draw), Win, or Loss. Draws are skipped.
+  const noResultRadio = el("input", { type: "radio", name: "audit-result", value: "", checked: "", hidden: "" });
+  const winRadio = el("input", { type: "radio", name: "audit-result", value: "W", hidden: "" });
+  const lossRadio = el("input", { type: "radio", name: "audit-result", value: "L", hidden: "" });
+  const noResultBtn = el("button", { class: "seg-option active", type: "button", text: "No Result" });
+  const winBtn = el("button", { class: "seg-option", type: "button", text: "Win" });
+  const lossBtn = el("button", { class: "seg-option", type: "button", text: "Loss" });
+  const matchDateInput = el("input", { type: "date", class: "time-input" });
+
+  let matchResultValue = "";
+
+  function setResult(value) {
+    matchResultValue = value;
+    noResultRadio.checked = value === "";
+    winRadio.checked = value === "W";
+    lossRadio.checked = value === "L";
+    noResultBtn.classList.toggle("active", value === "");
+    winBtn.classList.toggle("active", value === "W");
+    lossBtn.classList.toggle("active", value === "L");
+    updateTitlePreview();
+  }
+
+  noResultBtn.addEventListener("click", () => setResult(""));
+  winBtn.addEventListener("click", () => setResult("W"));
+  lossBtn.addEventListener("click", () => setResult("L"));
+  const resultRow = el("div", { class: "seg-toggle" }, [
+    noResultRadio, winRadio, lossRadio, noResultBtn, winBtn, lossBtn,
+  ]);
+
+  function buildTitle(wrestler, opponent, result) {
+    if (!wrestler) return "";
+    if (opponent) {
+      if (result === "W") return `${wrestler} (W) / ${opponent}`;
+      if (result === "L") return `${wrestler} / ${opponent} (W)`;
+      return `${wrestler} / ${opponent}`;
+    }
+    if (result === "W") return `${wrestler} (W)`;
+    if (result === "L") return `${wrestler} (L)`;
+    return wrestler;
+  }
+
+  const titlePreview = el("p", { class: "status-label", text: "" });
+
+  function updateTitlePreview() {
+    const wrestler = wrestlerList.selected;
+    titlePreview.textContent = wrestler
+      ? `Will log as: ${buildTitle(wrestler, opponentList.selected, matchResultValue)}`
+      : "";
+  }
+
+  const startTime = timeInput({ label: "Start:" });
+  const endTime = timeInput({ label: "End:" });
+
+  const attackRadio = el("input", {
+    type: "radio", name: "audit-attack-defend", value: "attack", checked: "", hidden: "",
+  });
+  const defendRadio = el("input", {
+    type: "radio", name: "audit-attack-defend", value: "defend", hidden: "",
+  });
+  const attackBtn = el("button", { class: "seg-option active", type: "button", text: "Attacking" });
+  const defendBtn = el("button", { class: "seg-option", type: "button", text: "Defending" });
+  attackBtn.addEventListener("click", () => {
+    attackRadio.checked = true;
+    attackBtn.classList.add("active");
+    defendBtn.classList.remove("active");
+  });
+  defendBtn.addEventListener("click", () => {
+    defendRadio.checked = true;
+    defendBtn.classList.add("active");
+    attackBtn.classList.remove("active");
+  });
+  const attackRow = el("div", { class: "seg-toggle" }, [attackRadio, defendRadio, attackBtn, defendBtn]);
+
+  const tie = filterList({ label: "Main Tie/Position:", items: [] });
+  const oppTie = filterList({ label: "Opponent Tie/Position:", items: [] });
+  oppTie.node.hidden = true;
+  const ourMoves = checkList({ label: "Main Wrestler Moves", items: [], counts: true });
+  const oppMoves = checkList({ label: "Opp. Moves", items: [], counts: true });
+  const ourScores = checkList({ label: "Main Wrestler Scores", items: [], counts: true });
+  const oppScores = checkList({ label: "Opp. Scores", items: [], counts: true });
+
+  const addBtn = el("button", { class: "btn", type: "button", text: "Add Sequence", disabled: "" });
+  const updateBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Update Sequence", hidden: "" });
+  const deleteBtn = el("button", { class: "btn btn-ghost danger", type: "button", text: "Delete Sequence", hidden: "" });
+  const retagBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Re-log Match", disabled: "" });
+  const deleteVideoBtn = el("button", { class: "btn btn-ghost danger", type: "button", text: "Delete Video", disabled: "" });
+  const recompileCheck = el("input", { type: "checkbox" });
+  const recompileRow = el("label", { class: "recompile-row" }, [
+    recompileCheck,
+    el("span", { text: "Re-tabulate all sequences after re-logging" }),
+  ]);
+  const deleteRecompileCheck = el("input", { type: "checkbox" });
+  const deleteRecompileRow = el("label", { class: "recompile-row" }, [
+    deleteRecompileCheck,
+    el("span", { text: "Re-tabulate stats after deleting this video" }),
+  ]);
+  const progress = el("progress", { class: "progress", max: "100", value: "0", hidden: "" });
+  const statusLabel = el("p", { class: "status-label", text: "Select a logged video to review." });
+
+  const seqCount = el("span", { text: "0" });
+  const seqListEl = el("ul", { class: "seq-list" });
+
+  function setStatus(text) {
+    statusLabel.textContent = text;
+  }
+
+  function resetDetails() {
+    startTime.setFromSeconds(0);
+    endTime.setFromSeconds(0);
+    attackRadio.checked = true;
+    attackBtn.classList.add("active");
+    defendBtn.classList.remove("active");
+    tie.clear();
+    oppTie.clear();
+    ourMoves.clear();
+    oppMoves.clear();
+    ourScores.clear();
+    oppScores.clear();
+    state.editingIndex = -1;
+  }
+
+  function setEditingMode(editing) {
+    addBtn.hidden = editing;
+    updateBtn.hidden = !editing;
+    deleteBtn.hidden = !editing;
+    addBtn.disabled = !state.data || state.retagging;
+  }
+
+  function updateButtons() {
+    const hasData = Boolean(state.data && !state.retagging);
+    const count = state.data ? state.data.sequences.length : 0;
+    retagBtn.disabled = !hasData;
+    retagBtn.textContent = count === 0
+      ? "Metadata-only edit (fast)"
+      : `Rewrite with ${count} sequence${count === 1 ? "" : "s"}`;
+    deleteVideoBtn.disabled = !hasData;
+    setEditingMode(state.editingIndex >= 0);
+  }
+
+  // ---------- Sequence editing ----------
+
+  function fillControls(seq) {
+    startTime.setFromSeconds(seq.start_time);
+    endTime.setFromSeconds(seq.end_time);
+    if (seq.attack_defend) {
+      attackRadio.checked = true;
+      attackBtn.classList.add("active");
+      defendBtn.classList.remove("active");
+    } else {
+      defendRadio.checked = true;
+      defendBtn.classList.add("active");
+      attackBtn.classList.remove("active");
+    }
+    tie.setSelected(seq.tie_up || "");
+    oppTie.setSelected(seq.opp_tie || "");
+    ourMoves.clear();
+    oppMoves.clear();
+    ourScores.clear();
+    oppScores.clear();
+    setCounted(ourMoves, seq.team_moves || [], "nothing");
+    setCounted(oppMoves, seq.op_moves || [], "nothing");
+    setCounted(ourScores, seq.team_scores || [], "None");
+    setCounted(oppScores, seq.op_scores || [], "None");
+  }
+
+  // Check each value, counting duplicates so repeated moves/scores are not
+  // collapsed into a single entry when the sequence is re-tagged.
+  function setCounted(list, values, skip) {
+    const counts = {};
+    for (const value of values) {
+      if (value === skip) continue;
+      counts[value] = (counts[value] || 0) + 1;
+    }
+    for (const [value, count] of Object.entries(counts)) {
+      list.setCount(value, count);
+    }
+  }
+
+  function currentSequence() {
+    let teamMoves = ourMoves.selected();
+    if (teamMoves.length === 0) teamMoves = ["nothing"];
+    let oppMovesSel = oppMoves.selected();
+    if (oppMovesSel.length === 0) oppMovesSel = ["nothing"];
+    let teamScores = ourScores.selected();
+    if (teamScores.length === 0) teamScores = ["None"];
+    let oppScoresSel = oppScores.selected();
+    if (oppScoresSel.length === 0) oppScoresSel = ["None"];
+
+    return {
+      start_time: startTime.getSeconds(),
+      end_time: endTime.getSeconds(),
+      attack_defend: attackRadio.checked,
+      tie_up: tie.selected,
+      opp_tie: opponentList.selected ? oppTie.selected : "",
+      team_moves: teamMoves,
+      op_moves: oppMovesSel,
+      team_scores: teamScores,
+      op_scores: oppScoresSel,
+    };
+  }
+
+  function tieLabel(seq) {
+    return seq.opp_tie ? `${seq.tie_up}:${seq.opp_tie}` : seq.tie_up;
+  }
+
+  function seqLabel(seq, index) {
+    return `[${formatClock(seq.start_time)} - ${formatClock(seq.end_time)}] ${seq.attack_defend ? "A" : "D"} | ${tieLabel(seq)}`;
+  }
+
+  function prettyChapter(seq) {
+    return [
+      "Sequence Info",
+      `Start Time\t: ${formatClock(seq.start_time)}`,
+      `End Time\t: ${formatClock(seq.end_time)}`,
+      `Attacking\t: ${seq.attack_defend}`,
+      `Tie/Position\t: ${tieLabel(seq)}`,
+      `Main wrestler moves\t: ${seq.team_moves.join(", ")}`,
+      `Opponent moves\t: ${seq.op_moves.join(", ")}`,
+      `Main wrestler scoring\t: ${seq.team_scores.join(", ")}`,
+      `Opponent scoring\t: ${seq.op_scores.join(", ")}`,
+    ].join("\n");
+  }
+
+  function commitSequence(seq) {
+    state.data.sequences.push(seq);
+    state.data.sequences.sort((a, b) => a.start_time - b.start_time);
+    resetDetails();
+    renderSequences();
+    setStatus(`Added sequence. ${state.data.sequences.length} sequences.`);
+    updateButtons();
+  }
+
+  function showChapterPreview(seq) {
+    const dialog = el("dialog", { class: "modal chapter-modal" });
+    dialog.appendChild(el("h3", { text: "Sequence Review" }));
+    dialog.appendChild(el("pre", { class: "chapter-preview", text: prettyChapter(seq) }));
+    const redoBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Re-do Sequence" });
+    const newBtn = el("button", { class: "btn", type: "button", text: "New Sequence" });
+    dialog.appendChild(el("div", { class: "row dialog-actions" }, [redoBtn, newBtn]));
+    redoBtn.addEventListener("click", () => { dialog.close(); dialog.remove(); });
+    newBtn.addEventListener("click", () => {
+      dialog.close();
+      dialog.remove();
+      commitSequence(seq);
+    });
+    document.body.appendChild(dialog);
+    dialog.showModal();
+  }
+
+  function renderSequences() {
+    const sequences = state.data ? state.data.sequences : [];
+    seqListEl.replaceChildren();
+    sequences.forEach((seq, index) => {
+      const item = el("li", {
+        class: "seq-item" + (index === state.editingIndex ? " active" : ""),
+        title: prettyChapter(seq),
+        text: seqLabel(seq, index),
+        onclick: () => {
+          state.editingIndex = index;
+          fillControls(seq);
+          renderSequences();
+          setEditingMode(true);
+          setStatus(`Editing sequence ${index + 1} of ${sequences.length}.`);
+        },
+      });
+      seqListEl.appendChild(item);
+    });
+    seqCount.textContent = String(sequences.length);
+  }
+
+  function addSequence() {
+    if (!state.data || state.retagging) return;
+    const seq = currentSequence();
+    if (seq.start_time >= seq.end_time) {
+      showToast("Start time must be before end time.", "error");
+      return;
+    }
+    const sorted = [...state.data.sequences].sort((a, b) => a.start_time - b.start_time);
+    const overlap = sorted.some((other) =>
+      seq.start_time < other.end_time && other.start_time < seq.end_time
+    );
+    if (overlap) {
+      showToast("Sequence overlaps an existing sequence.", "error");
+      return;
+    }
+    showChapterPreview(seq);
+  }
+
+  function updateSequence() {
+    if (!state.data || state.editingIndex < 0) return;
+    const seq = currentSequence();
+    if (seq.start_time >= seq.end_time) {
+      showToast("Start time must be before end time.", "error");
+      return;
+    }
+    const others = state.data.sequences
+      .map((s, i) => ({ s, i }))
+      .filter(({ i }) => i !== state.editingIndex)
+      .map(({ s }) => s);
+    const overlap = others.some((other) =>
+      seq.start_time < other.end_time && other.start_time < seq.end_time
+    );
+    if (overlap) {
+      showToast("Sequence overlaps another sequence.", "error");
+      return;
+    }
+    state.data.sequences[state.editingIndex] = seq;
+    state.data.sequences.sort((a, b) => a.start_time - b.start_time);
+    state.editingIndex = -1;
+    resetDetails();
+    renderSequences();
+    setStatus("Sequence updated.");
+    updateButtons();
+  }
+
+  async function deleteSequence() {
+    if (!state.data || state.editingIndex < 0) return;
+    const confirmed = await confirmModal({
+      title: "Delete sequence",
+      message: "Delete this sequence?",
+    });
+    if (!confirmed) return;
+    state.data.sequences.splice(state.editingIndex, 1);
+    state.editingIndex = -1;
+    resetDetails();
+    renderSequences();
+    setStatus("Sequence deleted.");
+    updateButtons();
+  }
+
+  async function deleteVideo() {
+    if (!state.data || state.retagging) return;
+    const name = state.data.name;
+    const recompile = deleteRecompileCheck.checked;
+    const confirmed = await confirmModal({
+      title: "Delete tagged video",
+      message: `Delete '${name}'? This cannot be undone.` +
+        (recompile ? "" : " Stats stay stale until you re-tabulate."),
+    });
+    if (!confirmed) return;
+
+    setRetagging(true);
+    setStatus("Deleting video...");
+    try {
+      const { ok, body } = await fetchJson(
+        `/api/videos/taged/${encodeURIComponent(name)}` +
+          `?recompile=${recompile ? "true" : "false"}`,
+        { method: "DELETE" }
+      );
+      if (!ok) throw new Error(body.detail || "Could not delete video.");
+      if (body.job_id) {
+        await pollJob(body.job_id, {
+          onProgress: (p) => { progress.value = p; },
+          onStatus: setStatus,
+        });
+      }
+      showToast(
+        recompile ? "Video deleted and stats re-tabulated." : "Video deleted.",
+        "success"
+      );
+      if (recompile) window.dispatchEvent(new CustomEvent("stats-updated"));
+      state.data = null;
+      state.editingIndex = -1;
+      videoList.clear();
+      wrestlerList.clear();
+      opponentList.clear();
+      opponentList.setItems(wrestlerNames);
+      oppTie.clear();
+      oppTie.node.hidden = true;
+      setResult("");
+      matchDateInput.value = "";
+      renderSequences();
+      resetDetails();
+      setStatus(recompile ? "Video deleted. Stats re-tabulated." : "Video deleted.");
+      await loadVideos();
+    } catch (err) {
+      showToast(err.message || "Could not delete video.", "error");
+      setStatus("Delete failed.");
+    } finally {
+      setRetagging(false);
+    }
+  }
+
+  // ---------- Preview + re-tag ----------
+
+  async function loadVideos() {
+    try {
+      const { ok, body } = await fetchJson("/api/audit");
+      if (!ok) {
+        showToast("Could not load logged videos.", "error");
+        return;
+      }
+      state.videos = body.videos || [];
+      videoList.setItems(state.videos.map((v) => v.name));
+      if (state.data) {
+        const fresh = state.videos.find((v) => v.name === state.data.name);
+        state.data = fresh || null;
+        if (state.data) renderSequences();
+      }
+      setStatus(`${state.videos.length} logged video(s).`);
+    } catch (err) {
+      showToast("Could not load logged videos (network error).", "error");
+    }
+  }
+
+  async function loadPreview(fileName) {
+    try {
+      const url = await ensurePreview("taged", fileName);
+      player.load(url);
+    } catch (err) {
+      showToast(err.message || "Could not load preview.", "error");
+    }
+  }
+
+  async function loadConfigs() {
+    try {
+      const { ok, body } = await fetchJson("/api/config");
+      if (!ok) throw new Error(`Config returned status ${body.status || "error"}`);
+      wrestlerNames = body.wrestlers || [];
+      wrestlerList.setItems(wrestlerNames);
+      wrestlerList.setTeams(body.teams || {});
+      opponentList.setItems(body.wrestlers || []);
+      opponentList.setTeams(body.teams || {});
+      tie.setItems(body.ties || []);
+      oppTie.setItems(body.ties || []);
+      ourMoves.setItems(body.moves || []);
+      oppMoves.setItems(body.moves || []);
+      const ruleset = (body.rulesets || {})[body.active_ruleset] || {};
+      const outcomes = Object.keys(ruleset.outcomes || {});
+      ourScores.setItems(outcomes);
+      oppScores.setItems(outcomes);
+    } catch (err) {
+      console.error("Failed to load configs", err);
+      showToast(`Could not load config lists: ${err.message}`, "error");
+    }
+  }
+
+  function setRetagging(active) {
+    state.retagging = active;
+    progress.hidden = !active;
+    if (active) {
+      progress.removeAttribute("value");
+    } else {
+      progress.value = 0;
+    }
+    updateButtons();
+  }
+
+  async function retagVideo() {
+    if (!state.data || state.retagging) return;
+    const metadataOnly = state.data.sequences.length === 0;
+    const wrestler = wrestlerList.selected;
+    if (!wrestler) {
+      showToast("Select a wrestler first.", "error");
+      return;
+    }
+
+    setRetagging(true);
+    setStatus(metadataOnly
+      ? "Saving metadata-only edit..."
+      : `Rewriting with ${state.data.sequences.length} sequence(s)...`);
+    try {
+      const name = state.data.name;
+      const payload = {
+        wrestler,
+        opponent: opponentList.selected,
+        match_result: matchResultValue,
+        match_date: matchDateInput.value,
+        sequences: state.data.sequences,
+        recompile: recompileCheck.checked,
+      };
+      const { ok, body } = await fetchJson(`/api/audit/${encodeURIComponent(name)}/retag`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!ok) throw new Error(body.detail || "Could not start re-logging");
+
+      const job = await pollJob(body.job_id, {
+        onProgress: (p) => { progress.value = p; },
+        onStatus: setStatus,
+      });
+      const recompiled = recompileCheck.checked;
+      const mode = job.result.mode === "mkvpropedit"
+        ? "metadata-only edit"
+        : "rewrite (ffmpeg stream copy)";
+      setStatus(
+        `Re-logged: ${job.result.output} via ${mode}` +
+        (recompiled ? " (stats recompiled)" : " (run Tabulate to refresh stats)")
+      );
+      showToast(
+        `Match re-logged via ${mode}` + (recompiled ? " and stats recompiled." : "."),
+        "success"
+      );
+      if (recompiled) window.dispatchEvent(new CustomEvent("stats-updated"));
+      state.data = null;
+      opponentList.clear();
+      oppTie.clear();
+      setResult("");
+      matchDateInput.value = "";
+      oppTie.node.hidden = true;
+      videoList.clear();
+      await loadVideos();
+    } catch (err) {
+      showToast(err.message || "Re-logging failed.", "error");
+      setStatus("Re-logging failed.");
+    } finally {
+      setRetagging(false);
+    }
+  }
+
+  // ---------- Wiring ----------
+
+  addBtn.addEventListener("click", addSequence);
+  updateBtn.addEventListener("click", updateSequence);
+  deleteBtn.addEventListener("click", deleteSequence);
+  retagBtn.addEventListener("click", retagVideo);
+  deleteVideoBtn.addEventListener("click", deleteVideo);
+  startTime.markBtn.addEventListener("click", () => {
+    startTime.setFromSeconds(Math.floor(state.playerPosMs / 1000));
+  });
+  endTime.markBtn.addEventListener("click", () => {
+    endTime.setFromSeconds(Math.floor(state.playerPosMs / 1000));
+  });
+
+  // Keyboard shortcuts: Space = play/pause, S = mark start, E = mark end,
+  // Enter = add/update sequence. Ignored while typing in inputs and when this
+  // tab is hidden (all tabs stay mounted).
+  document.addEventListener("keydown", (event) => {
+    if (state.retagging) return;
+    const pane = root.closest(".tab-pane");
+    if (!pane || pane.hidden) return;
+    const target = event.target;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" || target.isContentEditable)) return;
+    if (event.key === " ") {
+      event.preventDefault();
+      player.togglePlay();
+    } else if (event.key === "s" || event.key === "S") {
+      event.preventDefault();
+      startTime.setFromSeconds(Math.floor(state.playerPosMs / 1000));
+    } else if (event.key === "e" || event.key === "E") {
+      event.preventDefault();
+      endTime.setFromSeconds(Math.floor(state.playerPosMs / 1000));
+    } else if (event.key === "Enter" && document.activeElement === document.body) {
+      event.preventDefault();
+      if (state.editingIndex >= 0) updateSequence(); else addSequence();
+    }
+  });
+
+  // ---------- Layout ----------
+
+  const videoCard = el("section", { class: "tag-card video-card" }, [
+    el("h3", { text: "Logged Videos" }),
+    videoList.node,
+  ]);
+  const wrestlerCard = el("section", { class: "tag-card wrestler-card" }, [
+    el("h3", { text: "Main Wrestler" }),
+    wrestlerList.node,
+    el("h3", { class: "subhead", text: "Opponent (optional)" }),
+    opponentList.node,
+    el("div", { class: "row result-row" }, [
+      el("label", { class: "field-label", text: "Result:" }),
+      resultRow,
+    ]),
+    el("div", { class: "row result-row" }, [
+      el("label", { class: "field-label", text: "Match date:" }),
+      matchDateInput,
+    ]),
+    titlePreview,
+  ]);
+  const selectionRow = el("div", { class: "selection-row" }, [videoCard, wrestlerCard]);
+  const playerCard = el("section", { class: "tag-card player-card" }, [player.node]);
+  const right = el("div", { class: "tag-right" }, [playerCard, selectionRow]);
+
+  const timingCard = el("fieldset", { class: "tag-card" }, [
+    el("legend", { text: "Timing" }),
+    startTime.node,
+    endTime.node,
+    el("p", { class: "shortcut-hint", text: "Space play/pause \u00b7 S start \u00b7 E end \u00b7 Enter add/update" }),
+  ]);
+  const detailsCard = el("details", { class: "tag-card", open: "" }, [
+    el("summary", { text: "Sequence Details" }),
+    attackRow,
+    el("div", { class: "details-grid" }, [
+      tie.node,
+      oppTie.node,
+      ourMoves.node,
+      oppMoves.node,
+      ourScores.node,
+      oppScores.node,
+    ]),
+  ]);
+  const actionsCard = el("fieldset", { class: "tag-card" }, [
+    el("legend", { text: "Actions" }),
+    el("div", { class: "row" }, [addBtn, updateBtn, deleteBtn]),
+    el("div", { class: "row" }, [retagBtn, deleteVideoBtn]),
+    recompileRow,
+    deleteRecompileRow,
+    progress,
+    statusLabel,
+  ]);
+  const listCard = el("details", { class: "tag-card", open: "" }, [
+    el("summary", {}, [el("span", { text: "Logged Sequences: " }), seqCount]),
+    seqListEl,
+  ]);
+  const left = el("div", { class: "tag-left" }, [
+    timingCard,
+    detailsCard,
+    actionsCard,
+    listCard,
+  ]);
+
+  root.appendChild(el("div", { class: "tag-film-grid" }, [left, right]));
+
+  // ---------- Boot ----------
+
+  window.addEventListener("configs-updated", loadConfigs);
+  updateButtons();
+  loadVideos();
+  loadConfigs();
+}
