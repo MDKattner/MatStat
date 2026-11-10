@@ -31,10 +31,149 @@ matstat-stats stats/wrestler_data/*.csv   # Move/initiation stats overview
 
 ## Deployment
 - **Supported paths**: `nixosModules.default` for servers (hardened systemd, data seeding, optional Caddy TLS), or `nix build .#default` plus your own service manager on non-NixOS hosts. There is no OCI image.
-- **Docs to keep in sync**: the wiki is canonical for users and operators — `wiki/Deployment.md` (install, env vars, proxy), `wiki/Operations.md` (probes, jobs, backups), `wiki/Troubleshooting.md`, `wiki/API Reference.md`, and `wiki/Developer Guide.md` — plus the option descriptions in `nix/module.nix`. `README.md` is a quickstart that links to those pages. Update the relevant pages whenever you change flake outputs, launcher environment variables, module options, public probes, or the HTTP API.
+- **Docs to keep in sync**: the wiki is canonical for users and operators — `wiki/Deployment.md` (install, env vars, proxy), `wiki/Operations.md` (probes, jobs, backups), `wiki/Troubleshooting.md`, `wiki/API Reference.md`, and `wiki/Developer Guide.md` (architecture, packaging, compatibility policy) — plus the option descriptions in `nix/module.nix`. `README.md` is a quickstart that links to those pages. Update the relevant pages whenever you change flake outputs, launcher environment variables, module options, public probes, or the HTTP API.
 - **Git-tracked source**: the flake copies only tracked `scripts/` and `cfg/` files. Stage changes before `nix build`/`nix flake check`, and never stage real `cfg/Wrestlers.json` or media.
 - **Caddy firewall**: enabling the module's `virtualHost` does not open 80/443; set `services.caddy.openFirewall = true` (or open the ports explicitly).
 - **Single process**: jobs, cancellation, sessions, and transcodes live in memory. Do not add uvicorn workers.
+
+## Nix Packaging Compatibility
+
+Operators pin a flake ref and upgrade with `nixos-rebuild switch`. Treat every
+release as a drop-in upgrade: an unchanged `configuration.nix` must keep
+evaluating and behaving the same. Prefer additive changes; a breaking change
+needs explicit user approval and a deprecation path. The user-facing summary of
+this policy lives in `wiki/Developer Guide.md` ("Compatibility policy").
+
+### Contract surfaces (public API)
+
+| Surface | Examples |
+| --- | --- |
+| Flake outputs | `packages.default`, `packages.matstat`, `apps.default`, `devShells.default`, `checks.package`, `checks.tests`, `nixosModules.default` |
+| Module interface | Every `services.matstat.*` option: name, type, default |
+| Launcher variables | `MATSTAT_ROOT`, `MATSTAT_HOST`, `MATSTAT_PORT`, `MATSTAT_FORWARDED_ALLOW_IPS` |
+| Service variables | Every `MATSTAT_*` the module exports; the Python app reads them |
+| Package layout | `bin/matstat`, `share/matstat/{scripts,cfg}`, `meta.mainProgram` |
+| On-disk state | `stateDir` default `/var/lib/matstat` plus `cfg/`, `vids/{untaged,taged,clips}`, `stats/{wrestler_data,reports}`, `tmp/` |
+| Flake inputs | `nixpkgs` channel pinned in `flake.lock` |
+| Platforms | `supportedSystems` and `meta.platforms` |
+
+### Hard rules
+
+1. **Add options, never require them.** A new option must default to today's
+   behavior, so an untouched `configuration.nix` still evaluates and acts the
+   same. Never add a `services.matstat.*` option without a default.
+2. **Never rename or remove an option in one step.** Add the new name, keep the
+   old one working as an alias that warns (`lib.mkRenamedOptionModule`,
+   `lib.mkAliasOptionModule`), and drop it only in a later change the user
+   approved.
+3. **Never change an existing default** in a way that alters behavior. Treat
+   `auth`, `secureCookie`, `host`, `openFirewall`, `stateDir`, and the upload
+   limits as frozen; changing one requires approval plus a wiki migration note.
+4. **Widen types, never narrow.** Every value valid under the previous type must
+   stay valid. Adding `null` or a new enum case is compatible; shrinking a range,
+   removing a case, or switching `str` to an enum is breaking.
+5. **Environment variables are a contract.** If you rename a `MATSTAT_*`
+   variable, the Python side must keep reading the old name as a fallback
+   (`os.environ.get("NEW") or os.environ.get("OLD")`) and the module must keep
+   exporting both for at least one release.
+6. **Keep the module import shape.** `nixosModules.default` stays a function of
+   `{ self }` consumed as `{ config, lib, pkgs, ... }`. Do not add flake inputs
+   to `nix/`, do not require extra `specialArgs`, and do not assume a specific
+   `nixpkgs` overlay.
+7. **Freeze the state layout and seeding.** `ExecStartPre` keeps creating missing
+   directories with `install -d` and copies packaged defaults only when absent
+   (`[ ! -e ]`). Upgrades must never overwrite, move, or delete user config,
+   media, reels, or reports.
+8. **Do not tighten sandboxing without the matching write path.** Every new
+   `Protect*`/`Restrict*`/`ReadOnlyPaths` must be checked against what the app
+   writes: `stateDir`, `PrivateTmp` for ffmpeg/transcode scratch, and the store
+   for reads. Add `ReadWritePaths` in the same change or existing deployments
+   break at runtime.
+9. **Keep the package shape.** `bin/matstat`, `share/matstat/{scripts,cfg}`,
+   `meta.mainProgram`, and `packages.default == packages.matstat` stay. Never
+   copy untracked files, real rosters, or media into the store.
+10. **Do not narrow platform support.** Removing a system from
+    `supportedSystems` or `meta.platforms` is breaking.
+11. **Bump `nixpkgs` separately.** A channel change in `flake.lock` is its own
+    change, verified with `nix flake check`, never mixed with feature work.
+12. **Breaking changes need approval.** Do not decide one unilaterally. Ship the
+    alias/shim, an assertion message that names the fix, and a migration
+    paragraph in `wiki/Deployment.md` (plus `wiki/Troubleshooting.md` when user
+    action is required).
+13. **Bump the package name with packaging changes.** The version lives in
+    `nix/package.nix` (`matstat-0.1.0`); bump it in the same change so deployers
+    can tell which build they run.
+
+### Change classification
+
+| Change | Class | Required action |
+| --- | --- | --- |
+| New option with a behavior-preserving default | compatible | ship with a wiki row in the option table |
+| New enum case / widened type / new optional env var | compatible | ship, document |
+| Rename via `mkRenamedOptionModule` | compatible (warns) | keep the alias one release, document |
+| Changed default, removed/renamed option or output | breaking | approval, alias or migration, wiki note |
+| Changed `stateDir` layout or seed behavior | breaking | migration steps + wiki note |
+| Removed platform, new required flake input | breaking | approval, document |
+| `nixpkgs` channel bump | potentially breaking | separate change, `nix flake check` result |
+
+### Deprecation recipes
+
+Renaming an option (nixpkgs emits the warning for you):
+
+```nix
+imports = [
+  (lib.mkRenamedOptionModule
+    [ "services" "matstat" "oldOption" ]
+    [ "services" "matstat" "newOption" ])
+];
+```
+
+Renaming an environment variable (Python keeps both names working):
+
+```python
+value: str = os.environ.get("MATSTAT_NEW_NAME") or os.environ.get("MATSTAT_OLD_NAME") or ""
+```
+
+Renaming a boolean-ish flag: same fallback, but treat an unset old value as
+unset rather than `false`.
+
+### Verify before finishing any `flake.nix` or `nix/` change
+
+```bash
+nix flake check                  # package check + fast pytest suite
+nix build .#default
+nix eval --raw .#packages.x86_64-linux.default.name
+```
+
+When options, defaults, service environment, or the module import changed, also
+evaluate an old-style deployment config exactly as an upgrading operator would:
+
+```bash
+nix eval --impure --raw --expr '
+let
+  flake = builtins.getFlake (toString ./.);
+  nixos = flake.inputs.nixpkgs.lib.nixosSystem {
+    system = "x86_64-linux";
+    modules = [
+      flake.nixosModules.default
+      { services.matstat = { enable = true; auth = false; }; }
+    ];
+  };
+  svc = nixos.config.systemd.services.matstat;
+in builtins.toJSON {
+  host = nixos.config.services.matstat.host;
+  port = nixos.config.services.matstat.port;
+  stateDir = nixos.config.services.matstat.stateDir;
+  execStart = svc.serviceConfig.ExecStart;
+  environment = svc.environment;
+}
+'
+```
+
+Confirm the previous release's `MATSTAT_*` keys and values are still present, the
+defaults are unchanged, and `ExecStart` still points at the packaged launcher.
+Repeat with `virtualHost = "matstat.example.com"` and with `passwordFile` set to
+exercise the Caddy and auth paths.
 
 ## Code Style & Conventions
 - **Naming**: `PascalCase` classes/methods, `snake_case` variables, `UPPER_SNAKE_CASE` constants.
