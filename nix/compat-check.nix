@@ -1,4 +1,8 @@
-{ self, nixpkgs, system }:
+{
+  self,
+  nixpkgs,
+  system,
+}:
 
 # Evaluates the NixOS module the way an upgrading operator would and pins the
 # public contract: option defaults, service environment, and the ExecStart
@@ -11,13 +15,20 @@ let
   lib = nixpkgs.lib;
   pkgs = import nixpkgs { inherit system; };
 
-  evaluate = extra: lib.nixosSystem {
-    inherit system;
-    modules = [
-      self.nixosModules.default
-      { services.matstat = { enable = true; } // extra; }
-    ];
-  };
+  evaluate =
+    extra:
+    lib.nixosSystem {
+      inherit system;
+      modules = [
+        self.nixosModules.default
+        {
+          services.matstat = {
+            enable = true;
+          }
+          // extra;
+        }
+      ];
+    };
 
   legacy = evaluate { auth = false; };
   proxied = evaluate {
@@ -38,14 +49,15 @@ let
     visibleLogging = config.services.matstat.visibleLogging;
     execStart = config.systemd.services.matstat.serviceConfig.ExecStart;
     execStartPre = config.systemd.services.matstat.serviceConfig.ExecStartPre;
-    environmentFile =
-      config.systemd.services.matstat.serviceConfig.EnvironmentFile or null;
+    environmentFile = config.systemd.services.matstat.serviceConfig.EnvironmentFile or null;
     environment = config.systemd.services.matstat.environment;
     caddyEnable = config.services.caddy.enable;
     caddyHosts = builtins.attrNames config.services.caddy.virtualHosts;
     caddyExtraConfig =
-      if config.services.matstat.virtualHost == null then ""
-      else config.services.caddy.virtualHosts.${config.services.matstat.virtualHost}.extraConfig;
+      if config.services.matstat.virtualHost == null then
+        ""
+      else
+        config.services.caddy.virtualHosts.${config.services.matstat.virtualHost}.extraConfig;
   };
 
   payload = {
@@ -71,12 +83,17 @@ let
     ipv6 = snapshot ipv6.config;
   };
 in
-pkgs.runCommand "matstat-module-compat" {
-  nativeBuildInputs = [ pkgs.bash pkgs.jq ];
-} ''
-  cat > snapshot.json <<'EOF'
-  ${builtins.toJSON payload}
-  EOF
-  bash ${./compat-check.sh} snapshot.json
-  touch $out
-''
+pkgs.runCommand "matstat-module-compat"
+  {
+    nativeBuildInputs = [
+      pkgs.bash
+      pkgs.jq
+    ];
+  }
+  ''
+    cat > snapshot.json <<'EOF'
+    ${builtins.toJSON payload}
+    EOF
+    bash ${./compat-check.sh} snapshot.json
+    touch $out
+  ''

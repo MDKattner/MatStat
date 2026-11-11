@@ -27,7 +27,6 @@ import pandas as pd
 from pydantic import BaseModel
 
 from scripts.helpers import (
-    COL_MATCH_RESULT,
     COL_OPPONENT_SCORES,
     COL_TEAM_SCORES,
     AdjustedNetPoints,

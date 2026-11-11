@@ -56,7 +56,6 @@ class TestCalculateNetPoints:
 
     def test_unknown_score_is_skipped(self, monkeypatch) -> None:
         import logging
-        from scripts.helpers import score_to_pts
         row = pd.Series({
             COL_TEAM_SCORES: ["UNKNOWN_CODE"],
             COL_OPPONENT_SCORES: [],

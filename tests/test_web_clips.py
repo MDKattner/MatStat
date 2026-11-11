@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 
 sys.path.append(str(Path(__file__).parent.parent))

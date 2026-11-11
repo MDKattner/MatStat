@@ -3,7 +3,7 @@
 ## Core Concepts
 - **Frontend**: Sole frontend is a FastAPI web app (`scripts/web/`). No CLI or desktop GUI exists.
 - **Environment**: Nix flake (`nix develop` for development, `nix build .#default` / `nixosModules.default` for deployment) on NixOS or any system with flakes enabled.
-- **No Build System, Advisory Lint**: Style is enforced manually. `ruff` and `nixfmt` run as non-blocking hints in CI; they do not gate merges.
+- **No Build System, Advisory Lint**: Style is enforced manually. `ruff` (configured in `ruff.toml`) and `nixfmt` run as non-blocking hints in CI; they do not gate merges. Both currently report a clean tree, so new findings are worth fixing.
 
 ## Development Commands
 ```bash
