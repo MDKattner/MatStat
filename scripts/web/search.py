@@ -17,7 +17,6 @@ from scripts.helpers import (
     COL_ADJUSTED_NET_POINTS,
     COL_ATTACKING,
     COL_END_TIME,
-    COL_NET_POINTS,
     COL_OPPONENT_MOVES,
     COL_START_TIME,
     COL_TEAM_MOVES,

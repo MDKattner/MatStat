@@ -3,9 +3,7 @@
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable
-
-import pytest
+from typing import Any
 
 sys.path.append(str(Path(__file__).parent.parent))
 

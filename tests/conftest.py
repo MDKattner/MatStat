@@ -1,12 +1,20 @@
+import os
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
 import pytest
-import numpy as np
 import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent))
+
+# helpers.py configures rotating file logging at import. Point it at a per-run
+# temp directory so tests never append to the repository's MatStat.log.
+os.environ.setdefault(
+    "MATSTAT_LOG_FILE",
+    str(Path(tempfile.mkdtemp(prefix="matstat-tests-")) / "MatStat.log"),
+)
 
 
 class FakeContext:

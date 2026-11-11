@@ -46,7 +46,29 @@ _PASSWORD: str | None = os.environ.get("MATSTAT_PASSWORD") or None
 # Optional stable cookie-signing key. When absent, the password is used (so a
 # password change logs everyone out, which is the safe legacy behavior).
 _SECRET: str | None = os.environ.get("MATSTAT_SECRET") or None
-SESSION_TTL: float = float(os.environ.get("MATSTAT_SESSION_HOURS", _DEFAULT_SESSION_HOURS)) * 3600.0
+
+
+def _SessionTtl() -> float:
+    """Return the session lifetime in seconds, falling back on bad input."""
+    raw: str = os.environ.get("MATSTAT_SESSION_HOURS", "").strip()
+    try:
+        hours: float = float(raw) if raw else float(_DEFAULT_SESSION_HOURS)
+    except ValueError:
+        hours = float(_DEFAULT_SESSION_HOURS)
+        logging.warning(
+            "Invalid MATSTAT_SESSION_HOURS %r; falling back to %s hours",
+            raw, _DEFAULT_SESSION_HOURS,
+        )
+    if hours <= 0:
+        logging.warning(
+            "MATSTAT_SESSION_HOURS must be positive; falling back to %s hours",
+            _DEFAULT_SESSION_HOURS,
+        )
+        hours = float(_DEFAULT_SESSION_HOURS)
+    return hours * 3600.0
+
+
+SESSION_TTL: float = _SessionTtl()
 SECURE_COOKIE: bool = os.environ.get("MATSTAT_SECURE_COOKIE", "").lower() in (
     "1", "true", "yes", "on",
 )

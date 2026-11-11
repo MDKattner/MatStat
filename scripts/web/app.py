@@ -20,11 +20,24 @@ from starlette.concurrency import run_in_threadpool
 # helpers.py resolves cfg/vids/tmp/stats against the process cwd; pin it to the
 # repo root so config/video paths work regardless of how the server is launched.
 # MATSTAT_ROOT lets tests (and alternate deployments) point at an isolated tree.
+# The package root (where VERSION lives) is always derived from this file, so
+# MATSTAT_ROOT does not hide the version when the app runs from the store.
+_package_root: Path = Path(__file__).resolve().parent.parent.parent
 _project_root: Path = Path(
-    os.environ.get("MATSTAT_ROOT", "")
-    or Path(__file__).resolve().parent.parent.parent
+    os.environ.get("MATSTAT_ROOT", "") or _package_root
 ).resolve()
 os.chdir(_project_root)
+
+
+def _ReadVersion() -> str:
+    """Return the shared VERSION string, or a placeholder if it is missing."""
+    try:
+        return (_package_root / "VERSION").read_text(encoding="utf-8").strip() or "0.0.0"
+    except OSError:
+        return "0.0.0"
+
+
+APP_VERSION: str = _ReadVersion()
 
 from scripts.helpers import (
     AppConfig,
@@ -187,7 +200,7 @@ def _attach_log_handler() -> None:
 
 app: FastAPI = FastAPI(
     title="MatStat",
-    version="0.1.0",
+    version=APP_VERSION,
     description="Web frontend for MatStat wrestling film analysis.",
     lifespan=lifespan,
 )

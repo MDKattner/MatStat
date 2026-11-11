@@ -9,7 +9,7 @@ import pytest
 sys.path.append(str(Path(__file__).parent.parent))
 
 from scripts.web import clips, search
-from scripts.web.query import QuerySpec, apply_query, selected_wrestlers
+from scripts.web.query import QuerySpec, selected_wrestlers
 
 _CSV_ROWS: list[str] = [
     "a.mkv:1,0,10,A,collar tie,double:high crotch,sprawl,T,None",

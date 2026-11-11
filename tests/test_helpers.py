@@ -4,7 +4,6 @@ Tests for the helper functions and classes in scripts/helpers.py.
 import sys
 from pathlib import Path
 import pytest
-import numpy as np
 from pandas import DataFrame
 
 # Add the script's parent directory to the Python path
@@ -81,7 +80,6 @@ class TestHelpers:
     """Tests for standalone helper functions in scripts/helpers.py."""
 
     def test_get_video_codecs_empty_on_failure(self) -> None:
-        import subprocess
         from pathlib import Path
         from scripts.helpers import GetVideoCodecs
 

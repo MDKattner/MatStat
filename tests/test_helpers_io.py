@@ -201,8 +201,8 @@ class TestMakeFormattedDataFrame:
         csv_file.write_text(self.CSV_CONTENT)
 
         df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-        assert df[COL_ATTACKING].iloc[0] == True
-        assert df[COL_ATTACKING].iloc[1] == False
+        assert bool(df[COL_ATTACKING].iloc[0]) is True
+        assert bool(df[COL_ATTACKING].iloc[1]) is False
 
     def test_splits_list_columns(self, tmp_path) -> None:
         csv_file: Path = tmp_path / "test.csv"

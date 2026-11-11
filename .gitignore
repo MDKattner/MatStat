@@ -10,13 +10,25 @@ stats/reports/*
 # Misc data
 result
 result-*
-scripts/__pycache__
+__pycache__/
 tmp/.*
 tmp/*
 *.ipynb
 MatStat.log
-tests/__pycache__
-scripts/web/__pycache__
+.pytest_cache/
+.stfolder/
+.direnv/
+.env
+
+# Local planning notes (kept out of the published repo)
+Notes.md
+Vision.md
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
 
 # Wrestler roster (PII) — real names must never be committed
 cfg/Wrestlers.config
