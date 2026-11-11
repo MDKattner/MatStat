@@ -56,6 +56,13 @@
           inherit self pkgs;
           python = testPython pkgs;
         };
+      } // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        # Enforce the Nix packaging compatibility rules from AGENTS.md: evaluate
+        # the module like an upgrading operator and pin the public contract.
+        compat = import ./nix/compat-check.nix {
+          inherit self nixpkgs;
+          system = pkgs.stdenv.hostPlatform.system;
+        };
       });
 
       nixosModules.default = import ./nix/module.nix { inherit self; };
@@ -70,6 +77,10 @@
             pkgs.ffmpeg
             pkgs.mkvtoolnix
             pkgs.playwright-driver.browsers
+
+            # ── Advisory lint / format ──
+            pkgs.ruff
+            pkgs.nixfmt-rfc-style
           ];
 
           # Point Playwright at the Nix-provided Chromium instead of ~/.cache.

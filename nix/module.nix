@@ -8,8 +8,13 @@ let
   secureCookie =
     if cfg.secureCookie == null then cfg.virtualHost != null else cfg.secureCookie;
 
-  # Caddy should dial loopback when the app binds to a wildcard address.
-  proxyHost = if cfg.host == "0.0.0.0" || cfg.host == "::" then "127.0.0.1" else cfg.host;
+  # Caddy should dial loopback when the app binds to a wildcard address. IPv6
+  # literals need brackets in a host:port URL (Caddy accepts `[::1]:8000`).
+  proxyHost =
+    if cfg.host == "0.0.0.0" then "127.0.0.1"
+    else if cfg.host == "::" then "[::1]"
+    else if lib.hasInfix ":" cfg.host then "[${cfg.host}]"
+    else cfg.host;
 
   # Create the writable data tree and copy in the packaged defaults exactly
   # once. Existing user config is never overwritten on upgrade.
@@ -197,6 +202,16 @@ in
       {
         assertion = !cfg.auth || cfg.passwordFile != null;
         message = "services.matstat.passwordFile must be set when authentication is enabled.";
+      }
+      {
+        assertion =
+          !(cfg.stateDir == "/home" || lib.hasPrefix "/home/" cfg.stateDir
+            || cfg.stateDir == "/root" || lib.hasPrefix "/root/" cfg.stateDir);
+        message = ''
+          services.matstat.stateDir must not live under /home or /root: the
+          service runs with ProtectHome = true, which hides those trees. Use
+          /var/lib/matstat (the default) or another writable path outside /home.
+        '';
       }
     ];
 

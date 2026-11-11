@@ -3,7 +3,7 @@
 ## Core Concepts
 - **Frontend**: Sole frontend is a FastAPI web app (`scripts/web/`). No CLI or desktop GUI exists.
 - **Environment**: Nix flake (`nix develop` for development, `nix build .#default` / `nixosModules.default` for deployment) on NixOS or any system with flakes enabled.
-- **No Build/Lint/Format System**: Style is enforced manually.
+- **No Build System, Advisory Lint**: Style is enforced manually. `ruff` and `nixfmt` run as non-blocking hints in CI; they do not gate merges.
 
 ## Development Commands
 ```bash
@@ -16,6 +16,10 @@ MATSTAT_AUTH=off uvicorn scripts.web.app:app --reload
 # Run Tests
 pytest                 # fast suite; browser tests excluded
 pytest -m browser      # Playwright + axe UI suite
+
+# Advisory lint/format hints (non-blocking in CI)
+ruff check scripts tests
+nixfmt --check flake.nix nix/*.nix
 
 # Build / verify the deployable package
 nix build .#default
@@ -31,7 +35,7 @@ matstat-stats stats/wrestler_data/*.csv   # Move/initiation stats overview
 
 ## Deployment
 - **Supported paths**: `nixosModules.default` for servers (hardened systemd, data seeding, optional Caddy TLS), or `nix build .#default` plus your own service manager on non-NixOS hosts. There is no OCI image.
-- **Docs to keep in sync**: the wiki is canonical for users and operators — `wiki/Deployment.md` (install, env vars, proxy), `wiki/Operations.md` (probes, jobs, backups), `wiki/Troubleshooting.md`, `wiki/API Reference.md`, and `wiki/Developer Guide.md` (architecture, packaging, compatibility policy) — plus the option descriptions in `nix/module.nix`. `README.md` is a quickstart that links to those pages. Update the relevant pages whenever you change flake outputs, launcher environment variables, module options, public probes, or the HTTP API.
+- **Docs to keep in sync**: the wiki is canonical for users and operators — `wiki/Deployment.md` (install, env vars, proxy), `wiki/Operations.md` (probes, jobs, backups), `wiki/Troubleshooting.md`, `wiki/API Reference.md`, and `wiki/Developer Guide.md` (architecture, packaging, compatibility policy) — plus the option descriptions in `nix/module.nix`, `VERSION`, and `CHANGELOG.md`. `README.md` is a quickstart that links to those pages. Update the relevant pages whenever you change flake outputs, launcher environment variables, module options, public probes, or the HTTP API.
 - **Git-tracked source**: the flake copies only tracked `scripts/` and `cfg/` files. Stage changes before `nix build`/`nix flake check`, and never stage real `cfg/Wrestlers.json` or media.
 - **Caddy firewall**: enabling the module's `virtualHost` does not open 80/443; set `services.caddy.openFirewall = true` (or open the ports explicitly).
 - **Single process**: jobs, cancellation, sessions, and transcodes live in memory. Do not add uvicorn workers.
@@ -48,7 +52,7 @@ this policy lives in `wiki/Developer Guide.md` ("Compatibility policy").
 
 | Surface | Examples |
 | --- | --- |
-| Flake outputs | `packages.default`, `packages.matstat`, `apps.default`, `devShells.default`, `checks.package`, `checks.tests`, `nixosModules.default` |
+| Flake outputs | `packages.default`, `packages.matstat`, `apps.default`, `devShells.default`, `checks.package`, `checks.tests`, `checks.compat`, `nixosModules.default` |
 | Module interface | Every `services.matstat.*` option: name, type, default |
 | Launcher variables | `MATSTAT_ROOT`, `MATSTAT_HOST`, `MATSTAT_PORT`, `MATSTAT_FORWARDED_ALLOW_IPS` |
 | Service variables | Every `MATSTAT_*` the module exports; the Python app reads them |
@@ -100,9 +104,10 @@ this policy lives in `wiki/Developer Guide.md` ("Compatibility policy").
     alias/shim, an assertion message that names the fix, and a migration
     paragraph in `wiki/Deployment.md` (plus `wiki/Troubleshooting.md` when user
     action is required).
-13. **Bump the package name with packaging changes.** The version lives in
-    `nix/package.nix` (`matstat-0.1.0`); bump it in the same change so deployers
-    can tell which build they run.
+13. **Bump the package version with packaging changes.** The version lives in
+    the top-level `VERSION` file (read by both `nix/package.nix` and the web
+    app); bump it in the same change, add a `CHANGELOG.md` entry, and tag
+    releases `vMAJOR.MINOR.PATCH` so deployers can tell which build they run.
 
 ### Change classification
 

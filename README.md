@@ -70,7 +70,7 @@ The Tag Film and Auditing tabs support tagging both wrestlers in a single pass.
 -   `flake.nix`: Nix flake defining the development shell, production package, and NixOS module (all dependencies pre-configured).
 -   `flake.lock`: Pinned flake inputs (locks the `nixpkgs` revision used by the shell and package).
 -   `nix/`: Nix package, test check, and NixOS module definitions.
--   `MatStat.log`: A log file for debugging and tracking application activity.
+-   `MatStat.log`: Rotating application log (5 MiB per file, 3 backups by default). Set `MATSTAT_LOG_LEVEL` (`DEBUG`, `INFO`, `WARNING`, ...) to change verbosity.
 
 ## Installation and Setup
 
@@ -99,7 +99,7 @@ nix develop
 
 Once inside `nix develop`:
 ```bash
-uvicorn scripts.web.app:app --reload      # Launch web app (http://127.0.0.1:8000)
+MATSTAT_AUTH=off uvicorn scripts.web.app:app --reload   # http://127.0.0.1:8000
 pytest                                    # Run fast tests (browser suite excluded)
 pytest -m browser                         # Playwright + axe UI suite (see below)
 ```
@@ -140,7 +140,7 @@ MATSTAT_PASSWORD=... nix run .#      # keep the login page enabled
 For iterative development, enter the dev shell and use auto-reload:
 ```bash
 nix develop
-uvicorn scripts.web.app:app --reload
+MATSTAT_AUTH=off uvicorn scripts.web.app:app --reload
 ```
 `nix run .#` uses the current directory as its data root. To keep a run isolated from the repo, point `MATSTAT_ROOT` at a temp directory:
 ```bash
@@ -185,8 +185,9 @@ The complete authentication and environment-variable reference lives in
 MatStat ships as a Nix flake package (`packages.default`, `apps.default`) for
 Linux and macOS, and a NixOS module (`nixosModules.default`) that runs a hardened
 systemd service, seeds the data tree, and can provision Caddy with automatic
-HTTPS. There is no OCI image or PyPI package, and the app always runs as **one
-process** — do not add uvicorn workers.
+HTTPS. Linux is the CI-verified platform; the macOS package is declared but not
+yet tested in CI. There is no OCI image or PyPI package, and the app always runs
+as **one process** — do not add uvicorn workers.
 
 ### NixOS module
 
@@ -257,16 +258,19 @@ in the wiki:
 The wiki is the canonical documentation for operators and users; this README
 stays a quickstart.
 
-## Module Overview
+## Project layout and configuration
 
--   **`helpers.py`**: Contains shared data classes (`ChapterSequence`) and functions used by the web app for video processing, data formatting, and statistical calculation. Also contains many useful functions for analyzing the csv files in a Jupyter Notebook.
--   **`scripts/web/`**: The FastAPI web app (app.py, ffmpeg.py, jobs.py, ws.py, transcode.py, and the tab modules tag/stats/team_eval/clips/search/pca/trend/audit).
+Application code lives in `scripts/` — shared data classes and statistics in
+`helpers.py`, and the FastAPI app (routes, jobs, ffmpeg/HLS, tab modules) in
+`scripts/web/`.
 
-## Configuration
+Tagging options come from `cfg/config.json` (moves, ties, and per-ruleset
+scoring) and the gitignored `cfg/Wrestlers.json` (roster and teams). Edit both
+in the web **Config Editor** or directly as JSON. The committed
+`cfg/Wrestlers.json.example` is the fresh-clone fallback, so never commit real
+wrestler names.
 
-Customize the tagging options via JSON files in the `cfg/` directory (or the structured editors in the web Config Editor):
-
--   `config.json` (committed): Holds `active_ruleset`, `moves`, `ties`, and per-ruleset `rulesets` (each with `outcomes: {code: {points, description, counts_as_pin}}`). Seeded with Folkstyle (real values) plus Freestyle and Greco-Roman (UWW scoring templates — review before relying on them). Move/ties/outcome lists are shared across rulesets; only the scoring outcomes differ per ruleset.
--   `Wrestlers.json` (gitignored — contains PII): Holds `wrestlers: [names]` and `teams: {team: [names]}`. A wrestler may belong to multiple teams. The committed `Wrestlers.json.example` placeholder (`UNKNOWN` wrestler) is used as a fresh-clone fallback, so **never commit real wrestler names** to the repo.
--   The **active ruleset** determines `score_to_pts` and pin counts used for net-point statistics; it is read when tagged CSVs are compiled, so switch it via the header gear button (web) and re-run Tabulate Sequences to regenerate `stats/wrestler_data/`.
--   All editors (the web Config Editor gear button) support Add, Edit, and Delete with automatic `.bak` backup creation on save.
+Schema details, the data pipeline, and module-by-module architecture are in the
+[Developer Guide](https://github.com/MDKattner/MatStat/wiki/Developer-Guide) and
+[Configuration Editor](https://github.com/MDKattner/MatStat/wiki/Configuration-Editor)
+pages.

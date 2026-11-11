@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  flake-check:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source (with wiki submodule)
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31.11.4
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Restore the Nix store from GitHub Actions cache
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'flake.nix', 'nix/**') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 3G
+
+      - name: nix flake check
+        run: nix flake check --print-build-logs
+
+      # Advisory only: these report style drift but never fail the build.
+      - name: Ruff (advisory)
+        continue-on-error: true
+        run: nix develop --command ruff check scripts tests
+
+      - name: nixfmt (advisory)
+        continue-on-error: true
+        run: nix develop --command nixfmt --check flake.nix nix/*.nix

@@ -1,6 +1,10 @@
 { self, pkgs, python }:
 
 let
+  # The repository VERSION file is the single source of truth; app.py reads the
+  # same file at runtime so the API version and package name cannot drift.
+  version = pkgs.lib.removeSuffix "\n" (builtins.readFile ../VERSION);
+
   # Copy only the tracked application source and default config into the
   # store. The flake source is git-based, so untracked PII (for example
   # cfg/Wrestlers.json) and video/stat data never end up in the package.
@@ -9,6 +13,7 @@ let
   } ''
     mkdir -p $out/share/matstat
     cp -r ${self}/scripts ${self}/cfg $out/share/matstat/
+    cp ${self}/VERSION $out/share/matstat/VERSION
     find $out/share/matstat -name __pycache__ -type d -prune -exec rm -rf {} +
   '';
 
@@ -28,7 +33,7 @@ let
   };
 in
 pkgs.symlinkJoin {
-  name = "matstat-0.1.0";
+  name = "matstat-${version}";
   paths = [ srcTree launcher ];
   meta = {
     description = "MatStat wrestling analysis and film generation web app";

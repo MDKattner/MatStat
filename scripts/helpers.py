@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
-import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Callable, Literal, overload
 
@@ -50,10 +51,62 @@ csv_dir: Path = Path("stats") / "wrestler_data"
 eval_dir: Path = Path("stats") / "reports"
 cfg_dir: Path = Path("cfg")
 clips_dir: Path = Path("vids") / "clips"
-log_file: Path = Path("MatStat.log")
+log_file: Path = Path(os.environ.get("MATSTAT_LOG_FILE") or "MatStat.log")
 
-logging.basicConfig(filename=log_file, level=logging.DEBUG,
-                    format="%(asctime)s:%(levelname)s:%(message)s")
+# Bounded, level-controlled logging. The web app chdirs to MATSTAT_ROOT before
+# importing this module, so the default log lands in the data root. Tests point
+# MATSTAT_LOG_FILE at a temp directory so they never append to the repo log.
+LOG_FILE_MAX_BYTES: int = 5 * 1024 * 1024
+LOG_FILE_BACKUP_COUNT: int = 3
+LOG_FORMAT: str = "%(asctime)s:%(levelname)s:%(message)s"
+LOG_DEFAULT_LEVEL: str = "INFO"
+
+
+def _ResolveLogLevel() -> tuple[int, str | None]:
+    """Return the configured level and the raw value when it was invalid."""
+    raw: str = os.environ.get("MATSTAT_LOG_LEVEL", LOG_DEFAULT_LEVEL).strip().upper()
+    if raw.isdigit():
+        return int(raw), None
+    candidate: Any = getattr(logging, raw, None)
+    if isinstance(candidate, int):
+        return candidate, None
+    return logging.INFO, raw
+
+
+def _ConfigureLogging() -> None:
+    """Attach one rotating file handler to the root logger.
+
+    Re-importing the module (or a test reload) reuses the existing handler
+    rather than stacking duplicates.
+    """
+    level, invalid = _ResolveLogLevel()
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    target: str = str(log_file.resolve())
+
+    handler: RotatingFileHandler | None = None
+    for existing in logging.getLogger().handlers:
+        if isinstance(existing, RotatingFileHandler) and existing.baseFilename == target:
+            handler = existing
+            break
+    if handler is None:
+        handler = RotatingFileHandler(
+            log_file,
+            maxBytes=LOG_FILE_MAX_BYTES,
+            backupCount=LOG_FILE_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        logging.getLogger().addHandler(handler)
+
+    handler.setLevel(level)
+    logging.getLogger().setLevel(level)
+    if invalid is not None:
+        logging.getLogger(__name__).warning(
+            "Invalid MATSTAT_LOG_LEVEL %r; falling back to %s", invalid, LOG_DEFAULT_LEVEL
+        )
+
+
+_ConfigureLogging()
 
 # ---- JSON configuration (cfg/config.json) ----
 
@@ -550,11 +603,16 @@ def GetVidDuration(path_to_vid: Path) -> int:
     Returns:
         The duration of the video in seconds. Returns 0 on failure.
     """
-    ffprobe_cmd: str = f"ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 {shlex.quote(str(path_to_vid))}"
+    ffprobe_cmd: list[str] = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=nw=1:nk=1",
+        str(path_to_vid),
+    ]
     logging.debug(f"Executing ffprobe command for duration: {ffprobe_cmd}")
     try:
         duration_str: str = subprocess.run(ffprobe_cmd,
-                                           shell=True,
                                            capture_output=True,
                                            text=True,
                                            check=True
@@ -579,13 +637,15 @@ def GetVideoCodecs(path_to_vid: Path) -> dict[str, str]:
     """
     result: dict[str, str] = {}
     try:
-        cmd: str = (
-            "ffprobe -v error -show_entries stream=index,codec_name "
-            "-of csv=nw=1:nk=1 "
-            f"{shlex.quote(str(path_to_vid))}"
-        )
+        cmd: list[str] = [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "stream=index,codec_name",
+            "-of", "csv=nw=1:nk=1",
+            str(path_to_vid),
+        ]
         output: str = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, check=True
+            cmd, capture_output=True, text=True, check=True
         ).stdout.strip()
         for line in output.splitlines():
             parts: list[str] = line.split(",")
@@ -644,16 +704,20 @@ def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str, str]:
     """
     # This command outputs the title and matchdate fields of the metadata as
     # the last line: "format,<title>[,<YYYY-MM-DD>]".
-    ffprobe_command: str = ("ffprobe -v error -show_chapters "
-                            "-show_entries format_tags=title:format_tags=matchdate "
-                            f"-of csv {shlex.quote(str(path_to_vid))}")
+    ffprobe_command: list[str] = [
+        "ffprobe",
+        "-v", "error",
+        "-show_chapters",
+        "-show_entries", "format_tags=title:format_tags=matchdate",
+        "-of", "csv",
+        str(path_to_vid),
+    ]
     logging.debug(
         f"Executing ffprobe command for MakeNameAndCSV: {ffprobe_command}")
 
     try:
         lines: list[str] = subprocess.run(
             ffprobe_command,
-            shell=True,
             capture_output=True,
             text=True,
             check=True
