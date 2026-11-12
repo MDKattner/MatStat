@@ -11,7 +11,7 @@
 nix develop
 
 # Launch (from inside the dev shell)
-MATSTAT_AUTH=off uvicorn scripts.web.app:app --reload
+MATSTAT_AUTH=off uvicorn scripts.web.app:app --reload --timeout-graceful-shutdown 10
 
 # Run Tests
 pytest                 # fast suite; browser tests excluded

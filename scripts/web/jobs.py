@@ -212,7 +212,20 @@ class JobManager:
         self._prune_finished()
 
     def shutdown(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        """Cancel outstanding jobs and stop the worker pool.
+
+        ``ThreadPoolExecutor`` worker threads are non-daemon, so the
+        interpreter joins them at exit. Leaving a transcode or compile running
+        would hang the process *after* uvicorn's lifespan returns, which looks
+        like the same stalled shutdown from the outside. Set every cancel
+        event first so jobs stop at their next checkpoint (``run_ffmpeg``
+        polls it and kills the child process), then wait for the pool.
+        """
+        with self._lock:
+            events: list[threading.Event] = list(self._cancel_events.values())
+        for event in events:
+            event.set()
+        self._executor.shutdown(wait=True, cancel_futures=True)
 
     def reset(self) -> None:
         """Recreate the thread pool after a previous shutdown.

@@ -99,7 +99,7 @@ nix develop
 
 Once inside `nix develop`:
 ```bash
-MATSTAT_AUTH=off uvicorn scripts.web.app:app --reload   # http://127.0.0.1:8000
+MATSTAT_AUTH=off uvicorn scripts.web.app:app --reload --timeout-graceful-shutdown 10   # http://127.0.0.1:8000
 pytest                                    # Run fast tests (browser suite excluded)
 pytest -m browser                         # Playwright + axe UI suite (see below)
 ```
@@ -125,7 +125,7 @@ matstat-stats stats/wrestler_data/*.csv   # Derived move/initiation stats overvi
 
 > **Authentication:** auth is on by default — set `MATSTAT_PASSWORD` to a strong password or the server refuses to start. For a trusted local/LAN setup, pass `MATSTAT_AUTH=off` to run without a login page:
 > ```bash
-> MATSTAT_AUTH=off uvicorn scripts.web.app:app --reload
+> MATSTAT_AUTH=off uvicorn scripts.web.app:app --reload --timeout-graceful-shutdown 10
 > ```
 > See [Authentication](#authentication) and [Deployment quickstart](#deployment-quickstart) below.
 
@@ -140,7 +140,7 @@ MATSTAT_PASSWORD=... nix run .#      # keep the login page enabled
 For iterative development, enter the dev shell and use auto-reload:
 ```bash
 nix develop
-MATSTAT_AUTH=off uvicorn scripts.web.app:app --reload
+MATSTAT_AUTH=off uvicorn scripts.web.app:app --reload --timeout-graceful-shutdown 10
 ```
 `nix run .#` uses the current directory as its data root. To keep a run isolated from the repo, point `MATSTAT_ROOT` at a temp directory:
 ```bash

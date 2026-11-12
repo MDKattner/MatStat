@@ -1,6 +1,7 @@
 """Tests for the web JobManager — background jobs, progress, cancellation."""
 
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -107,3 +108,27 @@ class TestJobManager:
         job_id: str = manager.submit("test", lambda ctx: "ok")
         job: Job = _wait_for_terminal(job_id, manager)
         assert job.status == "done"
+
+    def test_shutdown_cancels_running_job(self) -> None:
+        """Shutdown must cancel jobs instead of joining them indefinitely.
+
+        Worker threads are non-daemon, so leaving a transcode running would
+        stall interpreter exit after the lifespan returned.
+        """
+        manager: JobManager = JobManager()
+        started: threading.Event = threading.Event()
+
+        def long_job(ctx: JobContext) -> str:
+            started.set()
+            while not ctx.cancelled:
+                time.sleep(0.01)
+            return "stopped"
+
+        job_id: str = manager.submit("test", long_job)
+        assert started.wait(timeout=5.0)
+
+        manager.shutdown()
+
+        job: Job | None = manager.get(job_id)
+        assert job is not None
+        assert job.status == "cancelled"

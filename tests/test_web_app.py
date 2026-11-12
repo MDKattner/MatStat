@@ -1,5 +1,6 @@
 """Tests for the web app — routes, static serving, WebSocket, preview flow."""
 
+import asyncio
 import logging
 import sys
 import threading
@@ -436,6 +437,38 @@ class TestWebSocket:
                     found = True
                     break
             assert found
+
+    def test_disconnect_without_events_returns(self, monkeypatch) -> None:
+        """A closed socket must end the handler even with no queued events.
+
+        Regression: the endpoint used to await only ``queue.get()``, so a
+        client disconnect was never observed. uvicorn then waited for the
+        handler task forever during graceful shutdown.
+        """
+
+        class FakeSocket:
+            def __init__(self) -> None:
+                self.cookies: dict[str, str] = {}
+                self.sent: list[dict[str, Any]] = []
+
+            async def accept(self) -> None:
+                return None
+
+            async def send_json(self, payload: dict[str, Any]) -> None:
+                self.sent.append(payload)
+
+            async def receive(self) -> dict[str, Any]:
+                await asyncio.sleep(0.05)
+                return {"type": "websocket.disconnect", "code": 1000}
+
+        monkeypatch.setattr(web_app.auth, "enabled", lambda: False)
+        socket: FakeSocket = FakeSocket()
+
+        async def run() -> None:
+            await asyncio.wait_for(web_app.websocket_endpoint(socket), timeout=1.0)
+
+        asyncio.run(run())
+        assert socket.sent == [{"type": "connected", "status": "ok"}]
 
     def test_receives_job_events(self, client) -> None:
         with client.websocket_connect("/ws") as ws:
