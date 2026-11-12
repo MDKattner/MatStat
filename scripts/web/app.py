@@ -179,6 +179,11 @@ async def lifespan(_app: FastAPI):
     auth.check_configured()
     hub.attach_loop(asyncio.get_running_loop())
     _attach_log_handler()
+    # uvicorn's log records stop at the "uvicorn" logger (propagate=False), so
+    # shutdown diagnostics such as "Waiting for background tasks to complete"
+    # never reach MatStat.log and a stalled stop looks like a silent freeze.
+    # Route them to the root handlers; access logs stay terminal-only.
+    logging.getLogger("uvicorn").propagate = True
     job_manager.reset()
     logging.info("MatStat web server started.")
     yield
@@ -1196,12 +1201,34 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         return
     await websocket.accept()
     queue: asyncio.Queue[dict[str, Any]] = hub.subscribe()
+    # The browser never sends application messages, so `receive()` resolves
+    # only when it disconnects (or uvicorn closes the socket during shutdown).
+    # A handler that only awaits the event queue never notices either case:
+    # uvicorn tracks it as a background task and its graceful shutdown waits
+    # for it with no timeout, which is what made Ctrl+C hang. Watch both
+    # channels and leave as soon as the socket goes away.
+    watcher: asyncio.Task[dict[str, Any]] = asyncio.create_task(websocket.receive())
     try:
         await websocket.send_json({"type": "connected", "status": "ok"})
         while True:
-            event: dict[str, Any] = await queue.get()
+            pending: asyncio.Task[dict[str, Any]] = asyncio.create_task(queue.get())
+            done, _ = await asyncio.wait(
+                {watcher, pending}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if watcher in done:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+                message: dict[str, Any] = watcher.result()
+                if message.get("type") == "websocket.disconnect":
+                    break
+                # Unexpected client message: ignore it and keep listening.
+                watcher = asyncio.create_task(websocket.receive())
+                continue
+            event: dict[str, Any] = pending.result()
             await websocket.send_json(event)
     except WebSocketDisconnect:
         pass
     finally:
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
         hub.unsubscribe(queue)

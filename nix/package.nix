@@ -39,6 +39,7 @@ let
         --port "''${MATSTAT_PORT:-8000}" \
         --proxy-headers \
         --forwarded-allow-ips "''${MATSTAT_FORWARDED_ALLOW_IPS:-127.0.0.1}" \
+        --timeout-graceful-shutdown 10 \
         "$@"
     '';
   };

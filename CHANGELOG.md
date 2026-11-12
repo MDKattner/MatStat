@@ -18,6 +18,14 @@ changes bump the version in the same commit.
 - Pattern Map draws a square plotting window and pins both axes to the same
   scale, so the two principal components share one pixels-per-unit ratio at any
   zoom instead of stretching one axis.
+- Stopping the server no longer hangs when a browser tab holds the `/ws` event
+  stream open. The handler now watches for disconnects, so uvicorn can finish
+  its graceful shutdown instead of waiting on the task forever.
+- Running jobs are cancelled and the worker pool is joined during shutdown.
+- The packaged launcher and documented dev commands pass
+  `--timeout-graceful-shutdown 10`, bounding any future stall.
+- uvicorn shutdown diagnostics now reach `MatStat.log`, so a slow stop is
+  visible in the log instead of looking like a silent freeze.
 
 ## [0.1.0] - 2026-11-11
 

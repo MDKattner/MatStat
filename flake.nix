@@ -233,7 +233,7 @@
               echo "  ║         Python ${pkgs.python3.version}                    ║"
               echo "  ╚═══════════════════════════════════════════╝"
               echo ""
-              echo "  MATSTAT_AUTH=off uvicorn scripts.web.app:app   Web app (auth off, http://127.0.0.1:8000)"
+              echo "  MATSTAT_AUTH=off uvicorn scripts.web.app:app --timeout-graceful-shutdown 10   Web app (auth off, http://127.0.0.1:8000)"
               echo "  pytest                                        Tests"
               echo ""
               echo "  matstat-meta <video.mkv>...     Inspect tagged-video metadata (title + chapters)"
