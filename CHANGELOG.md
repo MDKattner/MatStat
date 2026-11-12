@@ -6,6 +6,19 @@ changes bump the version in the same commit.
 
 ## [Unreleased]
 
+### Changed
+
+- Log Match and Review & Fix pair every sequence detail on its own row
+  (tie/opponent tie, moves, scores) with equal-height lists, so a hidden
+  opponent half no longer shifts the middle columns. Opponent columns are now
+  labelled **Opponent Moves** and **Opponent Scores**.
+
+### Fixed
+
+- Pattern Map draws a square plotting window and pins both axes to the same
+  scale, so the two principal components share one pixels-per-unit ratio at any
+  zoom instead of stretching one axis.
+
 ## [0.1.0] - 2026-11-11
 
 ### Added

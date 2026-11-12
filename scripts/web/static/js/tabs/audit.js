@@ -162,13 +162,13 @@ export function mountAudit(root) {
   });
   const attackRow = el("div", { class: "seg-toggle" }, [attackRadio, defendRadio, attackBtn, defendBtn]);
 
-  const tie = filterList({ label: "Main Tie/Position:", items: [] });
-  const oppTie = filterList({ label: "Opponent Tie/Position:", items: [] });
+  const tie = filterList({ label: "Main Tie/Position", items: [] });
+  const oppTie = filterList({ label: "Opponent Tie/Position", items: [] });
   oppTie.node.hidden = true;
   const ourMoves = checkList({ label: "Main Wrestler Moves", items: [], counts: true });
-  const oppMoves = checkList({ label: "Opp. Moves", items: [], counts: true });
+  const oppMoves = checkList({ label: "Opponent Moves", items: [], counts: true });
   const ourScores = checkList({ label: "Main Wrestler Scores", items: [], counts: true });
-  const oppScores = checkList({ label: "Opp. Scores", items: [], counts: true });
+  const oppScores = checkList({ label: "Opponent Scores", items: [], counts: true });
 
   const addBtn = el("button", { class: "btn", type: "button", text: "Add Sequence", disabled: "" });
   const updateBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Update Sequence", hidden: "" });
@@ -674,12 +674,9 @@ export function mountAudit(root) {
     el("summary", { text: "Sequence Details" }),
     attackRow,
     el("div", { class: "details-grid" }, [
-      tie.node,
-      oppTie.node,
-      ourMoves.node,
-      oppMoves.node,
-      ourScores.node,
-      oppScores.node,
+      el("div", { class: "details-row" }, [tie.node, oppTie.node]),
+      el("div", { class: "details-row" }, [ourMoves.node, oppMoves.node]),
+      el("div", { class: "details-row" }, [ourScores.node, oppScores.node]),
     ]),
   ]);
   const actionsCard = el("fieldset", { class: "tag-card" }, [

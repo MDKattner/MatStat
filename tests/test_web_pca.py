@@ -253,6 +253,20 @@ class TestBuildPcaFigure:
         fig: dict[str, Any] = json.loads(result["fig_json"])
         assert "data" in fig and "layout" in fig
 
+    def test_axes_share_one_scale(self, tmp_path, monkeypatch) -> None:
+        """A PCA scatter is only readable with equal units per pixel."""
+        dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
+        _write_csvs(dirs)
+
+        result: dict[str, Any] = pca.build_pca_figure("all", "", "matches")
+        layout: dict[str, Any] = json.loads(result["fig_json"])["layout"]
+        assert layout["yaxis"]["scaleanchor"] == "x"
+        assert layout["yaxis"]["scaleratio"] == 1
+        assert layout["xaxis"]["constrain"] == "domain"
+        assert layout["dragmode"] == "select"
+        assert layout["xaxis"]["title"]["text"].startswith("off.")
+        assert layout["yaxis"]["title"]["text"].startswith("def.")
+
     def test_all_scope_matches(self, tmp_path, monkeypatch) -> None:
         dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
         _write_csvs(dirs)
