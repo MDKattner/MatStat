@@ -443,13 +443,6 @@ fieldset.tag-card { margin: 0; }
 
 .tag-card h3.subhead { margin-top: 12px; font-size: 13px; color: var(--text-dim); }
 
-.tie-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  align-items: flex-start;
-}
-
 .row {
   display: flex;
   align-items: center;
@@ -705,11 +698,25 @@ fieldset.tag-card { margin: 0; }
   white-space: nowrap;
 }
 
+/* One row per semantic pair so a hidden opponent half (single-wrestler mode)
+   never shifts the moves or scores onto the wrong side. */
 .details-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 8px;
 }
+
+.details-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  align-items: start;
+}
+
+/* Uniform box height so a three-item tie list and a ten-item move list are the
+   same size; the list scrolls when it overflows. */
+.details-grid .filter-group .check-list,
+.details-grid .check-group .check-list { height: 96px; }
 
 .recompile-row {
   display: flex;
@@ -849,6 +856,19 @@ details.tag-card summary:hover { color: var(--text); }
   min-height: 220px;
 }
 
+/* The Pattern Map keeps a square plotting window so the two principal
+   components share one visual scale. The `58vh` cap stops the square from
+   growing taller than the pane on wide displays. */
+#tab-pca .tag-film-grid {
+  grid-template-columns: minmax(280px, min(38%, 58vh)) minmax(0, 1fr);
+}
+
+#tab-pca .plot-card {
+  flex: none;
+  aspect-ratio: 1 / 1;
+  min-height: 0;
+}
+
 .pca-plot {
   flex: 1;
   width: 100%;
@@ -901,6 +921,9 @@ details.tag-card summary:hover { color: var(--text); }
   }
   #tab-tag-film { height: auto; }
   .tag-film-grid { grid-template-columns: 1fr; }
+  /* The PCA square column rule is id-scoped, so reset it here when the two
+     columns stack; the plot card stays square from its aspect-ratio. */
+  #tab-pca .tag-film-grid { grid-template-columns: 1fr; }
   .tag-left, .tag-right {
     height: auto;
     overflow: visible;
@@ -916,7 +939,7 @@ details.tag-card summary:hover { color: var(--text); }
   .app-title { display: none; }
   .tab-btn { padding: 12px 10px; }
   .tab-content { padding: 10px; }
-  .details-grid { grid-template-columns: 1fr; }
+  .details-row { grid-template-columns: 1fr; }
   .selection-row { flex-direction: column; }
   .video-card { flex: none; }
   .wrestler-card { flex: none; }

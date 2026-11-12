@@ -279,11 +279,20 @@ def build_pca_figure(scope: PcaScope, name: str, layout: PcaLayout) -> dict[str,
         title += f" — {name}"
     fig.update_layout(
         title=title,
-        xaxis_title=f"off. ({off_ratio * 100:.1f}%)",
-        yaxis_title=f"def. ({def_ratio * 100:.1f}%)",
         hovermode="closest",
         dragmode="select",
         template="plotly_white",
+        # Equal units per pixel on both axes: a PCA scatter is only readable
+        # when a unit of PC1 is the same length as a unit of PC2.
+        xaxis={
+            "title": f"off. ({off_ratio * 100:.1f}%)",
+            "constrain": "domain",
+        },
+        yaxis={
+            "title": f"def. ({def_ratio * 100:.1f}%)",
+            "scaleanchor": "x",
+            "scaleratio": 1,
+        },
     )
     return {
         "fig_json": fig.to_json(),
