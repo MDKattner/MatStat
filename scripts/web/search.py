@@ -1,8 +1,8 @@
-"""Search job for the web app — query all wrestler tagged data.
+"""Search job for the web app — query all compiled wrestler data.
 
-Every wrestler's compiled CSV is loaded via ``LoadAllWrestlerData`` and filtered
-through the shared ``apply_query`` implementation. The matching sequences are
-returned as JSON or exported as CSV.
+Every wrestler's compiled data is loaded from the SQLite store via
+``scripts.storage`` and filtered through the shared ``apply_query``
+implementation. The matching sequences are returned as JSON or exported as CSV.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from typing import Any
 
 import pandas as pd
 
+from scripts import storage
 from scripts.helpers import (
     COL_ADJUSTED_NET_POINTS,
     COL_ATTACKING,
@@ -21,9 +22,6 @@ from scripts.helpers import (
     COL_START_TIME,
     COL_TEAM_MOVES,
     COL_TIE_UP,
-    LoadAllWrestlerData,
-    MakeFormattedDataFrame,
-    csv_dir,
 )
 from scripts.web.query import QuerySpec, apply_query, selected_wrestlers
 
@@ -45,14 +43,12 @@ _CSV_FIELDS: list[str] = [
 
 
 def list_wrestlers() -> list[str]:
-    """List wrestlers with compiled CSV data, excluding the UNKNOWN sentinel.
+    """List wrestlers with compiled data, excluding the UNKNOWN sentinel.
 
     Returns:
-        The sorted CSV stems under csv_dir, minus UNKNOWN.
+        The sorted wrestler names in the database, minus UNKNOWN.
     """
-    return sorted(
-        p.stem for p in csv_dir.glob("*.csv") if p.name != "UNKNOWN.csv"
-    )
+    return storage.list_wrestlers()
 
 
 def _join_list(value: Any) -> str:
@@ -63,15 +59,16 @@ def _join_list(value: Any) -> str:
 
 
 def _load_frames(spec: QuerySpec) -> dict[str, pd.DataFrame]:
-    """Load the CSV frames selected by ``spec`` (all when none are named)."""
+    """Load the compiled frames selected by ``spec`` (all when none are named)."""
     names: list[str] = selected_wrestlers(spec)
     if not names:
-        return LoadAllWrestlerData(csv_dir)
+        return storage.load_all_frames()
     frames: dict[str, pd.DataFrame] = {}
     for name in names:
-        target = csv_dir / f"{name}.csv"
-        if target.is_file():
-            frames[name] = MakeFormattedDataFrame(target)
+        try:
+            frames[name] = storage.load_wrestler_frame(name)
+        except FileNotFoundError:
+            continue
     return frames
 
 

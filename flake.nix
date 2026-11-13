@@ -168,22 +168,25 @@
               PY
               }
 
-              # Show the shape of compiled wrestler CSV(s) as processed by helpers.
+              # Show the shape of compiled wrestler data in the SQLite store.
               matstat-csv () {
                 python3 - "$@" <<'PY'
               import sys
-              from pathlib import Path
 
-              from scripts.helpers import MakeFormattedDataFrame
+              from scripts import storage
 
-              for arg in sys.argv[1:]:
-                  path = Path(arg)
-                  if not path.is_file():
-                      print(f"!! not found: {path}")
+              names = sys.argv[1:] or storage.list_wrestlers()
+              if not names:
+                  print("!! no compiled wrestlers (run Tabulate Sequences first)")
+                  sys.exit(0)
+              for name in names:
+                  try:
+                      df = storage.load_wrestler_frame(name)
+                  except FileNotFoundError:
+                      print(f"!! no compiled data for {name!r}")
                       continue
-                  df = MakeFormattedDataFrame(path)
                   origins = df.index.astype(str).str.split(":").str[0]
-                  print(f"== {path} ==")
+                  print(f"== {name} ==")
                   print(f"  shape: {df.shape}  ({len(df.index)} rows, {len(df.columns)} cols)")
                   print(f"  unique origins (videos): {origins.nunique()}")
                   print(f"  columns: {list(df.columns)}")
@@ -194,30 +197,33 @@
               PY
               }
 
-              # Derived stats overview for compiled wrestler CSV(s).
+              # Derived stats overview for compiled wrestler data in the SQLite store.
               matstat-stats () {
                 python3 - "$@" <<'PY'
               import sys
               from collections import Counter
-              from pathlib import Path
 
+              from scripts import storage
               from scripts.helpers import (
                   COL_OPPONENT_MOVES,
                   COL_OPPONENT_SCORES,
                   COL_TEAM_MOVES,
                   COL_TEAM_SCORES,
                   GenerateInitiationDFBySegment,
-                  MakeFormattedDataFrame,
                   PinCount,
               )
 
-              for arg in sys.argv[1:]:
-                  path = Path(arg)
-                  if not path.is_file():
-                      print(f"!! not found: {path}")
+              names = sys.argv[1:] or storage.list_wrestlers()
+              if not names:
+                  print("!! no compiled wrestlers (run Tabulate Sequences first)")
+                  sys.exit(0)
+              for name in names:
+                  try:
+                      df = storage.load_wrestler_frame(name)
+                  except FileNotFoundError:
+                      print(f"!! no compiled data for {name!r}")
                       continue
-                  df = MakeFormattedDataFrame(path)
-                  print(f"== {path} ==")
+                  print(f"== {name} ==")
                   print("  offense (top 8):", dict(Counter(m for ml in df[COL_TEAM_MOVES] for m in ml).most_common(8)))
                   print("  defense (top 8):", dict(Counter(m for ml in df[COL_OPPONENT_MOVES] for m in ml).most_common(8)))
                   print(f"  pins (team): {PinCount(df, COL_TEAM_SCORES)}  (opp): {PinCount(df, COL_OPPONENT_SCORES)}")
@@ -237,8 +243,8 @@
               echo "  pytest                                        Tests"
               echo ""
               echo "  matstat-meta <video.mkv>...     Inspect tagged-video metadata (title + chapters)"
-              echo "  matstat-csv  <wrestler.csv>...  Compiled CSV shape as loaded by helpers"
-              echo "  matstat-stats <wrestler.csv>... Derived move/initiation stats overview"
+              echo "  matstat-csv  [wrestler...]     Compiled rows as loaded from the database"
+              echo "  matstat-stats [wrestler...]    Derived move/initiation stats overview"
               echo ""
             '';
           };

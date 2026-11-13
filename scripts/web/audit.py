@@ -183,7 +183,7 @@ def run_retag_job(
     true metadata-only edit when it is installed, otherwise the job falls back
     to the same stream-copy remux, preserving the existing chapters. When
     ``recompile`` is True, compile stats runs over every tagged video so the
-    CSVs reflect the edits; otherwise tabulation is deferred to the
+    compiled rows reflect the edits; otherwise tabulation is deferred to the
     Tabulate & Report tab.
 
     Args:

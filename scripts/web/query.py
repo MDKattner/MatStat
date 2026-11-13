@@ -24,10 +24,10 @@ MoveMatch = Literal["substring", "exact"]
 class QuerySpec(BaseModel):
     """One serializable filter specification shared by every query endpoint.
 
-    ``wrestlers`` selects the CSVs to search (empty means "all"); ``origins``
-    optionally pins an exact result set (used by export and reel generation).
-    ``move_match`` controls whether move filters are substring (default) or
-    exact; tie filters are always exact.
+    ``wrestlers`` selects the compiled wrestler data to search (empty means
+    "all"); ``origins`` optionally pins an exact result set (used by export and
+    reel generation). ``move_match`` controls whether move filters are substring
+    (default) or exact; tie filters are always exact.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -74,7 +74,7 @@ def apply_query(
     every origin must exist; otherwise the QueryBuilder filters run.
 
     Args:
-        df: A formatted sequence DataFrame (via MakeFormattedDataFrame).
+        df: A formatted sequence DataFrame (via ``storage.load_wrestler_frame``).
         spec: The shared filter specification.
         wrestler: Optional wrestler name for origin-validation messages.
 

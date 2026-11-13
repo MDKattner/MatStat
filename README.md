@@ -19,9 +19,9 @@ MatStat provides a FastAPI web app to tag wrestling matches, extract sequence da
 -   **Batch video upload** into the untagged pool (multi-file, with per-file success/conflict/error reporting).
 -   Interactive tagging of sequences with ties/positions, moves, and scoring — each move can be assigned a count for how many times it occurred in a sequence.
 -   **Dual-wrestler mode:** tag both wrestlers in one pass, each with their own ties, plus a match outcome (Win/Loss) recorded as a `(W)` on the winner's name. Per-wrestler stats are derived for both sides automatically.
--   **Match dates:** record a `YYYY-MM-DD` date per match while tagging (or backfill it in the Auditing tab). The date is embedded in the video and stored as a `Match Date` column in the compiled CSVs, enabling per-match trends over a season.
+-   **Match dates:** record a `YYYY-MM-DD` date per match while tagging (or backfill it in the Auditing tab). The date is embedded in the video and stored as a `Match Date` column in the compiled data, enabling per-match trends over a season.
 -   Embeds chapter data directly into new Matroska (`.mkv`) video files.
--   Compiles data from multiple tagged videos into wrestler-specific CSV files.
+-   Compiles data from multiple tagged videos into one local SQLite database of wrestler sequences.
 -   Generates reports on offense, defense, and attack initiation.
 -   Exports statistics into a multi-sheet Excel workbook.
 -   Generates move and position specific film by combining clips based on wrestler, tie-ups, or moves, with optional fast stream-copy extraction and batch multi-wrestler processing.
@@ -36,9 +36,9 @@ MatStat provides a FastAPI web app to tag wrestling matches, extract sequence da
 The data pipelines are as follows:
 
 1.  **Tagging (`Tag Film` tab):** A user uploads raw videos into `vids/untaged/` (batch upload supported), then selects a video. The interface guides the user through creating chapters for each action sequence. A new, tagged `.mkv` video is created in `vids/taged/`, and the original is deleted.
-2.  **Compilation (`Tabulate & Report` tab):** Tabulate all tagged videos in `vids/taged/` into per-wrestler sequence data. The tabulation step extracts the chapter data and aggregates it, writing one `.csv` file per wrestler into `stats/wrestler_data/`. Each row carries stored Net Points, Adjusted Net Points, a `W/L` column (the match result, if recorded), and a `Match Date` column (the `YYYY-MM-DD` tag date, blank when unrecorded), and dual-wrestler videos also produce a perspective-swapped CSV for the opponent.
+2.  **Compilation (`Tabulate & Report` tab):** Tabulate all tagged videos in `vids/taged/` into per-wrestler sequence data. The tabulation step extracts the chapter data and aggregates it into a single SQLite database at `stats/wrestler_data/matstat.db`. Each row carries stored Net Points, Adjusted Net Points, a `W/L` column (the match result, if recorded), and a `Match Date` column (the `YYYY-MM-DD` tag date, blank when unrecorded), and dual-wrestler videos also produce perspective-swapped rows for the opponent.
 3.  **Data Use:**
-    - **Analysis (`Tabulate & Report` tab):** Reads the per-wrestler CSV files, loads them into pandas DataFrames, and calculates a variety of statistics (with the Initiation summary broken out by match result into All / Wins / Losses rows). These stats are then added to wrestler-specific sheets of a timestamped `stats/reports/Team_Stats_<YYYYMMDD-HHMMSS>.xlsx` workbook, alongside a **Team Summary** sheet of team-wide rates, a **Match Outcomes** sheet consolidating each wrestler's wins/losses, unrecorded matches, win rate, and pins, and a **Read Me** sheet recording ruleset provenance and definitions. `Team_Stats_latest.xlsx` always points at the most recent complete report.
+    - **Analysis (`Tabulate & Report` tab):** Reads the compiled database, loads rows into pandas DataFrames, and calculates a variety of statistics (with the Initiation summary broken out by match result into All / Wins / Losses rows). These stats are then added to wrestler-specific sheets of a timestamped `stats/reports/Team_Stats_<YYYYMMDD-HHMMSS>.xlsx` workbook, alongside a **Team Summary** sheet of team-wide rates, a **Match Outcomes** sheet consolidating each wrestler's wins/losses, unrecorded matches, win rate, and pins, and a **Read Me** sheet recording ruleset provenance and definitions. `Team_Stats_latest.xlsx` always points at the most recent complete report.
     - **Viewing (`Combine Clips` tab):** Lets you filter tagged sequences by wrestler, tie-up, or move, then concatenates matching clips into a single video in `vids/clips/`. The web app provides a live preview of the generated reel.
     - **Search (`Search` tab):** Query across all wrestlers' tagged data with filters for tie-up, moves, scores, and adjusted net points (net points plus the pin bonus). Preview results in the video player and export to CSV.
     - **Analysis (`PCA` tab):** Projects every tagged sequence (or per-wrestler/per-video match aggregates) onto its first offense and defense move components, colored by net points. Brush-select points to preview them in the player or compile them into a highlight reel.
@@ -50,9 +50,9 @@ The Tag Film and Auditing tabs support tagging both wrestlers in a single pass.
 
 -   **Title format:** the winner's name is suffixed with ` (W)`. Single mode stores the bare name (`Alice`, `Alice (W)`, `Alice (L)`); dual mode joins the names with `" / "` and puts ` (W)` on the winner (`Alice (W) / Bob`, or `Alice / Bob (W)` when the opponent won). Draws carry no marker. The `(L)` suffix is single-mode only.
 -   **Dual mode:** pick an opponent in the wrestler card; a second tie selector appears so each sequence records both wrestlers' ties as a `"yours:theirs"` colon pair. Tie-up filters (Combine Clips, Search) match on the tagged wrestler's tie (the element before the colon).
--   **Result:** set Win / Loss / No Result per match. The outcome is embedded in the title and surfaced as the `W/L` column in the compiled CSVs.
--   **Compilation:** each dual-mode video also writes a perspective-swapped CSV (attacking flag reversed, move/score columns swapped, net points negated, `W/L` inverted) into the opponent's bucket, so both wrestlers get their own stats. Opponents not on the roster are reported as skipped.
--   **Auditing backfill:** old videos tagged without an opponent/result can be fixed in the Auditing tab, which reads the embedded title and lets you re-tag with an opponent and result. Re-tagging leaves the compiled CSVs untouched unless the "re-tabulate" checkbox is enabled, so tabulation stays a deliberate step in the Tabulate & Report tab.
+-   **Result:** set Win / Loss / No Result per match. The outcome is embedded in the title and surfaced as the `W/L` column in the compiled data.
+-   **Compilation:** each dual-mode video also writes perspective-swapped rows (attacking flag reversed, move/score columns swapped, net points negated, `W/L` inverted) into the opponent's bucket, so both wrestlers get their own stats. Opponents not on the roster are reported as skipped.
+-   **Auditing backfill:** old videos tagged without an opponent/result can be fixed in the Auditing tab, which reads the embedded title and lets you re-tag with an opponent and result. Re-tagging leaves the compiled database untouched unless the "re-tabulate" checkbox is enabled, so tabulation stays a deliberate step in the Tabulate & Report tab.
 
 ## Directory Structure
 
@@ -62,11 +62,12 @@ The Tag Film and Auditing tabs support tagging both wrestlers in a single pass.
     -   `taged/`: Output location for `.mkv` video files with embedded chapter metadata.
     -   `clips/`: Output location for generated highlight reel videos.
 -   `stats/`:
-    -   `wrestler_data/`: Contains intermediate `.csv` files for each wrestler.
+    -   `wrestler_data/`: Compiled SQLite database (`matstat.db`) plus `manifest.json`.
     -   `reports/`: Timestamped `Team_Stats_<YYYYMMDD-HHMMSS>.xlsx` reports plus the `Team_Stats_latest.xlsx` pointer (the last 10 are kept).
 -   `scripts/`: Contains the application logic scripts.
     -   `web/`: FastAPI web app (app.py, jobs, ffmpeg runner, tab modules, static/).
     -   `helpers.py`: Shared data classes and utility functions.
+    -   `storage.py`: SQLite compiled-data store (schema, rows, readers).
 -   `flake.nix`: Nix flake defining the development shell, production package, and NixOS module (all dependencies pre-configured).
 -   `flake.lock`: Pinned flake inputs (locks the `nixpkgs` revision used by the shell and package).
 -   `nix/`: Nix package, test check, and NixOS module definitions.
@@ -119,8 +120,8 @@ The dev shell also provides helper macros that run the same `scripts/helpers.py`
 
 ```bash
 matstat-meta  vids/taged/*.mkv            # Inspect tagged-video metadata (title + chapters)
-matstat-csv   stats/wrestler_data/*.csv   # Show compiled CSV shape as loaded by helpers
-matstat-stats stats/wrestler_data/*.csv   # Derived move/initiation stats overview
+matstat-csv   Alice "Bob Smith"          # Compiled rows as loaded from the database
+matstat-stats Alice "Bob Smith"          # Derived move/initiation stats overview
 ```
 
 > **Authentication:** auth is on by default — set `MATSTAT_PASSWORD` to a strong password or the server refuses to start. For a trusted local/LAN setup, pass `MATSTAT_AUTH=off` to run without a login page:

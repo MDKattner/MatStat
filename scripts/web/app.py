@@ -39,13 +39,13 @@ def _ReadVersion() -> str:
 
 APP_VERSION: str = _ReadVersion()
 
+from scripts import storage
 from scripts.helpers import (
     AppConfig,
     GetVideoCodecs,
     Roster,
     RosterToDict,
     clips_dir,
-    csv_dir,
     eval_dir,
     taged_dir,
     untaged_dir,
@@ -77,9 +77,9 @@ _PREVIEW_DIRS: dict[str, Path] = {
 # Where uploaded videos are saved (the untagged pool).
 _UPLOAD_DIR: Path = untaged_dir
 
-# File/name validation: names must not contain path separators, the CSV /
+# File/name validation: names must not contain path separators, the field /
 # title delimiters (":" and ","), or control characters (which would corrupt
-# generated CSV rows and embedded ffmpeg metadata).
+# generated chapter data and embedded ffmpeg metadata).
 _SAFE_NAME_RE: re.Pattern[str] = re.compile(r"^[^/\\:,\x00-\x1f\x7f]+$")
 
 # HLS segment files are named seg_00000.ts, seg_00001.ts, ...
@@ -179,6 +179,7 @@ async def lifespan(_app: FastAPI):
     auth.check_configured()
     hub.attach_loop(asyncio.get_running_loop())
     _attach_log_handler()
+    storage.init_db()
     # uvicorn's log records stop at the "uvicorn" logger (propagate=False), so
     # shutdown diagnostics such as "Waiting for background tasks to complete"
     # never reach MatStat.log and a stalled stop looks like a silent freeze.
@@ -338,8 +339,8 @@ def _resolve_preview_source(dir_name: str, file_name: str) -> Path:
 def _require_person_name(name: str, label: str) -> str:
     """Validate a wrestler/opponent name that will be embedded in ffmpeg metadata.
 
-    Names feed the ffmpeg title tag and generated CSV rows, so they must not
-    contain the CSV/title delimiters (":", ",") or control characters.
+    Names feed the ffmpeg title tag and generated chapter data, so they must not
+    contain the field/title delimiters (":", ",") or control characters.
 
     Raises:
         HTTPException: 400 when the name is empty or contains a bad character.
@@ -517,18 +518,25 @@ async def readiness() -> Response:
     """Public readiness probe with no sensitive detail.
 
     Checks the data root is writable, the config can be loaded (missing
-    config falls back to defaults), and ffmpeg is on PATH.
+    config falls back to defaults), ffmpeg is on PATH, and the compiled-data
+    database is present and readable.
     """
     checks: dict[str, str] = {
         "data_root": "ok" if await run_in_threadpool(_dir_writable, _UPLOAD_DIR) else "error",
         "config": "ok",
         "ffmpeg": "ok" if shutil.which("ffmpeg") is not None else "error",
+        "database": "ok",
     }
     try:
         configs.load_app_config()
     except Exception:
         logging.exception("Readiness config check failed")
         checks["config"] = "error"
+    try:
+        await run_in_threadpool(storage.health)
+    except Exception:
+        logging.exception("Readiness database check failed")
+        checks["database"] = "error"
     ready: bool = all(value == "ok" for value in checks.values())
     return JSONResponse(
         {"status": "ok" if ready else "unavailable", "checks": checks},
@@ -563,7 +571,7 @@ async def delete_video(
 ) -> dict[str, Any]:
     """Delete an untagged or tagged video and its cached preview.
 
-    Tagged videos feed the compiled CSVs, so deleting one leaves the stats
+    Tagged videos feed the compiled database, so deleting one leaves the stats
     stale until a tabulation runs. ``recompile=true`` queues that tabulation
     (off by default so deleting several files does not trigger several runs).
     """
@@ -853,7 +861,7 @@ async def stats_provenance() -> dict[str, Any]:
 
 @app.post("/api/compile-stats")
 async def compile_stats(req: CompileRequest | None = None) -> dict[str, Any]:
-    """Queue a job that compiles all tagged videos into wrestler CSVs."""
+    """Queue a job that compiles all tagged videos into the compiled-data store."""
     wrestler_names: list[str] = configs.load_wrestler_names()
     if not wrestler_names:
         raise HTTPException(
@@ -872,9 +880,7 @@ async def compile_stats(req: CompileRequest | None = None) -> dict[str, Any]:
 @app.post("/api/team-eval")
 async def team_evaluation() -> dict[str, Any]:
     """Queue a job that generates the Team Evaluation Excel report."""
-    has_data: bool = any(
-        p.name != "UNKNOWN.csv" for p in csv_dir.glob("*.csv")
-    )
+    has_data: bool = storage.has_data()
     if not has_data:
         raise HTTPException(
             status_code=404,
@@ -927,7 +933,7 @@ async def combine_clips(req: CombineRequest) -> dict[str, Any]:
             detail="Exactly one wrestler is required (send the 'wrestlers' list)",
         )
     wrestler: str = wrestlers[0]
-    if not (csv_dir / f"{wrestler}.csv").is_file():
+    if not storage.wrestler_exists(wrestler):
         raise HTTPException(
             status_code=404,
             detail=f"No compiled data for {wrestler}. Run Compile Stats first.",
@@ -1073,7 +1079,7 @@ async def trend_figure(
 
 @app.get("/api/search/wrestlers")
 async def search_wrestlers() -> dict[str, list[str]]:
-    """List wrestlers with compiled CSV data (for the search dropdown)."""
+    """List wrestlers with compiled data (for the search dropdown)."""
     return {"items": search.list_wrestlers()}
 
 

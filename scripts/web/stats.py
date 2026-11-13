@@ -1,15 +1,15 @@
-"""Compile Stats job for the web app — extract chapter data into wrestler CSVs.
+"""Compile Stats job for the web app — extract chapter data into SQLite.
 
 Every tagged video in vids/taged/ is probed for its wrestler name and chapter
 rows, rows are aggregated per wrestler, and the results are written to
-stats/wrestler_data/{name}.csv. Runs inside a JobManager thread; progress is
+stats/wrestler_data/matstat.db. Runs inside a JobManager thread; progress is
 reported via the JobContext.
 
 The rebuild is fail-safe: a missing tagged directory or an unparseable video
 aborts before any write, contradictory match results block the commit unless
-``force`` is set, per-wrestler CSVs are replaced atomically, and a wrestler
-whose data could not be rebuilt keeps the previous file. A manifest describing
-every run is written last.
+``force`` is set, per-wrestler data is replaced inside one transaction with a
+savepoint per wrestler, and a wrestler whose data could not be rebuilt keeps
+its previous rows. A manifest describing every run is written last.
 """
 
 from __future__ import annotations
@@ -22,24 +22,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 from pydantic import BaseModel
 
+from scripts import storage
 from scripts.helpers import (
-    COL_OPPONENT_SCORES,
-    COL_TEAM_SCORES,
-    AdjustedNetPoints,
     AppConfigToDict,
-    CalculateNetPoints,
     LoadAppConfig,
-    MakeFormattedDataFrame,
     MakeNameAndCSV,
     MatchConflict,
     MatchOutcomeConflictError,
     ParseTaggedName,
-    ReloadScoringMap,
-    SwapPerspectiveCSV,
     ValidateMatchOutcomes,
     csv_dir,
     taged_dir,
@@ -47,8 +40,23 @@ from scripts.helpers import (
 from scripts.web.jobs import JobContext
 
 SCHEMA_VERSION: int = 1
-APP_VERSION: str = "0.1.0"
 MANIFEST_NAME: str = "manifest.json"
+
+_PACKAGE_ROOT: Path = Path(__file__).resolve().parent.parent.parent
+
+
+def _ReadVersion() -> str:
+    """Return the shared VERSION string, or a placeholder if it is missing."""
+    try:
+        return (
+            (_PACKAGE_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+            or "0.0.0"
+        )
+    except OSError:
+        return "0.0.0"
+
+
+APP_VERSION: str = _ReadVersion()
 
 
 class CompileRequest(BaseModel):
@@ -78,43 +86,6 @@ def _process_video_safely(vid_path: Path) -> tuple[str | None, str, str]:
         error_msg: str = f"Failed to process video '{vid_path.name}': {e}"
         logging.error(error_msg)
         return (None, "", error_msg)
-
-
-def _enrich_csv_rows(rows: list[str], result: str = "", match_date: str = "") -> list[str]:
-    """Append Net Points, Adjusted Net Points, match result, and match date.
-
-    Rows are parsed with the same 9-field schema MakeFormattedDataFrame reads
-    (origin, start, end, attacking, tie, team moves, opponent moves, team
-    scores, opponent scores); rows that fail to parse are passed through
-    unchanged so no data is ever lost. The scoring map is refreshed from the
-    active ruleset so the appended values match what MakeFormattedDataFrame
-    recomputes on load. ``result`` ("", "W", or "L") is the match result for
-    the video these rows came from, stored as the trailing ``W/L`` column, and
-    ``match_date`` ("YYYY-MM-DD") is stored after it.
-
-    Args:
-        rows: Raw CSV data rows from MakeNameAndCSV.
-        result: The tagged wrestler's match result for this video.
-        match_date: The match date for this video ("YYYY-MM-DD" or "").
-
-    Returns:
-        The rows with `,net,adjusted,result,match_date` appended where parseable.
-    """
-    ReloadScoringMap()
-    enriched: list[str] = []
-    for row in rows:
-        parts: list[str] = row.split(",")
-        if len(parts) != 9:
-            enriched.append(row)
-            continue
-        scores: pd.Series = pd.Series({
-            COL_TEAM_SCORES: [s for s in parts[7].split(":") if s],
-            COL_OPPONENT_SCORES: [s for s in parts[8].split(":") if s],
-        })
-        net: np.int16 = CalculateNetPoints(scores)
-        adjusted: np.int16 = AdjustedNetPoints(scores)
-        enriched.append(f"{row},{net},{adjusted},{result},{match_date}")
-    return enriched
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -192,25 +163,24 @@ def ruleset_status() -> dict[str, Any]:
 
 
 def _existing_conflicts(wrestler_names: list[str]) -> list[MatchConflict]:
-    """Validate the compiled CSVs that this run would replace.
+    """Validate the compiled data that this run would replace.
 
     Args:
-        wrestler_names: Roster names; only their CSVs are considered because
+        wrestler_names: Roster names; only their data is considered because
             only those can be overwritten by this run.
 
     Returns:
-        Conflicts found in existing files; unreadable files are ignored here
+        Conflicts found in existing data; unreadable wrestlers are ignored here
         (their load errors are reported by the consumers).
     """
     frames: dict[str, pd.DataFrame] = {}
     for name in wrestler_names:
-        csv_path: Path = (csv_dir / name).with_suffix(".csv")
-        if not csv_path.is_file():
-            continue
         try:
-            frames[name] = MakeFormattedDataFrame(csv_path)
+            frames[name] = storage.load_wrestler_frame(name)
+        except FileNotFoundError:
+            continue
         except Exception as e:
-            logging.warning(f"Skipping conflict scan for '{csv_path}': {e}")
+            logging.warning(f"Skipping conflict scan for '{name}': {e}")
     return ValidateMatchOutcomes(frames)
 
 
@@ -227,20 +197,20 @@ def run_compile_stats_job(
     wrestler_names: list[str],
     force: bool = False,
 ) -> dict[str, Any]:
-    """Compile all tagged videos into per-wrestler CSV files.
+    """Compile all tagged videos into the SQLite compiled-data store.
 
     Every tagged video is probed for its format title and chapter rows. The
     title is parsed into (wrestler, opponent, result); rows are enriched with
     the match result and match date and bucketed under the wrestler, and in
     dual mode a perspective-swapped copy is bucketed under the opponent (when
     the opponent is also in the roster). Results are written to
-    stats/wrestler_data/{name}.csv.
+    stats/wrestler_data/matstat.db.
 
     Args:
         ctx: Job context for progress reporting and cancellation.
         wrestler_names: Wrestler names from the roster (Wrestlers.json), in order.
-        force: Commit even when an existing CSV contains a contradictory
-            match result (the conflict is recorded in the manifest warnings).
+        force: Commit even when existing data contains a contradictory match
+            result (the conflict is recorded in the manifest warnings).
 
     Returns:
         A dict with per-wrestler sequence counts and diagnostics:
@@ -252,7 +222,7 @@ def run_compile_stats_job(
         FileNotFoundError: If the tagged-video directory does not exist.
         RuntimeError: If a video's metadata cannot be parsed (aborts before
             any write).
-        MatchOutcomeConflictError: If existing CSVs contain contradictory
+        MatchOutcomeConflictError: If existing data contains contradictory
             results and ``force`` is false.
     """
     if not taged_dir.is_dir():
@@ -266,7 +236,9 @@ def run_compile_stats_job(
         if p.is_file() and not p.name.startswith(".")
     )
 
-    wrestler_to_rows: dict[str, list[str]] = {name: [] for name in wrestler_names}
+    wrestler_to_rows: dict[str, list[storage.SequenceRow]] = {
+        name: [] for name in wrestler_names
+    }
     sources: list[dict[str, Any]] = []
     errors: list[str] = []
     warnings: list[str] = []
@@ -333,11 +305,11 @@ def run_compile_stats_job(
             continue
 
         try:
-            lines: list[str] = data.split("\n") if data else []
-            enriched: list[str] = (
-                _enrich_csv_rows(lines, result, match_date) if lines else []
+            rows: list[storage.SequenceRow] = (
+                storage.parse_compiled_rows(data, result, match_date, warnings)
+                if data else []
             )
-            wrestler_to_rows[wrestler].extend(enriched)
+            wrestler_to_rows[wrestler].extend(rows)
             if opponent:
                 if opponent not in wrestler_to_rows:
                     warning = (
@@ -347,8 +319,9 @@ def run_compile_stats_job(
                     logging.warning(warning)
                     warnings.append(warning)
                 else:
-                    swapped: str = SwapPerspectiveCSV("\n".join(enriched))
-                    wrestler_to_rows[opponent].extend(swapped.split("\n"))
+                    wrestler_to_rows[opponent].extend(
+                        storage.swap_perspective(row) for row in rows
+                    )
         except Exception as e:
             message: str = f"Failed to compile '{vid_path.name}': {e}"
             logging.error(message)
@@ -372,7 +345,7 @@ def run_compile_stats_job(
             "wrestler": wrestler,
             "match_date": match_date,
             "result": result,
-            "rows": len(enriched),
+            "rows": len(rows),
             "status": "ok",
         })
         ctx.report(100.0 * (i + 1) / total, f"Processing {vid_path.name}")
@@ -380,7 +353,7 @@ def run_compile_stats_job(
     if fatal_errors:
         raise RuntimeError(
             "Tabulation aborted: could not parse tagged video metadata. "
-            "No CSVs were written. " + " | ".join(fatal_errors)
+            "No data was written. " + " | ".join(fatal_errors)
         )
 
     if ctx.cancelled:
@@ -404,24 +377,15 @@ def run_compile_stats_job(
             + "; ".join(conflict.describe() for conflict in conflicts)
         )
 
-    wrestler_counts: dict[str, int] = {}
-    for name, rows in wrestler_to_rows.items():
-        wrestler_counts[name] = len(rows)
-        output_path: Path = (csv_dir / name).with_suffix(".csv")
-        try:
-            if name in failed_wrestlers:
-                warnings.append(
-                    f"'{name}' had a failed source video; the previous CSV was kept."
-                )
-                continue
-            if rows:
-                _atomic_write_text(output_path, "\n".join(rows))
-            elif output_path.exists():
-                output_path.unlink()
-        except OSError as e:
-            error_msg = f"Failed to write data to '{output_path}': {e}"
-            logging.error(error_msg)
-            errors.append(error_msg)
+    wrestler_counts: dict[str, int] = {
+        name: len(rows) for name, rows in wrestler_to_rows.items()
+    }
+    for name in wrestler_to_rows:
+        if name in failed_wrestlers:
+            warnings.append(
+                f"'{name}' had a failed source video; the previous compiled "
+                "data was kept."
+            )
 
     ruleset_name: str
     ruleset_hash: str
@@ -451,6 +415,27 @@ def run_compile_stats_job(
         "errors": errors,
         "warnings": warnings,
     }
+
+    try:
+        db_errors: list[str] = storage.apply_compile(
+            wrestler_to_rows,
+            skip=failed_wrestlers,
+            manifest=manifest,
+        )
+    except Exception as e:
+        error_msg = f"Failed to write compiled data: {e}"
+        logging.error(error_msg)
+        errors.append(error_msg)
+        manifest["errors"] = errors
+        try:
+            _write_manifest(manifest)
+        except OSError as manifest_error:
+            logging.error(f"Failed to write manifest: {manifest_error}")
+            errors.append(f"Failed to write manifest: {manifest_error}")
+        raise RuntimeError(error_msg) from e
+
+    errors.extend(db_errors)
+    manifest["errors"] = errors
     try:
         _write_manifest(manifest)
     except OSError as e:
@@ -461,7 +446,7 @@ def run_compile_stats_job(
     ctx.report(100, f"Compiled {videos_processed} videos.")
     logging.info(
         f"Compiled stats: {videos_processed} videos, "
-        f"{len(wrestler_counts)} wrestler files."
+        f"{len(wrestler_counts)} wrestler entries."
     )
     return {
         "videos_processed": videos_processed,

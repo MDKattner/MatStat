@@ -11,6 +11,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from conftest import FakeContext
 
+from scripts import storage
+from scripts.helpers import COL_MATCH_DATE
 from scripts.web import app as web_app
 from scripts.web import audit
 from scripts.web import configs
@@ -40,7 +42,6 @@ def _redirect_dirs(monkeypatch, tmp_path: Path) -> dict[str, Path]:
     monkeypatch.setattr(stats, "csv_dir", dirs["csv"])
     monkeypatch.setattr(configs, "cfg_dir", dirs["cfg"])
     monkeypatch.setattr(web_app, "taged_dir", dirs["taged"])
-    monkeypatch.setattr(web_app, "csv_dir", dirs["csv"])
     return dirs
 
 
@@ -197,10 +198,10 @@ class TestRunRetagJob:
         assert result["output"] == "match.mkv"
         assert result["compile"]["videos_processed"] == 1
         assert (dirs["taged"] / "match.mkv").read_bytes() == b"new"
-        assert (dirs["csv"] / "Alice.csv").is_file()
-        assert "match.mkv:1,0,6,A,collar tie,double,sprawl,T,E,2,2,,2026-08-01" in (
-            dirs["csv"] / "Alice.csv"
-        ).read_text()
+        assert storage.wrestler_exists("Alice")
+        frame = storage.load_wrestler_frame("Alice")
+        assert list(frame.index) == ["match.mkv:1"]
+        assert frame[COL_MATCH_DATE].iloc[0] == "2026-08-01"
         assert "A,collar tie,double,sprawl,T,E" in captured["metadata"]
         assert "matchdate=2026-08-01" in captured["metadata"]
         assert result["compile"] is not None
@@ -229,7 +230,7 @@ class TestRunRetagJob:
 
         assert result["output"] == "match.mkv"
         assert result["compile"] is None
-        assert not (dirs["csv"] / "Alice.csv").exists()
+        assert not storage.wrestler_exists("Alice")
 
     def test_recompile_skipped_without_roster(self, tmp_path, monkeypatch) -> None:
         dirs = _redirect_dirs(monkeypatch, tmp_path)
@@ -251,7 +252,7 @@ class TestRunRetagJob:
 
         assert result["output"] == "match.mkv"
         assert result["compile"] is None
-        assert not (dirs["csv"] / "Alice.csv").exists()
+        assert not storage.wrestler_exists("Alice")
 
     def test_retag_dual_mode_embeds_combined_title(self, tmp_path, monkeypatch) -> None:
         dirs = _redirect_dirs(monkeypatch, tmp_path)
@@ -482,7 +483,7 @@ class TestAuditRoutes:
         assert job["status"] == "done"
         assert job["result"]["output"] == "match.mkv"
         assert job["result"]["compile"] is None
-        assert not (dirs["csv"] / "Alice.csv").exists()
+        assert not storage.wrestler_exists("Alice")
 
     def test_retag_missing_404(self, client) -> None:
         resp = client.post(

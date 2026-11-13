@@ -570,7 +570,7 @@ function initConfigEditor() {
 /**
  * Keep a persistent banner in sync with the compiled data's ruleset.
  *
- * The banner appears only when the compiled CSVs were produced under a
+ * The banner appears only when the compiled data was produced under a
  * different ruleset than the one currently active. It never changes any
  * stored points; it simply tells the user to re-tabulate when they want the
  * active ruleset reflected in new values.

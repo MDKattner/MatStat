@@ -11,6 +11,8 @@ import pytest
 
 sys.path.append(str(Path(__file__).parent.parent))
 
+from conftest import seed_compiled_lines
+
 from scripts.web import trend
 
 ALICE_CSV: str = (
@@ -24,15 +26,12 @@ ALICE_CSV: str = (
 
 
 def _redirect_dirs(monkeypatch, tmp_path: Path) -> dict[str, Path]:
-    """Point the trend module's data dir at a temp dir."""
-    dirs: dict[str, Path] = {"csv": tmp_path / "csv"}
-    dirs["csv"].mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(trend, "csv_dir", dirs["csv"])
-    return dirs
+    """Compatibility shim: the trend reads from the shared test database."""
+    return {}
 
 
 def _write_alice(dirs: dict[str, Path]) -> None:
-    (dirs["csv"] / "Alice.csv").write_text(ALICE_CSV)
+    seed_compiled_lines("Alice", ALICE_CSV.splitlines())
 
 
 def _decode_array(value: Any) -> list[Any]:
@@ -120,20 +119,11 @@ class TestBuildTrendFigure:
         with pytest.raises(ValueError, match="No compiled data"):
             trend.build_trend_figure("Ghost", "net", 5)
 
-    def test_legacy_csv_without_dates_raises(self, tmp_path, monkeypatch) -> None:
-        dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
-        (dirs["csv"] / "Alice.csv").write_text(
-            '"m1.mkv:1",0,6,A,collar tie,"double","sprawl","T","None",3,3,W\n'
-        )
-
-        with pytest.raises(ValueError, match="match dates"):
-            trend.build_trend_figure("Alice", "net", 5)
-
     def test_no_dated_rows_raises(self, tmp_path, monkeypatch) -> None:
-        dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
-        (dirs["csv"] / "Alice.csv").write_text(
-            '"m1.mkv:1",0,6,A,collar tie,"double","sprawl","T","None",3,3,W,\n'
-        )
+        _redirect_dirs(monkeypatch, tmp_path)
+        seed_compiled_lines("Alice", [
+            '"m1.mkv:1",0,6,A,collar tie,"double","sprawl","T","None",3,3,W,',
+        ])
 
         with pytest.raises(ValueError, match="recorded date"):
             trend.build_trend_figure("Alice", "net", 5)

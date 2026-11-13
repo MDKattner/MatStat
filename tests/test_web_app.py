@@ -64,6 +64,15 @@ class TestDeploymentHardening:
         assert body["status"] == "ok"
         assert body["checks"]["config"] == "ok"
         assert body["checks"]["data_root"] == "ok"
+        assert body["checks"]["database"] == "ok"
+
+    def test_readiness_503_when_database_missing(
+        self, client, isolated_db
+    ) -> None:
+        isolated_db.unlink()
+        resp = client.get("/readyz")
+        assert resp.status_code == 503
+        assert resp.json()["checks"]["database"] == "error"
 
     def test_readiness_503_when_data_root_unwritable(self, client, monkeypatch) -> None:
         monkeypatch.setattr(web_app, "_dir_writable", lambda _path: False)

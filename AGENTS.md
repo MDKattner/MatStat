@@ -29,8 +29,8 @@ nix flake check
 The dev shell's `shellHook` also defines inspection helpers:
 ```bash
 matstat-meta  vids/taged/*.mkv            # Tagged-video title + chapter metadata
-matstat-csv   stats/wrestler_data/*.csv   # Compiled CSV shape as loaded by helpers
-matstat-stats stats/wrestler_data/*.csv   # Move/initiation stats overview
+matstat-csv   Alice "Bob Smith"          # Compiled rows as loaded from the database
+matstat-stats Alice "Bob Smith"          # Move/initiation stats overview
 ```
 
 ## Deployment
@@ -57,7 +57,7 @@ this policy lives in `wiki/Developer Guide.md` ("Compatibility policy").
 | Launcher variables | `MATSTAT_ROOT`, `MATSTAT_HOST`, `MATSTAT_PORT`, `MATSTAT_FORWARDED_ALLOW_IPS` |
 | Service variables | Every `MATSTAT_*` the module exports; the Python app reads them |
 | Package layout | `bin/matstat`, `share/matstat/{scripts,cfg}`, `meta.mainProgram` |
-| On-disk state | `stateDir` default `/var/lib/matstat` plus `cfg/`, `vids/{untaged,taged,clips}`, `stats/{wrestler_data,reports}`, `tmp/` |
+| On-disk state | `stateDir` default `/var/lib/matstat` plus `cfg/`, `vids/{untaged,taged,clips}`, `stats/{wrestler_data,reports}` (`wrestler_data/matstat.db`), `tmp/` |
 | Flake inputs | `nixpkgs` channel pinned in `flake.lock` |
 | Platforms | `supportedSystems` and `meta.platforms` |
 
@@ -191,6 +191,7 @@ exercise the Caddy and auth paths.
 - **FFmpeg**: Use `run_ffmpeg(cmd, ...)` from `scripts.web.ffmpeg` (blocking, handles cancellation/logging).
 - **Video Preview**: HLS progressive streaming (`scripts.web.transcode`).
 - **Configs**: JSON in `cfg/` (never commit real wrestler PII). Loaders in `helpers.py` (e.g., `LoadAppConfig`).
+- **Compiled data**: SQLite at `stats/wrestler_data/matstat.db`, owned by `scripts/storage.py` (`wrestlers`, `sequences`, `compile_runs`). Use `storage.load_wrestler_frame` / `load_all_frames` for reads and `storage.apply_compile` for writes; never open the DB directly elsewhere.
 - **DataFrame Querying**: Use `QueryBuilder` from `scripts/helpers.py` for all DataFrame filtering. Chainable API with 10 filter methods + `apply()` for sort/pagination. Never hand-roll ad-hoc filter logic.
 - **Edge Middleware**: `scripts/web/app.py` owns the security-header, CSRF-origin, upload-size, and auth-gate middleware. The security-header middleware is defined last so it wraps every short-circuit response. Public probes and the login script live in `_PUBLIC_PATHS`; upload limits are module globals (`_UPLOAD_MAX_BYTES`, etc.) and are monkeypatched in tests.
 - **Frontend Components**: Shared UI lives in `scripts/web/static/js/components.js`. Use `queryPanel` for unified filter UIs (Search + Combine Clips). Use `el()` for all DOM construction.
@@ -206,15 +207,16 @@ exercise the Caddy and auth paths.
   sys.path.append(str(Path(__file__).parent.parent))
   ```
 - **Fixtures**: Use `conftest.py` fixtures (especially `client` for API tests). Use `monkeypatch` (not `pytest-mock`) to redirect `tmp_path`.
+- **Database isolation**: `tests/conftest.py` has an autouse `isolated_db` fixture that points `storage.db_path` at a temp database per test. Seed with `seed_wrestler` or `seed_compiled_lines` instead of writing CSV files.
 - **FakeContext**: Shared `FakeContext` class in `conftest.py` stands in for `JobContext` in clip/job tests.
 
 ## DataFrame Columns
 All `COL_*` constants are defined in `scripts/helpers.py`. Key columns:
 - `COL_ORIGIN` (index), `COL_START_TIME`, `COL_END_TIME`, `COL_ATTACKING` (bool)
 - `COL_TIE_UP` (str, dual-wrestler format: `"yours:theirs"`), `COL_TEAM_MOVES`, `COL_OPPONENT_MOVES` (list[str])
-- `COL_NET_POINTS`, `COL_ADJUSTED_NET_POINTS` (int16; stored values are trusted on load, recomputed only for legacy 9-column CSVs)
+- `COL_NET_POINTS`, `COL_ADJUSTED_NET_POINTS` (int16; stored values are trusted on load, recomputed only for legacy 9-column CSV rows parsed by the migration helper)
 - `COL_MATCH_RESULT` (`"W"` / `"L"` / `""`), `COL_MATCH_DATE` (`"YYYY-MM-DD"` / `""`)
-- `COL_MATCH_DURATION` (computed by `QueryBuilder.duration_filter`, not stored in CSV)
+- `COL_MATCH_DURATION` (computed by `QueryBuilder.duration_filter`, not stored in the database)
 
 ## QueryBuilder Reference
 ```python

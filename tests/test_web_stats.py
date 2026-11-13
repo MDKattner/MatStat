@@ -6,16 +6,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pytest
 
 sys.path.append(str(Path(__file__).parent.parent))
 
 import scripts.helpers as helpers
+from scripts import storage
 from scripts.helpers import MatchOutcomeConflictError
 from scripts.web import configs, stats
 
-from conftest import FakeContext
+from conftest import FakeContext, seed_compiled_lines
 
 
 class FlipContext:
@@ -65,6 +65,11 @@ def _mock_make_name_and_csv(
         return table[key]
 
     monkeypatch.setattr(stats, "MakeNameAndCSV", fake)
+
+
+def _stored(name: str):
+    """Load a wrestler's stored frame from the test database."""
+    return storage.load_wrestler_frame(name)
 
 
 def _wait_for_job(client, job_id: str, timeout: float = 5.0) -> dict[str, Any]:
@@ -129,13 +134,13 @@ class TestRulesetStatus:
             "ruleset_hash": "deadbeef",
             "generated_at": "2026-01-01T00:00:00+00:00",
         }))
-        csv_file: Path = dirs["csv"] / "Alice.csv"
-        csv_file.write_text(
-            'a.mkv:1,0,6,A,collar tie,double,nothing,T,None,99,123,W\n'
+        seed_compiled_lines(
+            "Alice",
+            ["a.mkv:1,0,6,A,collar tie,double,nothing,T,None,99,123,W"],
         )
 
         status: dict[str, Any] = stats.ruleset_status()
-        df = helpers.MakeFormattedDataFrame(csv_file)
+        df = _stored("Alice")
 
         assert status["stale"] is True
         assert status["compiled_ruleset"] == "OldStyle"
@@ -147,7 +152,7 @@ class TestRulesetStatus:
 class TestRunCompileStatsJob:
     """Tests for stats.run_compile_stats_job — the job body."""
 
-    def test_writes_csv_per_wrestler(self, tmp_path, monkeypatch) -> None:
+    def test_writes_rows_per_wrestler(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / "a.mkv").write_bytes(b"x")
         (tmp_path / "taged" / "b.mkv").write_bytes(b"x")
@@ -169,14 +174,16 @@ class TestRunCompileStatsJob:
         assert result["videos_processed"] == 3
         assert result["wrestlers"] == {"Alice": 3, "Bob Smith": 1}
         assert result["errors"] == []
-        assert (tmp_path / "csv" / "Alice.csv").read_text().count("\n") == 2
-        assert "b.mkv:2,10,20" in (tmp_path / "csv" / "Alice.csv").read_text()
-        assert "a.mkv:1,0,10,A,collar tie,double,nothing,T,None,3,3,,2026-08-01" in (
-            (tmp_path / "csv" / "Alice.csv").read_text()
-        )
-        assert (tmp_path / "csv" / "Bob Smith.csv").read_text() == (
-            "c.mkv:1,0,10,A,regular ride,nothing,sprawl,None,T,-3,-3,,"
-        )
+        alice = _stored("Alice")
+        assert len(alice) == 3
+        assert list(alice.index) == ["a.mkv:1", "b.mkv:1", "b.mkv:2"]
+        assert alice[helpers.COL_NET_POINTS].iloc[0] == 3
+        assert alice[helpers.COL_ADJUSTED_NET_POINTS].iloc[0] == 3
+        assert alice[helpers.COL_MATCH_DATE].iloc[0] == "2026-08-01"
+        bob = _stored("Bob Smith")
+        assert len(bob) == 1
+        assert bob[helpers.COL_NET_POINTS].iloc[0] == -3
+        assert bob[helpers.COL_ADJUSTED_NET_POINTS].iloc[0] == -3
 
     def test_dual_mode_swaps_into_opponent_bucket(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
@@ -192,12 +199,16 @@ class TestRunCompileStatsJob:
 
         assert result["errors"] == []
         assert result["wrestlers"] == {"Alice": 1, "Bob Smith": 1}
-        assert (tmp_path / "csv" / "Alice.csv").read_text() == (
-            "d.mkv:1,0,10,A,collar tie:underhook,double,nothing,T,None,3,3,W,2026-08-01"
-        )
-        assert (tmp_path / "csv" / "Bob Smith.csv").read_text() == (
-            "d.mkv:1,0,10,D,underhook:collar tie,nothing,double,None,T,-3,-3,L,2026-08-01"
-        )
+        alice = _stored("Alice")
+        assert alice[helpers.COL_TIE_UP].iloc[0] == "collar tie:underhook"
+        assert alice[helpers.COL_ATTACKING].iloc[0]
+        assert alice[helpers.COL_MATCH_RESULT].iloc[0] == "W"
+        assert alice[helpers.COL_MATCH_DATE].iloc[0] == "2026-08-01"
+        bob = _stored("Bob Smith")
+        assert bob[helpers.COL_TIE_UP].iloc[0] == "underhook:collar tie"
+        assert not bob[helpers.COL_ATTACKING].iloc[0]
+        assert bob[helpers.COL_MATCH_RESULT].iloc[0] == "L"
+        assert bob[helpers.COL_NET_POINTS].iloc[0] == -3
 
     def test_dual_mode_opponent_not_in_roster_reports_error(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
@@ -213,8 +224,8 @@ class TestRunCompileStatsJob:
         assert result["errors"] == []
         assert len(result["warnings"]) == 1
         assert "Jane Doe" in result["warnings"][0]
-        assert (tmp_path / "csv" / "Alice.csv").is_file()
-        assert not (tmp_path / "csv" / "Jane Doe.csv").exists()
+        assert storage.wrestler_exists("Alice")
+        assert not storage.wrestler_exists("Jane Doe")
 
     def test_empty_data_skips_file(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
@@ -224,13 +235,15 @@ class TestRunCompileStatsJob:
         result: dict[str, Any] = stats.run_compile_stats_job(FakeContext(), ["Alice"])
 
         assert result["wrestlers"] == {"Alice": 0}
-        assert not (tmp_path / "csv" / "Alice.csv").exists()
+        assert not storage.wrestler_exists("Alice")
 
-    def test_unknown_wrestler_preserves_existing_csv(self, tmp_path, monkeypatch) -> None:
+    def test_unknown_wrestler_preserves_existing_data(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / "guest.mkv").write_bytes(b"x")
-        stale: Path = tmp_path / "csv" / "Jane Doe.csv"
-        stale.write_text("old-data")
+        seed_compiled_lines(
+            "Jane Doe",
+            ["old.mkv:1,0,10,A,collar tie,double,sprawl,T,None"],
+        )
         _mock_make_name_and_csv(monkeypatch, {"guest.mkv": ("Jane Doe", "", "row")})
 
         result: dict[str, Any] = stats.run_compile_stats_job(FakeContext(), ["Alice"])
@@ -239,15 +252,17 @@ class TestRunCompileStatsJob:
         assert result["errors"] == []
         assert "Jane Doe" in result["wrestlers_stale"]
         assert "Jane Doe" in result["warnings"][0]
-        assert stale.read_text() == "old-data"
+        assert list(_stored("Jane Doe").index) == ["old.mkv:1"]
         manifest = json.loads((tmp_path / "csv" / "manifest.json").read_text())
         assert manifest["wrestlers"]["Jane Doe"]["stale"] is True
 
     def test_processing_failure_aborts_without_writing(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / "bad.mkv").write_bytes(b"x")
-        existing: Path = tmp_path / "csv" / "Alice.csv"
-        existing.write_text("old-data")
+        seed_compiled_lines(
+            "Alice",
+            ["old.mkv:1,0,10,A,collar tie,double,sprawl,T,None"],
+        )
 
         def broken(path: Path) -> tuple[str, str, str]:
             raise OSError("corrupt")
@@ -257,13 +272,15 @@ class TestRunCompileStatsJob:
         with pytest.raises(RuntimeError, match="bad.mkv"):
             stats.run_compile_stats_job(FakeContext(), ["Alice"])
 
-        assert existing.read_text() == "old-data"
+        assert list(_stored("Alice").index) == ["old.mkv:1"]
         assert not (tmp_path / "csv" / "manifest.json").exists()
 
-    def test_no_videos_clears_stale_csvs(self, tmp_path, monkeypatch) -> None:
+    def test_no_videos_clears_stale_data(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
-        stale: Path = tmp_path / "csv" / "Alice.csv"
-        stale.write_text("old-data")
+        seed_compiled_lines(
+            "Alice",
+            ["old.mkv:1,0,10,A,collar tie,double,sprawl,T,None"],
+        )
         ctx: FakeContext = FakeContext()
 
         result: dict[str, Any] = stats.run_compile_stats_job(ctx, ["Alice"])
@@ -271,21 +288,23 @@ class TestRunCompileStatsJob:
         assert result["videos_processed"] == 0
         assert result["wrestlers"] == {"Alice": 0}
         assert result["errors"] == []
-        assert not stale.exists()
+        assert not storage.wrestler_exists("Alice")
         manifest = json.loads((tmp_path / "csv" / "manifest.json").read_text())
         assert manifest["wrestlers"]["Alice"]["rows"] == 0
         assert ctx.reports[-1] == (100, "Compiled 0 videos.")
 
     def test_missing_dir_is_fatal(self, tmp_path, monkeypatch) -> None:
         dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
-        existing: Path = dirs["csv"] / "Alice.csv"
-        existing.write_text("old-data")
+        seed_compiled_lines(
+            "Alice",
+            ["old.mkv:1,0,10,A,collar tie,double,sprawl,T,None"],
+        )
         dirs["taged"].rmdir()
 
         with pytest.raises(FileNotFoundError, match="Tagged video directory"):
             stats.run_compile_stats_job(FakeContext(), ["Alice"])
 
-        assert existing.read_text() == "old-data"
+        assert list(_stored("Alice").index) == ["old.mkv:1"]
         assert not (tmp_path / "csv" / "manifest.json").exists()
 
     def test_manifest_records_sources_and_ruleset(self, tmp_path, monkeypatch) -> None:
@@ -307,11 +326,11 @@ class TestRunCompileStatsJob:
         assert manifest["sources"][0]["status"] == "ok"
         assert manifest["wrestlers"]["Alice"]["rows"] == 1
 
-    def test_atomic_replace_failure_preserves_csv(self, tmp_path, monkeypatch) -> None:
+    def test_manifest_failure_reports_error_but_keeps_rows(
+        self, tmp_path, monkeypatch
+    ) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / "a.mkv").write_bytes(b"x")
-        existing: Path = tmp_path / "csv" / "Alice.csv"
-        existing.write_text("old-data")
         _mock_make_name_and_csv(monkeypatch, {
             "a.mkv": ("Alice", "", "a.mkv:1,0,10,A,collar tie,double,nothing,T,None"),
         })
@@ -323,16 +342,18 @@ class TestRunCompileStatsJob:
 
         result: dict[str, Any] = stats.run_compile_stats_job(FakeContext(), ["Alice"])
 
-        assert existing.read_text() == "old-data"
-        assert any("Alice.csv" in error for error in result["errors"])
+        assert storage.wrestler_exists("Alice")
+        assert any("manifest" in error.lower() for error in result["errors"])
 
-    def test_conflicting_existing_csv_blocks_commit(self, tmp_path, monkeypatch) -> None:
+    def test_conflicting_existing_data_blocks_commit(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / "a.mkv").write_bytes(b"x")
-        conflicting: Path = tmp_path / "csv" / "Alice.csv"
-        conflicting.write_text(
-            '"a.mkv:1",0,6,A,collar tie,"double","sprawl","T","E",2,2,W\n'
-            '"a.mkv:2",6,12,D,standing,"sprawl","sweep single","E","T",-2,-2,L'
+        seed_compiled_lines(
+            "Alice",
+            [
+                '"a.mkv:1",0,6,A,collar tie,"double","sprawl","T","E",2,2,W',
+                '"a.mkv:2",6,12,D,standing,"sprawl","sweep single","E","T",-2,-2,L',
+            ],
         )
         _mock_make_name_and_csv(monkeypatch, {
             "a.mkv": ("Alice", "", "a.mkv:1,0,10,A,collar tie,double,nothing,T,None"),
@@ -341,16 +362,18 @@ class TestRunCompileStatsJob:
         with pytest.raises(MatchOutcomeConflictError, match="a.mkv"):
             stats.run_compile_stats_job(FakeContext(), ["Alice"])
 
-        assert "a.mkv:1" in conflicting.read_text()
+        assert list(_stored("Alice").index) == ["a.mkv:1", "a.mkv:2"]
         assert not (tmp_path / "csv" / "manifest.json").exists()
 
     def test_force_overrides_conflict_and_warns(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         (tmp_path / "taged" / "a.mkv").write_bytes(b"x")
-        conflicting: Path = tmp_path / "csv" / "Alice.csv"
-        conflicting.write_text(
-            '"a.mkv:1",0,6,A,collar tie,"double","sprawl","T","E",2,2,W\n'
-            '"a.mkv:2",6,12,D,standing,"sprawl","sweep single","E","T",-2,-2,L'
+        seed_compiled_lines(
+            "Alice",
+            [
+                '"a.mkv:1",0,6,A,collar tie,"double","sprawl","T","E",2,2,W',
+                '"a.mkv:2",6,12,D,standing,"sprawl","sweep single","E","T",-2,-2,L',
+            ],
         )
         _mock_make_name_and_csv(monkeypatch, {
             "a.mkv": ("Alice", "", "a.mkv:1,0,10,A,collar tie,double,nothing,T,None"),
@@ -362,7 +385,7 @@ class TestRunCompileStatsJob:
 
         assert result["warnings"]
         assert any("force" in warning.lower() for warning in result["warnings"])
-        assert conflicting.read_text().startswith("a.mkv:1,0,10,A")
+        assert list(_stored("Alice").index) == ["a.mkv:1"]
         assert (tmp_path / "csv" / "manifest.json").is_file()
 
     def test_cancelled_stops_early(self, tmp_path, monkeypatch) -> None:
@@ -377,7 +400,7 @@ class TestRunCompileStatsJob:
         result: dict[str, Any] = stats.run_compile_stats_job(FlipContext(), ["Alice"])
 
         assert result["videos_processed"] == 1
-        assert not (tmp_path / "csv" / "Alice.csv").exists()
+        assert not storage.wrestler_exists("Alice")
 
 
 class TestCompileStatsRoute:
@@ -403,7 +426,7 @@ class TestCompileStatsRoute:
         assert job["result"]["videos_processed"] == 1
         assert job["result"]["wrestlers"] == {"Alice": 1, "Bob Smith": 0}
         assert job["result"]["errors"] == []
-        assert (tmp_path / "csv" / "Alice.csv").exists()
+        assert storage.wrestler_exists("Alice")
 
     def test_missing_config_404(self, client, tmp_path, monkeypatch) -> None:
         dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
@@ -414,49 +437,59 @@ class TestCompileStatsRoute:
         assert "Wrestlers.json" in resp.json()["detail"]
 
 
-class TestEnrichCsvRows:
-    """Tests for stats._enrich_csv_rows — appending net/adjusted/result columns."""
+class TestParseCompiledRows:
+    """Tests for storage.parse_compiled_rows — scoring and row shaping."""
 
     def test_appends_net_and_adjusted(self, monkeypatch) -> None:
-        monkeypatch.setattr(stats, "ReloadScoringMap", lambda: None)
-        monkeypatch.setattr(helpers, "score_to_pts", {"T": np.int16(3), "None": np.int16(0)})
+        monkeypatch.setattr(storage, "ReloadScoringMap", lambda: None)
+        monkeypatch.setattr(helpers, "score_to_pts", {"T": 3, "None": 0})
         monkeypatch.setattr(helpers, "_ACTIVE_PIN_CODES", frozenset({"PIN"}))
         monkeypatch.setattr(helpers, "active_pin_points", 13)
-        rows: list[str] = ["fake.mkv:1,0,6,A,collar tie,double,nothing,T,None"]
-        assert stats._enrich_csv_rows(rows) == [
-            "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,,"
-        ]
+        rows = storage.parse_compiled_rows(
+            "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None"
+        )
+        assert len(rows) == 1
+        assert rows[0].net_points == 3
+        assert rows[0].adjusted_net_points == 3
+        assert rows[0].match_result == ""
+        assert rows[0].match_date == ""
 
     def test_appends_match_result(self, monkeypatch) -> None:
-        monkeypatch.setattr(stats, "ReloadScoringMap", lambda: None)
-        monkeypatch.setattr(helpers, "score_to_pts", {"T": np.int16(3), "None": np.int16(0)})
+        monkeypatch.setattr(storage, "ReloadScoringMap", lambda: None)
+        monkeypatch.setattr(helpers, "score_to_pts", {"T": 3, "None": 0})
         monkeypatch.setattr(helpers, "_ACTIVE_PIN_CODES", frozenset({"PIN"}))
         monkeypatch.setattr(helpers, "active_pin_points", 13)
-        rows: list[str] = ["fake.mkv:1,0,6,A,collar tie,double,nothing,T,None"]
-        assert stats._enrich_csv_rows(rows, "L") == [
-            "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,L,"
-        ]
+        rows = storage.parse_compiled_rows(
+            "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None", "L"
+        )
+        assert rows[0].net_points == 3
+        assert rows[0].match_result == "L"
 
     def test_appends_match_date(self, monkeypatch) -> None:
-        monkeypatch.setattr(stats, "ReloadScoringMap", lambda: None)
-        monkeypatch.setattr(helpers, "score_to_pts", {"T": np.int16(3), "None": np.int16(0)})
+        monkeypatch.setattr(storage, "ReloadScoringMap", lambda: None)
+        monkeypatch.setattr(helpers, "score_to_pts", {"T": 3, "None": 0})
         monkeypatch.setattr(helpers, "_ACTIVE_PIN_CODES", frozenset({"PIN"}))
         monkeypatch.setattr(helpers, "active_pin_points", 13)
-        rows: list[str] = ["fake.mkv:1,0,6,A,collar tie,double,nothing,T,None"]
-        assert stats._enrich_csv_rows(rows, "", "2026-08-01") == [
-            "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,,2026-08-01"
-        ]
+        rows = storage.parse_compiled_rows(
+            "fake.mkv:1,0,6,A,collar tie,double,nothing,T,None", "", "2026-08-01"
+        )
+        assert rows[0].match_date == "2026-08-01"
 
     def test_pin_bonus_applied(self, monkeypatch) -> None:
-        monkeypatch.setattr(stats, "ReloadScoringMap", lambda: None)
-        monkeypatch.setattr(helpers, "score_to_pts", {"PIN": np.int16(0), "None": np.int16(0)})
+        monkeypatch.setattr(storage, "ReloadScoringMap", lambda: None)
+        monkeypatch.setattr(helpers, "score_to_pts", {"PIN": 0, "None": 0})
         monkeypatch.setattr(helpers, "_ACTIVE_PIN_CODES", frozenset({"PIN"}))
         monkeypatch.setattr(helpers, "active_pin_points", 13)
-        rows: list[str] = ["fake.mkv:2,6,12,D,standing,sprawl,single,PIN,None"]
-        assert stats._enrich_csv_rows(rows) == [
-            "fake.mkv:2,6,12,D,standing,sprawl,single,PIN,None,0,13,,"
-        ]
+        rows = storage.parse_compiled_rows(
+            "fake.mkv:2,6,12,D,standing,sprawl,single,PIN,None"
+        )
+        assert rows[0].net_points == 0
+        assert rows[0].adjusted_net_points == 13
 
-    def test_malformed_row_passes_through(self, monkeypatch) -> None:
-        rows: list[str] = ["not,a,valid,row"]
-        assert stats._enrich_csv_rows(rows) == rows
+    def test_malformed_row_is_skipped_with_warning(self, monkeypatch) -> None:
+        monkeypatch.setattr(storage, "ReloadScoringMap", lambda: None)
+        warnings: list[str] = []
+        rows = storage.parse_compiled_rows("not,a,valid,row", warnings=warnings)
+        assert rows == []
+        assert warnings
+        assert "Skipped malformed chapter row" in warnings[0]

@@ -31,11 +31,134 @@ class FakeContext:
 
 from fastapi.testclient import TestClient
 
+from scripts import storage
 from scripts.helpers import (
     COL_ORIGIN, COL_START_TIME, COL_END_TIME, COL_ATTACKING, COL_TIE_UP,
     COL_TEAM_MOVES, COL_OPPONENT_MOVES, COL_TEAM_SCORES, COL_OPPONENT_SCORES,
-    COL_NET_POINTS, COL_ADJUSTED_NET_POINTS,
+    COL_NET_POINTS, COL_ADJUSTED_NET_POINTS, COL_MATCH_RESULT, COL_MATCH_DATE,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_db(tmp_path, monkeypatch) -> Path:
+    """Point the compiled-data store at a per-test temp database.
+
+    Every test gets an empty, initialized SQLite file so no test can read or
+    write the repository's stats/wrestler_data/matstat.db.
+    """
+    db_path: Path = tmp_path / "stats" / "wrestler_data" / storage.DB_FILENAME
+    monkeypatch.setattr(storage, "db_path", db_path)
+    storage.init_db()
+    return db_path
+
+
+def seed_wrestler(
+    name: str,
+    frame: pd.DataFrame,
+    *,
+    match_result: str = "",
+    match_date: str = "",
+) -> None:
+    """Write a DataFrame's rows into the compiled store for one wrestler.
+
+    The frame's stored points are preserved (unlike a real compile, which
+    recomputes them from the score codes), so tests can assert exact values.
+
+    Args:
+        name: The wrestler name.
+        frame: A compiled-contract DataFrame (index = Origin).
+        match_result: Default W/L result when the frame does not carry one.
+        match_date: Default match date when the frame does not carry one.
+    """
+    rows: list[storage.SequenceRow] = []
+    for origin, row in frame.iterrows():
+        rows.append(storage.SequenceRow(
+            origin=str(origin),
+            start_time=int(row[COL_START_TIME]),
+            end_time=int(row[COL_END_TIME]),
+            attacking=bool(row[COL_ATTACKING]),
+            tie_up=str(row.get(COL_TIE_UP, "")),
+            team_moves=list(row.get(COL_TEAM_MOVES, [])),
+            opponent_moves=list(row.get(COL_OPPONENT_MOVES, [])),
+            team_scores=list(row.get(COL_TEAM_SCORES, [])),
+            opponent_scores=list(row.get(COL_OPPONENT_SCORES, [])),
+            net_points=int(row.get(COL_NET_POINTS, 0)),
+            adjusted_net_points=int(row.get(COL_ADJUSTED_NET_POINTS, 0)),
+            match_result=str(row.get(COL_MATCH_RESULT, match_result)),
+            match_date=str(row.get(COL_MATCH_DATE, match_date)),
+        ))
+    storage.apply_compile(
+        {name: rows},
+        skip=set(),
+        manifest={
+            "schema_version": 1,
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "ruleset": "Folkstyle",
+            "ruleset_hash": "test",
+            "app_version": "test",
+            "taged_dir": "test",
+        },
+    )
+
+
+def seed_compiled_lines(name: str, lines: list[str]) -> None:
+    """Seed one wrestler from compiled CSV-shaped rows.
+
+    Accepts the 9-field compile format plus the 12/13-field enriched format
+    that includes stored net points, adjusted points, result, and date. Quotes
+    around fields are tolerated. Nine-field rows are scored from their codes
+    exactly like a real compile.
+
+    Args:
+        name: The wrestler name.
+        lines: Compiled CSV rows (one string per sequence).
+    """
+    import csv
+
+    rows: list[storage.SequenceRow] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        fields: list[str] = next(csv.reader([line]))
+        if len(fields) == 9:
+            rows.extend(storage.parse_compiled_rows(",".join(fields)))
+            continue
+        if len(fields) not in (10, 11, 12, 13):
+            raise ValueError(f"Unsupported test row width: {len(fields)}")
+        base: list[str] = fields[:9]
+        origin, start, end, attack, tie_up, team_moves, opponent_moves, \
+            team_scores, opponent_scores = base
+        net: str = fields[9]
+        adjusted: str = fields[10] if len(fields) > 10 else net
+        result: str = fields[11] if len(fields) > 11 else ""
+        date: str = fields[12] if len(fields) > 12 else ""
+        rows.append(storage.SequenceRow(
+            origin=origin,
+            start_time=int(float(start)),
+            end_time=int(float(end)),
+            attacking=attack == "A",
+            tie_up=tie_up,
+            team_moves=team_moves.split(":") if team_moves else [],
+            opponent_moves=opponent_moves.split(":") if opponent_moves else [],
+            team_scores=team_scores.split(":") if team_scores else [],
+            opponent_scores=opponent_scores.split(":") if opponent_scores else [],
+            net_points=int(float(net)),
+            adjusted_net_points=int(float(adjusted)),
+            match_result=result,
+            match_date=date,
+        ))
+    storage.apply_compile(
+        {name: rows},
+        skip=set(),
+        manifest={
+            "schema_version": 1,
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "ruleset": "Folkstyle",
+            "ruleset_hash": "test",
+            "app_version": "test",
+            "taged_dir": "test",
+        },
+    )
 
 
 def _make_test_client(tmp_path, monkeypatch, logging_enabled: bool, auth_enabled: bool = False):

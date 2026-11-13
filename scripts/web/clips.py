@@ -18,6 +18,7 @@ from typing import Any
 
 import pandas as pd
 
+from scripts import storage
 from scripts.helpers import (
     COL_ADJUSTED_NET_POINTS,
     COL_ATTACKING,
@@ -28,9 +29,7 @@ from scripts.helpers import (
     COL_TEAM_MOVES,
     COL_TIE_UP,
     GetVideoCodecs,
-    MakeFormattedDataFrame,
     clips_dir,
-    csv_dir,
     taged_dir,
     tmp_dir,
 )
@@ -146,43 +145,39 @@ def build_concat_cmd(list_file: Path, output_path: Path) -> list[str]:
 
 
 def load_wrestler_frame(wrestler: str) -> pd.DataFrame:
-    """Load a wrestler's compiled CSV.
+    """Load a wrestler's compiled data from the SQLite store.
 
     Args:
-        wrestler: The wrestler name (also the CSV stem).
+        wrestler: The wrestler name.
 
     Returns:
         The formatted sequence DataFrame.
 
     Raises:
-        FileNotFoundError: If the wrestler's compiled CSV does not exist.
-        ValueError: If the CSV exists but cannot be parsed.
+        FileNotFoundError: If no compiled data exists for the wrestler.
+        ValueError: If the stored data cannot be read.
     """
-    csv_path: Path = csv_dir / f"{wrestler}.csv"
-    if not csv_path.is_file():
-        raise FileNotFoundError(
-            f"No compiled data for {wrestler}. Run Compile Stats first."
-        )
     try:
-        return MakeFormattedDataFrame(csv_path)
+        return storage.load_wrestler_frame(wrestler)
+    except FileNotFoundError:
+        raise
     except Exception as e:
         raise ValueError(f"Could not load data for {wrestler}: {e}")
 
 
 def find_with_query(req: QuerySpec, wrestler: str) -> pd.DataFrame:
-    """Load a wrestler's CSV and apply the shared query implementation.
+    """Load a wrestler's compiled data and apply the shared query implementation.
 
     Args:
         req: The shared filter specification.
-        wrestler: The wrestler name (also the CSV stem).
+        wrestler: The wrestler name.
 
     Returns:
         The filtered DataFrame (possibly empty).
 
     Raises:
-        FileNotFoundError: If the wrestler's compiled CSV does not exist.
-        ValueError: If the CSV exists but cannot be parsed, or origins are
-            unknown.
+        FileNotFoundError: If no compiled data exists for the wrestler.
+        ValueError: If the stored data cannot be read, or origins are unknown.
     """
     return apply_query(load_wrestler_frame(wrestler), req, wrestler)
 
@@ -408,9 +403,9 @@ def run_combine_clips_job(
         A dict describing the result: ``{"output": name, "segments": n, "errors": [...]}``.
 
     Raises:
-        FileNotFoundError: If the wrestler's compiled CSV does not exist.
-        ValueError: If the CSV is unreadable, origins are unknown, or no
-            sequences match.
+        FileNotFoundError: If the wrestler has no compiled rows.
+        ValueError: If the compiled data is unreadable, origins are unknown, or
+            no sequences match.
         RuntimeError: If no clips were extracted or concatenation fails.
     """
     filtered: pd.DataFrame = find_with_query(spec, wrestler)

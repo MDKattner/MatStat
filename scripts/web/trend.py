@@ -13,19 +13,17 @@ is no compiled data, no dated rows, or a bad rolling window.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
+from scripts import storage
 from scripts.helpers import (
     COL_ADJUSTED_NET_POINTS,
     COL_MATCH_DATE,
     COL_NET_POINTS,
-    MakeFormattedDataFrame,
-    csv_dir,
 )
 
 TrendMetric = Literal["net", "adjusted"]
@@ -48,7 +46,7 @@ def build_trend_figure(
     average and a rolling average over the last ``window`` matches.
 
     Args:
-        wrestler: The wrestler name (must match a CSV stem in csv_dir).
+        wrestler: The wrestler name (must have compiled data in the database).
         metric: "net" for raw net points or "adjusted" for net plus the active
             ruleset's pin bonus.
         window: The rolling-average window in matches.
@@ -66,17 +64,11 @@ def build_trend_figure(
     if window < 1:
         raise ValueError("Rolling window must be at least 1.")
 
-    csv_path: Path = (csv_dir / name).with_suffix(".csv")
-    if not csv_path.is_file():
+    try:
+        df: pd.DataFrame = storage.load_wrestler_frame(name)
+    except FileNotFoundError:
         raise ValueError(
             f"No compiled data for '{name}'. Run Compile Stats first."
-        )
-    df: pd.DataFrame = MakeFormattedDataFrame(csv_path)
-
-    if COL_MATCH_DATE not in df.columns:
-        raise ValueError(
-            f"No match dates recorded for '{name}'. Recompile stats after "
-            "tagging with a match date."
         )
 
     dated: pd.DataFrame = df[df[COL_MATCH_DATE].astype(str).str.strip() != ""]

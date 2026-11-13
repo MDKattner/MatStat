@@ -12,7 +12,7 @@ import pytest
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from conftest import FakeContext
+from conftest import FakeContext, seed_compiled_lines
 
 from scripts.helpers import (
     COL_ORIGIN,
@@ -39,14 +39,12 @@ BOB_CSV: str = (
 def _redirect_dirs(monkeypatch, tmp_path: Path) -> dict[str, Path]:
     """Point the pca module's data dirs at a temp dir."""
     dirs: dict[str, Path] = {
-        "csv": tmp_path / "csv",
         "taged": tmp_path / "taged",
         "clips": tmp_path / "clips",
         "tmp": tmp_path / "tmp",
     }
     for directory in dirs.values():
         directory.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(pca, "csv_dir", dirs["csv"])
     monkeypatch.setattr(pca, "taged_dir", dirs["taged"])
     monkeypatch.setattr(pca, "clips_dir", dirs["clips"])
     monkeypatch.setattr(pca, "tmp_dir", dirs["tmp"])
@@ -54,9 +52,9 @@ def _redirect_dirs(monkeypatch, tmp_path: Path) -> dict[str, Path]:
 
 
 def _write_csvs(dirs: dict[str, Path]) -> None:
-    """Write Alice (4 sequences / 2 videos) and Bob (2 sequences) CSVs."""
-    (dirs["csv"] / "Alice.csv").write_text(ALICE_CSV)
-    (dirs["csv"] / "Bob.csv").write_text(BOB_CSV)
+    """Store Alice (4 sequences / 2 videos) and Bob (2 sequences)."""
+    seed_compiled_lines("Alice", ALICE_CSV.splitlines())
+    seed_compiled_lines("Bob", BOB_CSV.splitlines())
 
 
 def _mock_ffmpeg(monkeypatch, success: bool = True) -> None:
@@ -299,11 +297,11 @@ class TestBuildPcaFigure:
             pca.build_pca_figure("all", "", "sequences")
 
     def test_only_single_use_moves_raises(self, tmp_path, monkeypatch) -> None:
-        dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
-        (dirs["csv"] / "Alice.csv").write_text(
+        _redirect_dirs(monkeypatch, tmp_path)
+        seed_compiled_lines("Alice", (
             '"x.mkv:1",1,10,A,collar tie,"double","sprawl","T","None"\n'
             '"x.mkv:2",11,20,A,standing,"single","whizzer","None","T"'
-        )
+        ).splitlines())
 
         with pytest.raises(ValueError, match="Not enough move variety"):
             pca.build_pca_figure("all", "", "sequences")
