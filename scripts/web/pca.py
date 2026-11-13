@@ -40,6 +40,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from pydantic import BaseModel
 
+from scripts import storage
 from scripts.helpers import (
     COL_END_TIME,
     COL_ADJUSTED_NET_POINTS,
@@ -49,9 +50,7 @@ from scripts.helpers import (
     FirstPrincipalComponent,
     GenerateMoveMatrix,
     GetVideoCodecs,
-    MakeFormattedDataFrame,
     clips_dir,
-    csv_dir,
     taged_dir,
     tmp_dir,
 )
@@ -88,7 +87,7 @@ def _sanitize(name: str) -> str:
 
 
 def _load_scoped_data(scope: PcaScope, name: str) -> pd.DataFrame:
-    """Load and concatenate wrestler CSVs, filtered by the requested scope.
+    """Load and concatenate compiled wrestler data, filtered by scope.
 
     Args:
         scope: "all" (every wrestler), "team" (a roster team's members), or
@@ -98,29 +97,26 @@ def _load_scoped_data(scope: PcaScope, name: str) -> pd.DataFrame:
     Returns:
         A concatenated DataFrame of all matching sequences (index = the Origin
         string "video.mkv:chap", with an added "wrestler" column holding the
-        CSV stem). May be empty.
+        wrestler name). May be empty.
     """
-    # Single-wrestler fast path: load only the requested CSV.
+    # Single-wrestler fast path: load only the requested wrestler.
     if scope == "wrestler":
         wrestler: str = name.strip()
-        target: Path = csv_dir / f"{wrestler}.csv"
-        if target.is_file():
-            data: pd.DataFrame = MakeFormattedDataFrame(target)
-            data["wrestler"] = wrestler
-            return data
-        return pd.DataFrame()
+        try:
+            data: pd.DataFrame = storage.load_wrestler_frame(wrestler)
+        except FileNotFoundError:
+            return pd.DataFrame()
+        data["wrestler"] = wrestler
+        return data
 
-    # All / team scope: load every CSV, then filter.
+    # All / team scope: load every compiled wrestler, then filter.
     frames: list[pd.DataFrame] = []
-    for csv_path in sorted(csv_dir.glob("*.csv")):
-        if csv_path.name == "UNKNOWN.csv":
-            continue
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_path)
-        df["wrestler"] = csv_path.stem
+    for wrestler, df in storage.load_all_frames().items():
+        df["wrestler"] = wrestler
         frames.append(df)
     if not frames:
         return pd.DataFrame()
-    data = pd.concat(frames)
+    data: pd.DataFrame = pd.concat(frames)
     if scope == "team":
         roster: Any = load_roster()
         members: set[str] = set(roster.teams.get(name.strip(), []))

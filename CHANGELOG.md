@@ -6,8 +6,22 @@ changes bump the version in the same commit.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-13
+
+### Added
+
+- `/readyz` now reports a `database` check alongside data root, config, and
+  ffmpeg.
+
 ### Changed
 
+- Compiled wrestler sequences now live in a single SQLite database at
+  `stats/wrestler_data/matstat.db` instead of per-wrestler CSV files. The
+  schema is created on startup; running Tabulate Sequences rebuilds every
+  wrestler's rows in one transaction. Existing CSV files are left in place as a
+  rollback snapshot but are no longer read.
+- Team Evaluation reports list wrestler names under **Source files** and
+  describe **Compiled points** as stored values from the compiled database.
 - Log Match and Review & Fix pair every sequence detail on its own row
   (tie/opponent tie, moves, scores) with equal-height lists, so a hidden
   opponent half no longer shifts the middle columns. Opponent columns are now

@@ -8,6 +8,8 @@ import pytest
 
 sys.path.append(str(Path(__file__).parent.parent))
 
+from conftest import seed_compiled_lines
+
 from scripts.web import clips, search
 from scripts.web.query import QuerySpec, selected_wrestlers
 
@@ -18,14 +20,9 @@ _CSV_ROWS: list[str] = [
 ]
 
 
-def _seed(tmp_path: Path, monkeypatch) -> Path:
-    """Write one wrestler CSV and point search/clips at it."""
-    csv_path: Path = tmp_path / "csv"
-    csv_path.mkdir(parents=True, exist_ok=True)
-    (csv_path / "Alice.csv").write_text("\n".join(_CSV_ROWS) + "\n")
-    monkeypatch.setattr(search, "csv_dir", csv_path)
-    monkeypatch.setattr(clips, "csv_dir", csv_path)
-    return csv_path
+def _seed() -> None:
+    """Store one wrestler's compiled rows in the test database."""
+    seed_compiled_lines("Alice", _CSV_ROWS)
 
 
 class TestQuerySpec:
@@ -73,7 +70,7 @@ class TestApplyQuery:
     def test_search_and_find_return_identical_rows(
         self, tmp_path, monkeypatch
     ) -> None:
-        _seed(tmp_path, monkeypatch)
+        _seed()
         spec: QuerySpec = QuerySpec(
             wrestlers=["Alice"],
             attack_mode="Attacking",
@@ -89,7 +86,7 @@ class TestApplyQuery:
     def test_substring_is_default_and_exact_is_opt_in(
         self, tmp_path, monkeypatch
     ) -> None:
-        _seed(tmp_path, monkeypatch)
+        _seed()
 
         substring: list[dict[str, Any]] = search.execute_search(
             QuerySpec(wrestlers=["Alice"], team_move="dou")
@@ -103,7 +100,7 @@ class TestApplyQuery:
         assert exact == []
 
     def test_opponent_tie_filter(self, tmp_path, monkeypatch) -> None:
-        _seed(tmp_path, monkeypatch)
+        _seed()
 
         rows: list[dict[str, Any]] = search.execute_search(
             QuerySpec(wrestlers=["Alice"], opp_tie="front headlock")
@@ -112,7 +109,7 @@ class TestApplyQuery:
         assert [row["origin"] for row in rows] == ["a.mkv:2"]
 
     def test_origins_are_exact_and_ordered(self, tmp_path, monkeypatch) -> None:
-        _seed(tmp_path, monkeypatch)
+        _seed()
         spec: QuerySpec = QuerySpec(
             wrestlers=["Alice"],
             origins=["b.mkv:1", "a.mkv:1"],
@@ -124,7 +121,7 @@ class TestApplyQuery:
         assert list(frame.index) == ["b.mkv:1", "a.mkv:1"]
 
     def test_unknown_origin_raises(self, tmp_path, monkeypatch) -> None:
-        _seed(tmp_path, monkeypatch)
+        _seed()
 
         with pytest.raises(ValueError, match="Unknown origin"):
             clips.find_with_query(
@@ -132,7 +129,7 @@ class TestApplyQuery:
             )
 
     def test_empty_spec_keeps_all_rows(self, tmp_path, monkeypatch) -> None:
-        _seed(tmp_path, monkeypatch)
+        _seed()
 
         rows: list[dict[str, Any]] = search.execute_search(
             QuerySpec(wrestlers=["Alice"])

@@ -1,6 +1,6 @@
 """Team Evaluation job for the web app — generate the multi-sheet Excel report.
 
-Ports ``TeamEvaluationWidget``: each wrestler CSV in stats/wrestler_data/ is
+Ports ``TeamEvaluationWidget``: every compiled wrestler in the SQLite store is
 loaded, its Initiation/Rates/Defense/Offense DataFrames are generated, and
 everything is written into a timestamped multi-sheet xlsx at stats/reports/.
 
@@ -27,6 +27,7 @@ import pandas as pd
 from openpyxl.styles import Alignment, Font
 from openpyxl.worksheet.worksheet import Worksheet
 
+from scripts import storage
 from scripts.helpers import (
     COL_MATCH_DATE,
     GenerateDefenseDF,
@@ -35,10 +36,8 @@ from scripts.helpers import (
     GenerateOffenseDF,
     GenerateRatesDF,
     GenerateTeamSummaryDF,
-    MakeFormattedDataFrame,
     MatchOutcomeConflictError,
     ValidateMatchOutcomes,
-    csv_dir,
     eval_dir,
 )
 from scripts.web import stats
@@ -79,13 +78,13 @@ _DEFINITIONS: list[tuple[str, str]] = [
 ]
 
 
-def _find_csv_files() -> list[Path]:
-    """List wrestler CSV files to process, excluding the UNKNOWN sentinel.
+def _find_wrestlers() -> list[str]:
+    """List wrestlers with compiled data, excluding the UNKNOWN sentinel.
 
     Returns:
-        The sorted CSV paths under csv_dir, minus UNKNOWN.csv.
+        The sorted wrestler names in the database, minus UNKNOWN.
     """
-    return sorted(p for p in csv_dir.glob("*.csv") if p.name != "UNKNOWN.csv")
+    return storage.list_wrestlers()
 
 
 def _write_section_labels(writer: pd.ExcelWriter, sheet_name: str) -> None:
@@ -245,7 +244,7 @@ def _read_me_rows(
         ("Matches", str(matches)),
         ("Earliest match date", date_range[0] or "n/a"),
         ("Latest match date", date_range[1] or "n/a"),
-        ("Source files", ", ".join(f"{name}.csv" for name in processed) or "n/a"),
+        ("Source files", ", ".join(processed) or "n/a"),
         (
             "Report scope",
             "Full roster. Team/date/result scope filters are not applied yet.",
@@ -263,7 +262,7 @@ def _capture_points_source(frames: dict[str, pd.DataFrame]) -> str:
         str(frame.attrs.get("points_source", "unknown")) for frame in frames.values()
     }
     if sources == {"stored"}:
-        return "Stored values from the compiled CSVs"
+        return "Stored values from the compiled database"
     if sources == {"computed_on_load"}:
         return "Computed on load (legacy 9-column CSVs)"
     return "Mixed stored and computed values"
@@ -321,12 +320,12 @@ def run_team_eval_job(ctx: JobContext) -> dict[str, Any]:
         Offense, and raw blocks.
 
     Raises:
-        ValueError: If no wrestler CSV files exist in csv_dir.
+        ValueError: If no compiled wrestler data exists in the database.
         MatchOutcomeConflictError: If any match has contradictory W/L results.
         RuntimeError: If the workbook cannot be written or moved into place.
     """
-    csv_files: list[Path] = _find_csv_files()
-    if not csv_files:
+    wrestler_names: list[str] = _find_wrestlers()
+    if not wrestler_names:
         raise ValueError(
             "No wrestler data files found in stats/wrestler_data/. "
             "Run Compile Stats first."
@@ -335,7 +334,7 @@ def run_team_eval_job(ctx: JobContext) -> dict[str, Any]:
     errors: list[str] = []
     processed: list[str] = []
     failed_sheets: list[str] = []
-    total: int = len(csv_files)
+    total: int = len(wrestler_names)
 
     try:
         eval_dir.mkdir(parents=True, exist_ok=True)
@@ -343,7 +342,7 @@ def run_team_eval_job(ctx: JobContext) -> dict[str, Any]:
         raise RuntimeError(f"Could not create report directory: {e}")
 
     frames: dict[str, pd.DataFrame] = {}
-    for i, csv_file in enumerate(csv_files):
+    for i, sheet_name in enumerate(wrestler_names):
         if ctx.cancelled:
             return {
                 "output": "",
@@ -354,9 +353,8 @@ def run_team_eval_job(ctx: JobContext) -> dict[str, Any]:
                 "partial": False,
                 "cancelled": True,
             }
-        sheet_name: str = csv_file.stem
         try:
-            frames[sheet_name] = MakeFormattedDataFrame(csv_file)
+            frames[sheet_name] = storage.load_wrestler_frame(sheet_name)
         except Exception as e:
             error_msg: str = f"Failed to process '{sheet_name}': {e}"
             logging.error(error_msg)

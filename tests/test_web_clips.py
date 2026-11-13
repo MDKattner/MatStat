@@ -10,7 +10,7 @@ import pytest
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from conftest import FakeContext
+from conftest import FakeContext, seed_compiled_lines
 
 from scripts.helpers import (
     COL_END_TIME,
@@ -28,14 +28,12 @@ CSV_ROW: str = '"v.mkv:1",0,6,A,collar tie,"double","sprawl","T","E"'
 def _redirect_dirs(monkeypatch, tmp_path: Path) -> dict[str, Path]:
     """Point the clips module's data dirs at a temp dir."""
     dirs: dict[str, Path] = {
-        "csv": tmp_path / "csv",
         "taged": tmp_path / "taged",
         "clips": tmp_path / "clips",
         "tmp": tmp_path / "tmp",
     }
     for directory in dirs.values():
         directory.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(clips, "csv_dir", dirs["csv"])
     monkeypatch.setattr(clips, "taged_dir", dirs["taged"])
     monkeypatch.setattr(clips, "clips_dir", dirs["clips"])
     monkeypatch.setattr(clips, "tmp_dir", dirs["tmp"])
@@ -45,13 +43,12 @@ def _redirect_dirs(monkeypatch, tmp_path: Path) -> dict[str, Path]:
 def _redirect_route_dirs(monkeypatch, tmp_path: Path) -> dict[str, Path]:
     """Redirect clips module dirs plus the web_app dirs the routes read."""
     dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
-    monkeypatch.setattr(web_app, "csv_dir", dirs["csv"])
     monkeypatch.setattr(web_app, "clips_dir", dirs["clips"])
     return dirs
 
 
 def _write_csv(dirs: dict[str, Path], name: str = "Alice", content: str = CSV_ROW) -> None:
-    (dirs["csv"] / f"{name}.csv").write_text(content)
+    seed_compiled_lines(name, content.splitlines())
 
 
 def _mock_ffmpeg(monkeypatch, success: bool = True) -> None:

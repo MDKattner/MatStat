@@ -41,7 +41,7 @@ function buildTabulateCard() {
     for (const [name, count] of Object.entries(wrestlers)) {
       const text = count > 0
         ? `\u2713 ${name}: ${count} sequences`
-        : `\u26A0 ${name}: 0 sequences (no file created)`;
+        : `\u26A0 ${name}: 0 sequences (nothing stored)`;
       resultsList.appendChild(el("li", { class: "seq-item", text }));
     }
     errorDisplay.replaceChildren();

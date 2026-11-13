@@ -10,11 +10,10 @@ import pytest
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from conftest import FakeContext
+from conftest import FakeContext, seed_compiled_lines
 
 from scripts.helpers import MatchOutcomeConflictError
 from scripts.web import app as web_app
-from scripts.web import stats
 from scripts.web import team_eval
 
 CSV_ROW: str = '"vid.mkv:1",0,6,A,collar tie,"double","sprawl","T","E"'
@@ -22,23 +21,19 @@ CSV_ROW2: str = '"vid.mkv:2",6,12,D,standing,"sprawl","sweep single","E","T"'
 
 
 def _redirect_dirs(monkeypatch, tmp_path: Path) -> dict[str, Path]:
-    """Point the team_eval and web_app data dirs at a temp dir."""
+    """Point the team_eval and web_app report dirs at a temp dir."""
     dirs: dict[str, Path] = {
-        "csv": tmp_path / "csv",
         "eval": tmp_path / "eval",
     }
     for directory in dirs.values():
         directory.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(team_eval, "csv_dir", dirs["csv"])
     monkeypatch.setattr(team_eval, "eval_dir", dirs["eval"])
-    monkeypatch.setattr(web_app, "csv_dir", dirs["csv"])
     monkeypatch.setattr(web_app, "eval_dir", dirs["eval"])
-    monkeypatch.setattr(stats, "csv_dir", dirs["csv"])
     return dirs
 
 
 def _write_csv(tmp_path: Path, name: str, content: str = CSV_ROW) -> None:
-    (tmp_path / "csv" / f"{name}.csv").write_text(content)
+    seed_compiled_lines(name, content.splitlines())
 
 
 def _report_path(tmp_path: Path) -> Path:
@@ -212,7 +207,16 @@ class TestRunTeamEvalJob:
     def test_per_file_error_keeps_others(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         _write_csv(tmp_path, "Alice")
-        _write_csv(tmp_path, "Broken", content='"v.mkv:1",abc,6,A,collar tie,"double","sprawl","T","E"')
+        _write_csv(tmp_path, "Broken", content=CSV_ROW)
+
+        real_load = team_eval.storage.load_wrestler_frame
+
+        def fake_load(name: str):
+            if name == "Broken":
+                raise ValueError("corrupt row")
+            return real_load(name)
+
+        monkeypatch.setattr(team_eval.storage, "load_wrestler_frame", fake_load)
 
         result: dict[str, Any] = team_eval.run_team_eval_job(FakeContext())
 
@@ -224,13 +228,13 @@ class TestRunTeamEvalJob:
             "Read Me", "Team Summary", "Match Outcomes", "Alice",
         ]
 
-    def test_no_csv_files_raises(self, tmp_path, monkeypatch) -> None:
+    def test_no_compiled_data_raises(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
 
         with pytest.raises(ValueError, match="No wrestler data files"):
             team_eval.run_team_eval_job(FakeContext())
 
-    def test_skips_unknown_csv(self, tmp_path, monkeypatch) -> None:
+    def test_skips_unknown(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         _write_csv(tmp_path, "UNKNOWN")
 
@@ -260,7 +264,7 @@ class TestReportReliability:
         assert fields["Wrestlers"] == "1"
         assert fields["Matches"] == "1"
         assert "Full roster" in fields["Report scope"]
-        assert "Alice.csv" in fields["Source files"]
+        assert fields["Source files"] == "Alice"
         assert "Win Rate" in fields
         assert "blank when no outcome" in fields["Win Rate"]
 
