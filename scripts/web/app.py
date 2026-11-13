@@ -1222,8 +1222,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 {watcher, pending}, return_when=asyncio.FIRST_COMPLETED
             )
             if watcher in done:
+                # Cancel the queue waiter without awaiting it: during client
+                # teardown a second cancellation can land in this await and
+                # leave anyio's cancel scope with a cancellation it cannot
+                # absorb.
                 pending.cancel()
-                await asyncio.gather(pending, return_exceptions=True)
                 message: dict[str, Any] = watcher.result()
                 if message.get("type") == "websocket.disconnect":
                     break
@@ -1235,6 +1238,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        # Do not await cleanup here: a cancellation that arrives during client
+        # teardown would otherwise turn into a plain CancelledError that
+        # anyio's cancel scope cannot absorb.
         watcher.cancel()
-        await asyncio.gather(watcher, return_exceptions=True)
         hub.unsubscribe(queue)
