@@ -4,7 +4,34 @@ All notable changes to MatStat are recorded here. The version lives in
 [`VERSION`](VERSION); releases are tagged `vMAJOR.MINOR.PATCH`, and packaging
 changes bump the version in the same commit.
 
-## [Unreleased]
+## [0.2.1] - 2026-11-14
+
+### Changed
+
+- Background jobs now run on daemon worker threads instead of a
+  `ThreadPoolExecutor`, so an abandoned job can never block interpreter exit
+  after uvicorn stops.
+- `ffprobe`, `mkvmerge`, and `mkvpropedit` calls are routed through the new
+  `scripts/processes.py` registry (`run_tracked`), which starts each tool in its
+  own session and registers it for shutdown.
+
+### Added
+
+- `MATSTAT_SHUTDOWN_GRACE` (seconds, default `10`) sets how long shutdown waits
+  for running jobs to cancel. Jobs still running at the deadline are logged by
+  id and kind and abandoned.
+- `kill -USR1 <pid>` dumps every thread's stack to stderr for diagnosing a
+  stalled job or shutdown.
+
+### Fixed
+
+- Stopping the server now always returns control to the shell. Shutdown cancels
+  jobs, kills tracked child processes, waits a bounded grace period, and a
+  watchdog forces the process to exit at grace plus five seconds. Previously a
+  job stuck in a step without a cancellation checkpoint (a SQLite compile
+  commit, `mkvpropedit`, `ffprobe`, or an openpyxl write) held
+  `lifespan.shutdown()` open forever, because uvicorn's
+  `--timeout-graceful-shutdown` only bounds connection handlers.
 
 ## [0.2.0] - 2026-11-13
 

@@ -15,6 +15,8 @@ from typing import Any, Callable, Literal, overload
 import numpy as np
 import pandas as pd
 
+from scripts.processes import run_tracked
+
 
 # ---- Constants ----
 
@@ -612,11 +614,9 @@ def GetVidDuration(path_to_vid: Path) -> int:
     ]
     logging.debug(f"Executing ffprobe command for duration: {ffprobe_cmd}")
     try:
-        duration_str: str = subprocess.run(ffprobe_cmd,
-                                           capture_output=True,
-                                           text=True,
-                                           check=True
-                                           ).stdout.strip()
+        duration_str: str = run_tracked(
+            ffprobe_cmd, check=True, description="ffprobe duration"
+        ).stdout.strip()
         duration: int = int(float(duration_str))
         logging.info(f"Video duration for '{path_to_vid}': {duration} seconds")
         return duration
@@ -644,8 +644,8 @@ def GetVideoCodecs(path_to_vid: Path) -> dict[str, str]:
             "-of", "csv=nw=1:nk=1",
             str(path_to_vid),
         ]
-        output: str = subprocess.run(
-            cmd, capture_output=True, text=True, check=True
+        output: str = run_tracked(
+            cmd, check=True, description="ffprobe codecs"
         ).stdout.strip()
         for line in output.splitlines():
             parts: list[str] = line.split(",")
@@ -716,11 +716,8 @@ def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str, str]:
         f"Executing ffprobe command for MakeNameAndCSV: {ffprobe_command}")
 
     try:
-        lines: list[str] = subprocess.run(
-            ffprobe_command,
-            capture_output=True,
-            text=True,
-            check=True
+        lines: list[str] = run_tracked(
+            ffprobe_command, check=True, description="ffprobe chapters"
         ).stdout.strip().splitlines()
     except subprocess.CalledProcessError as e:
         logging.error(f"MakeNameAndCSV ffprobe failed for '{path_to_vid}': {e}")

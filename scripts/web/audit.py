@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import shutil
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -28,6 +27,7 @@ from scripts.helpers import (
     taged_dir,
     tmp_dir,
 )
+from scripts.processes import run_tracked
 from scripts.web import configs, stats, tag
 from scripts.web.ffmpeg import FfmpegResult, run_ffmpeg
 from scripts.web.jobs import JobContext
@@ -61,9 +61,7 @@ def build_mkvpropedit_cmd(
 def _run_mkvpropedit(cmd: list[str]) -> tuple[bool, str]:
     """Run mkvpropedit, returning success and a human-readable message."""
     try:
-        completed = subprocess.run(
-            cmd, capture_output=True, text=True, check=False
-        )
+        completed = run_tracked(cmd, description="mkvpropedit")
     except OSError as e:
         return (False, str(e))
     if completed.returncode != 0:
