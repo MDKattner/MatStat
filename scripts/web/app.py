@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import faulthandler
 import logging
 import os
 import re
 import shutil
+import signal
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -50,12 +52,13 @@ from scripts.helpers import (
     taged_dir,
     untaged_dir,
 )
+from scripts.processes import terminate_active
 from scripts.web import audit, auth, clips, configs, pca, search, stats, tag, team_eval, transcode, trend
 from scripts.web.auth import LoginRequest
 from scripts.web.clips import BatchRequest, CombineRequest, FindRequest
 from scripts.web.configs import AppConfigUpdate, RosterUpdate
 from scripts.web.pca import PcaCompileRequest
-from scripts.web.jobs import Job, JobManager, JobContext
+from scripts.web.jobs import Job, JobManager, JobContext, RunningJob
 from scripts.web.query import QuerySpec, selected_wrestlers
 from scripts.web.stats import CompileRequest
 from scripts.web.tag import TagRequest
@@ -172,11 +175,121 @@ _AUTH_UI_MARKERS: list[tuple[str, str]] = [
 hub: EventHub = EventHub()
 job_manager: JobManager = JobManager(publish=hub.publish)
 
+# How long application shutdown waits for cancelled jobs before abandoning
+# them. Cancellable work (ffmpeg transcode, clip/compile loops) exits in well
+# under a second; a job still running at the deadline is stuck in a tool call
+# or a long write. Override with MATSTAT_SHUTDOWN_GRACE (seconds).
+_DEFAULT_SHUTDOWN_GRACE_SECONDS: float = 10.0
+# Extra room for uvicorn to close the server and return after the job wait.
+_SHUTDOWN_WATCHDOG_SLACK_SECONDS: float = 5.0
+# How often the async shutdown wait re-checks running jobs.
+_SHUTDOWN_POLL_INTERVAL: float = 0.05
+
+
+def _ReadShutdownGrace() -> float:
+    """Return the shutdown grace from ``MATSTAT_SHUTDOWN_GRACE`` (or 10 s)."""
+    raw: str = os.environ.get("MATSTAT_SHUTDOWN_GRACE", "").strip()
+    if not raw:
+        return _DEFAULT_SHUTDOWN_GRACE_SECONDS
+    try:
+        grace: float = float(raw)
+    except ValueError:
+        logging.warning(
+            f"Ignoring invalid MATSTAT_SHUTDOWN_GRACE={raw!r}; "
+            f"using {_DEFAULT_SHUTDOWN_GRACE_SECONDS:.0f}s"
+        )
+        return _DEFAULT_SHUTDOWN_GRACE_SECONDS
+    if grace <= 0:
+        logging.warning(
+            f"MATSTAT_SHUTDOWN_GRACE must be positive; "
+            f"using {_DEFAULT_SHUTDOWN_GRACE_SECONDS:.0f}s"
+        )
+        return _DEFAULT_SHUTDOWN_GRACE_SECONDS
+    return grace
+
+
+SHUTDOWN_GRACE_SECONDS: float = _ReadShutdownGrace()
+
+
+def _EnableStackDumps() -> None:
+    """Dump every thread's stack to stderr on ``kill -USR1 <pid>``.
+
+    A stalled shutdown has no traceback, so this turns "it just hangs" into a
+    usable stack dump in the terminal or the journal.
+    """
+    sig: signal.Signals | None = getattr(signal, "SIGUSR1", None)
+    if sig is None:
+        return
+    try:
+        faulthandler.register(sig, all_threads=True, chain=False)
+    except (OSError, ValueError, RuntimeError) as e:
+        logging.debug(f"Could not install SIGUSR1 stack dump handler: {e}")
+
+
+def _ArmShutdownWatchdog(grace: float) -> threading.Event:
+    """Force the process to exit if shutdown overruns ``grace``.
+
+    uvicorn's ``--timeout-graceful-shutdown`` bounds connection tasks only;
+    its ``lifespan.shutdown()`` call has no timeout. A job stuck in a tool
+    call would therefore keep the process (and the shell that started it)
+    waiting forever. The watchdog is the last-resort guarantee that stopping
+    the server always returns control.
+
+    Args:
+        grace: How long the app waits for jobs before abandoning them.
+
+    Returns:
+        An event to set once shutdown finishes normally, disarming the
+        watchdog.
+    """
+    cancelled: threading.Event = threading.Event()
+    limit: float = grace + _SHUTDOWN_WATCHDOG_SLACK_SECONDS
+
+    def _Watch() -> None:
+        if cancelled.wait(limit):
+            return
+        logging.error(
+            f"Shutdown did not finish within {limit:.1f}s; forcing exit. "
+            "Set MATSTAT_SHUTDOWN_GRACE to change the job wait."
+        )
+        logging.shutdown()
+        os._exit(130)
+
+    thread: threading.Thread = threading.Thread(
+        target=_Watch, name="matstat-shutdown-watchdog", daemon=True
+    )
+    thread.start()
+    return cancelled
+
+
+async def _WaitForJobs(grace: float) -> list[RunningJob]:
+    """Wait up to ``grace`` seconds for cancelled jobs, yielding to the loop.
+
+    Polling instead of calling ``JobManager.shutdown`` keeps the event loop
+    responsive, so uvicorn can still run its own teardown while jobs finish.
+
+    Args:
+        grace: Maximum time to wait.
+
+    Returns:
+        The jobs still running when the deadline expired (empty when idle).
+    """
+    loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+    deadline: float = loop.time() + grace
+    while True:
+        survivors: list[RunningJob] = job_manager.running_jobs()
+        if not survivors:
+            return []
+        if loop.time() >= deadline:
+            return survivors
+        await asyncio.sleep(_SHUTDOWN_POLL_INTERVAL)
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Bind the event hub to the running loop and wire the log bridge."""
     auth.check_configured()
+    _EnableStackDumps()
     hub.attach_loop(asyncio.get_running_loop())
     _attach_log_handler()
     storage.init_db()
@@ -189,7 +302,25 @@ async def lifespan(_app: FastAPI):
     logging.info("MatStat web server started.")
     yield
     logging.info("MatStat web server shutting down.")
-    job_manager.shutdown()
+    watchdog: threading.Event = _ArmShutdownWatchdog(SHUTDOWN_GRACE_SECONDS)
+    try:
+        job_manager.request_cancel()
+        job_manager.drop_queued()
+        # Kill ffmpeg/ffprobe/mkvmerge children first: a job blocked waiting
+        # on one of them returns as soon as the process group dies.
+        terminate_active()
+        survivors: list[RunningJob] = await _WaitForJobs(SHUTDOWN_GRACE_SECONDS)
+        if survivors:
+            logging.warning(
+                f"Shutdown grace ({SHUTDOWN_GRACE_SECONDS:.1f}s) expired; "
+                f"abandoning {len(survivors)} running job(s): "
+                + ", ".join(job.describe() for job in survivors)
+                + ". Their worker threads are daemons and will be killed "
+                "when the process exits."
+            )
+    finally:
+        job_manager.stop_workers()
+        watchdog.set()
 
 
 def _attach_log_handler() -> None:

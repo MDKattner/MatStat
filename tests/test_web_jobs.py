@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 sys.path.append(str(Path(__file__).parent.parent))
 
 from scripts.web.jobs import Job, JobContext, JobManager
@@ -112,8 +114,8 @@ class TestJobManager:
     def test_shutdown_cancels_running_job(self) -> None:
         """Shutdown must cancel jobs instead of joining them indefinitely.
 
-        Worker threads are non-daemon, so leaving a transcode running would
-        stall interpreter exit after the lifespan returned.
+        Worker threads are daemons, so even a job that ignores cancellation
+        cannot keep the process alive after the app lifespan returns.
         """
         manager: JobManager = JobManager()
         started: threading.Event = threading.Event()
@@ -132,3 +134,138 @@ class TestJobManager:
         job: Job | None = manager.get(job_id)
         assert job is not None
         assert job.status == "cancelled"
+
+    def test_shutdown_is_bounded_when_job_ignores_cancel(self, caplog) -> None:
+        """A job stuck in an uninterruptible unit must not hold shutdown open."""
+        manager: JobManager = JobManager()
+        started: threading.Event = threading.Event()
+
+        def stuck(ctx: JobContext) -> str:
+            started.set()
+            time.sleep(1.0)  # no cancel checkpoint
+            return "late"
+
+        job_id: str = manager.submit("compile_stats", stuck)
+        assert started.wait(timeout=5.0)
+
+        begin: float = time.monotonic()
+        survivors = manager.shutdown(grace=0.2)
+        elapsed: float = time.monotonic() - begin
+
+        assert elapsed < 0.9
+        assert [job.id for job in survivors] == [job_id]
+        assert survivors[0].kind == "compile_stats"
+        assert any("Abandoning running job" in r.message for r in caplog.records)
+
+    def test_workers_are_daemon_threads(self) -> None:
+        """Daemon workers cannot stall interpreter exit after uvicorn stops."""
+        manager: JobManager = JobManager()
+        started: threading.Event = threading.Event()
+        release: threading.Event = threading.Event()
+
+        def wait_job(ctx: JobContext) -> None:
+            started.set()
+            release.wait(timeout=5.0)
+
+        manager.submit("test", wait_job)
+        assert started.wait(timeout=5.0)
+
+        workers: list[threading.Thread] = [
+            t for t in threading.enumerate() if t.name.startswith("matstat-job-")
+        ]
+        assert workers
+        assert all(worker.daemon for worker in workers)
+
+        release.set()
+        manager.shutdown(grace=2.0)
+
+    def test_shutdown_drops_queued_jobs(self) -> None:
+        """Queued work is cancelled rather than run during shutdown."""
+        manager: JobManager = JobManager(max_workers=1)
+        started: threading.Event = threading.Event()
+        release: threading.Event = threading.Event()
+
+        def blocker(ctx: JobContext) -> None:
+            started.set()
+            release.wait(timeout=5.0)
+
+        manager.submit("blocker", blocker)
+        assert started.wait(timeout=5.0)
+        queued_id: str = manager.submit("queued", lambda ctx: "never")
+
+        manager.request_cancel()
+        dropped: int = manager.drop_queued()
+
+        assert dropped == 1
+        queued: Job | None = manager.get(queued_id)
+        assert queued is not None
+        assert queued.status == "cancelled"
+
+        release.set()
+        manager.shutdown(grace=2.0)
+
+    def test_running_jobs_reports_kind_and_elapsed(self) -> None:
+        """Shutdown diagnostics name the job that is blocking the wait."""
+        manager: JobManager = JobManager()
+        started: threading.Event = threading.Event()
+        release: threading.Event = threading.Event()
+
+        def blocker(ctx: JobContext) -> None:
+            started.set()
+            release.wait(timeout=5.0)
+
+        job_id: str = manager.submit("team_eval", blocker)
+        assert started.wait(timeout=5.0)
+
+        running = manager.running_jobs()
+        assert [(job.id, job.kind) for job in running] == [(job_id, "team_eval")]
+        assert running[0].elapsed >= 0.0
+        assert job_id in running[0].describe()
+
+        release.set()
+        manager.shutdown(grace=2.0)
+
+    def test_submit_after_shutdown_raises(self) -> None:
+        """No new work is accepted once the app is shutting down."""
+        manager: JobManager = JobManager()
+        manager.shutdown(grace=0.1)
+
+        with pytest.raises(RuntimeError):
+            manager.submit("test", lambda ctx: None)
+
+    def test_reset_reopens_manager(self) -> None:
+        """A fresh lifespan can reuse the manager after shutdown."""
+        manager: JobManager = JobManager()
+        manager.shutdown(grace=0.1)
+        manager.reset()
+
+        job_id: str = manager.submit("test", lambda ctx: "ok")
+        job: Job = _wait_for_terminal(job_id, manager)
+        assert job.status == "done"
+
+        manager.shutdown(grace=0.5)
+
+    def test_lifespan_shutdown_is_bounded(self, monkeypatch) -> None:
+        """The real app lifespan returns even with a stuck job."""
+        import asyncio
+
+        from scripts.web import app as webapp
+
+        monkeypatch.setattr(webapp, "SHUTDOWN_GRACE_SECONDS", 0.2)
+        # Skip the auth fail-fast: this test only exercises shutdown.
+        monkeypatch.setattr(webapp.auth, "check_configured", lambda: None)
+        started: threading.Event = threading.Event()
+
+        def stuck(ctx: JobContext) -> None:
+            started.set()
+            time.sleep(2.0)
+
+        async def run_lifespan() -> float:
+            begin: float = time.monotonic()
+            async with webapp.lifespan(webapp.app):
+                webapp.job_manager.submit("stuck", stuck)
+                assert started.wait(timeout=5.0)
+            return time.monotonic() - begin
+
+        elapsed: float = asyncio.run(run_lifespan())
+        assert elapsed < 1.5

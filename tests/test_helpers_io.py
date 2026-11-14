@@ -48,7 +48,7 @@ class TestMakeNameAndCSV:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, FAKE_CHAPTER_CSV, "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         name, match_date, data = MakeNameAndCSV(Path("fake.mkv"))
         assert name == "Test Wrestler"
         assert match_date == ""
@@ -62,7 +62,7 @@ class TestMakeNameAndCSV:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, csv_output, "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         name, match_date, data = MakeNameAndCSV(Path("dated.mkv"))
         assert name == "Dated Wrestler"
         assert match_date == "2026-08-01"
@@ -77,7 +77,7 @@ class TestMakeNameAndCSV:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, csv_output, "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         name, match_date, data = MakeNameAndCSV(Path("multi.mkv"))
         assert name == "Multi Wrestler"
         assert match_date == ""
@@ -93,7 +93,7 @@ class TestMakeNameAndCSV:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, csv_output, "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         name, match_date, data = MakeNameAndCSV(Path("filter.mkv"))
         lines = data.strip().split("\n")
         assert len(lines) == 1
@@ -103,7 +103,7 @@ class TestMakeNameAndCSV:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             raise subprocess.CalledProcessError(1, "ffprobe")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         name, match_date, data = MakeNameAndCSV(Path("fail.mkv"))
         assert name == ""
         assert match_date == ""
@@ -113,7 +113,7 @@ class TestMakeNameAndCSV:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, "", "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         name, match_date, data = MakeNameAndCSV(Path("empty.mkv"))
         assert name == ""
         assert match_date == ""
@@ -127,7 +127,7 @@ class TestMakeNameAndCSV:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, csv_output, "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         name, match_date, data = MakeNameAndCSV(Path("only_empty.mkv"))
         assert name == "Only Empty"
         assert match_date == ""
@@ -143,7 +143,7 @@ class TestGetVidDuration:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, "123.456", "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         result: int = GetVidDuration(Path("fake.mkv"))
         assert result == 123
 
@@ -151,7 +151,7 @@ class TestGetVidDuration:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, "0.0", "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         result: int = GetVidDuration(Path("fake.mkv"))
         assert result == 0
 
@@ -159,7 +159,7 @@ class TestGetVidDuration:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             raise subprocess.CalledProcessError(1, "ffprobe")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         result: int = GetVidDuration(Path("fake.mkv"))
         assert result == 0
 
@@ -167,7 +167,7 @@ class TestGetVidDuration:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, "not-a-number", "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         result: int = GetVidDuration(Path("fake.mkv"))
         assert result == 0
 

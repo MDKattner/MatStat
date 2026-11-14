@@ -111,7 +111,7 @@ class TestHelpers:
         def mock_run(cmd: str, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, "0,h264\n1,aac", "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         result: dict[str, str] = GetVideoCodecs(Path("fake.mkv"))
         assert result == {"video": "h264", "audio": "aac"}
 

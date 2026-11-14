@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
@@ -16,6 +16,9 @@ JobStatus = Literal["queued", "running", "done", "failed", "cancelled"]
 # submit/finish call.  Prevents unbounded growth of _jobs / _cancel_events
 # during long server uptimes.
 _JOB_PRUNE_TTL: float = 300.0
+
+# How often shutdown re-checks whether a cancelled job has returned.
+_IDLE_POLL_INTERVAL: float = 0.05
 
 # Event dicts published by the manager (see ws.py for the wire format):
 #   {"type": "job_started", "id", "kind", "status", "message"}
@@ -38,10 +41,23 @@ class Job:
     created_at: float = field(default_factory=time.time)
 
 
+@dataclass(frozen=True)
+class RunningJob:
+    """A job that is still executing, with how long it has been running."""
+
+    id: str
+    kind: str
+    elapsed: float
+
+    def describe(self) -> str:
+        """Return a short human-readable label for logs."""
+        return f"{self.id} ({self.kind}, {self.elapsed:.1f}s)"
+
+
 class JobContext:
     """Passed to job functions so they can report progress and cancellation."""
 
-    def __init__(self, manager: "JobManager", job_id: str) -> None:
+    def __init__(self, manager: JobManager, job_id: str) -> None:
         self._manager: JobManager = manager
         self.job_id: str = job_id
 
@@ -65,20 +81,32 @@ class JobContext:
 
 
 class JobManager:
-    """Run background jobs in a thread pool and broadcast progress events.
+    """Run background jobs in daemon worker threads and broadcast progress.
 
     Each job runs in a worker thread and reports progress via a ``JobContext``.
     Event dicts are pushed to the ``publish`` callable, which the WebSocket hub
     subscribes to (see ``scripts.web.ws``).
+
+    Workers are daemon threads on purpose: at interpreter exit Python joins
+    non-daemon threads with no timeout, so a job stuck in a tool call would
+    keep the process alive after uvicorn finished shutting down. Shutdown
+    cancels what it can, waits a bounded grace period, then lets the daemons
+    die with the process.
     """
 
     def __init__(self, publish: EventPublisher | None = None, max_workers: int = 4) -> None:
         self._publish: EventPublisher = publish or (lambda _event: None)
         self._max_workers: int = max_workers
-        self._executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=max_workers)
+        self._queue: queue.Queue[tuple[str, Callable[[JobContext], Any]] | None] = (
+            queue.Queue()
+        )
+        self._workers: list[threading.Thread] = []
+        self._workers_lock: threading.Lock = threading.Lock()
         self._jobs: dict[str, Job] = {}
         self._cancel_events: dict[str, threading.Event] = {}
+        self._running: dict[str, float] = {}
         self._lock: threading.Lock = threading.Lock()
+        self._closed: bool = False
 
     def submit(
         self,
@@ -100,11 +128,16 @@ class JobManager:
 
         Returns:
             The job id (short hex), used to poll or cancel the job.
+
+        Raises:
+            RuntimeError: If the manager has been shut down (the app is exiting).
         """
         self._prune_finished()
         job_id = job_id or uuid.uuid4().hex[:8]
         job: Job = Job(id=job_id, kind=kind, message=message)
         with self._lock:
+            if self._closed:
+                raise RuntimeError("Job manager is shut down")
             self._jobs[job_id] = job
             self._cancel_events[job_id] = threading.Event()
 
@@ -115,8 +148,51 @@ class JobManager:
             "status": "queued",
             "message": message,
         })
-        self._executor.submit(self._run, job_id, fn)
+        self._ensure_workers()
+        self._queue.put((job_id, fn))
         return job_id
+
+    def _ensure_workers(self) -> None:
+        """Start daemon workers up to ``max_workers`` (replacing dead ones)."""
+        work_queue: queue.Queue[tuple[str, Callable[[JobContext], Any]] | None] = (
+            self._queue
+        )
+        with self._workers_lock:
+            self._workers = [t for t in self._workers if t.is_alive()]
+            while len(self._workers) < self._max_workers:
+                index: int = len(self._workers) + 1
+                thread: threading.Thread = threading.Thread(
+                    target=self._worker,
+                    args=(work_queue,),
+                    name=f"matstat-job-{index}",
+                    daemon=True,
+                )
+                self._workers.append(thread)
+                thread.start()
+
+    def _worker(
+        self,
+        work_queue: queue.Queue[tuple[str, Callable[[JobContext], Any]] | None],
+    ) -> None:
+        """Consume queued jobs until a ``None`` sentinel tells the worker to stop.
+
+        The queue is passed in so a worker keeps serving the queue it was
+        started with even if ``reset`` swaps in a fresh one.
+        """
+        while True:
+            item: tuple[str, Callable[[JobContext], Any]] | None = work_queue.get()
+            if item is None:
+                work_queue.task_done()
+                return
+            job_id, fn = item
+            with self._lock:
+                self._running[job_id] = time.monotonic()
+            try:
+                self._run(job_id, fn)
+            finally:
+                with self._lock:
+                    self._running.pop(job_id, None)
+                work_queue.task_done()
 
     def _run(self, job_id: str, fn: Callable[[JobContext], Any]) -> None:
         ctx: JobContext = JobContext(self, job_id)
@@ -146,6 +222,113 @@ class JobManager:
             return False
         event.set()
         return True
+
+    def request_cancel(self) -> None:
+        """Request cancellation of every known job (used during shutdown)."""
+        with self._lock:
+            events: list[threading.Event] = list(self._cancel_events.values())
+        for event in events:
+            event.set()
+
+    def running_jobs(self) -> list[RunningJob]:
+        """Return running jobs, longest-running first.
+
+        Queued jobs are not included; ``drop_queued`` cancels those instead.
+        """
+        now: float = time.monotonic()
+        with self._lock:
+            running: list[RunningJob] = [
+                RunningJob(
+                    id=job_id,
+                    kind=self._jobs[job_id].kind if job_id in self._jobs else "unknown",
+                    elapsed=now - started_at,
+                )
+                for job_id, started_at in self._running.items()
+            ]
+        return sorted(running, key=lambda job: job.elapsed, reverse=True)
+
+    def drop_queued(self, *, notify: bool = True) -> int:
+        """Remove queued jobs without running them.
+
+        Args:
+            notify: Publish a ``job_finished`` event for each dropped job so a
+                connected browser marks it cancelled instead of waiting forever.
+
+        Returns:
+            The number of jobs dropped.
+        """
+        dropped: int = 0
+        while True:
+            try:
+                item: tuple[str, Callable[[JobContext], Any]] | None = (
+                    self._queue.get_nowait()
+                )
+            except queue.Empty:
+                return dropped
+            if item is not None:
+                job_id, _fn = item
+                dropped += 1
+                if notify:
+                    self._finish(job_id, status="cancelled", message="Cancelled")
+            self._queue.task_done()
+
+    def wait_idle(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` seconds for every running job to return.
+
+        Returns:
+            True when no job is running, False when the timeout expired first.
+        """
+        deadline: float = time.monotonic() + timeout
+        while True:
+            with self._lock:
+                if not self._running:
+                    return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_IDLE_POLL_INTERVAL)
+
+    def stop_workers(self) -> None:
+        """Ask idle workers to exit; running workers die with the process."""
+        with self._workers_lock:
+            workers: list[threading.Thread] = list(self._workers)
+            self._workers = []
+        for _ in workers:
+            self._queue.put(None)
+        for worker in workers:
+            worker.join(timeout=0.2)
+
+    def shutdown(self, grace: float = 10.0) -> list[RunningJob]:
+        """Cancel outstanding jobs, wait up to ``grace``, then stop the pool.
+
+        Returns:
+            The jobs that were still running when the grace period expired.
+        """
+        self._closed = True
+        self.request_cancel()
+        self.drop_queued()
+        idle: bool = self.wait_idle(grace)
+        survivors: list[RunningJob] = [] if idle else self.running_jobs()
+        for job in survivors:
+            logging.warning(f"Abandoning running job {job.describe()}.")
+        self.stop_workers()
+        return survivors
+
+    def reset(self) -> None:
+        """Recreate the worker pool after a previous shutdown.
+
+        Used by the app lifespan so the manager survives repeated
+        startup/shutdown cycles (e.g. across test client instances). A fresh
+        queue means sentinels left behind by a worker that is still finishing
+        an abandoned job can never be consumed by the next pool.
+        """
+        self.drop_queued(notify=False)
+        self.stop_workers()
+        self._queue = queue.Queue()
+        with self._lock:
+            self._jobs.clear()
+            self._cancel_events.clear()
+            self._running.clear()
+        self._closed = False
 
     def _is_cancelled(self, job_id: str) -> bool:
         with self._lock:
@@ -210,31 +393,3 @@ class JobManager:
             "error": error,
         })
         self._prune_finished()
-
-    def shutdown(self) -> None:
-        """Cancel outstanding jobs and stop the worker pool.
-
-        ``ThreadPoolExecutor`` worker threads are non-daemon, so the
-        interpreter joins them at exit. Leaving a transcode or compile running
-        would hang the process *after* uvicorn's lifespan returns, which looks
-        like the same stalled shutdown from the outside. Set every cancel
-        event first so jobs stop at their next checkpoint (``run_ffmpeg``
-        polls it and kills the child process), then wait for the pool.
-        """
-        with self._lock:
-            events: list[threading.Event] = list(self._cancel_events.values())
-        for event in events:
-            event.set()
-        self._executor.shutdown(wait=True, cancel_futures=True)
-
-    def reset(self) -> None:
-        """Recreate the thread pool after a previous shutdown.
-
-        Used by the app lifespan so the manager survives repeated
-        startup/shutdown cycles (e.g. across test client instances).
-        """
-        self._executor.shutdown(wait=False, cancel_futures=True)
-        self._executor = ThreadPoolExecutor(max_workers=self._max_workers)
-        with self._lock:
-            self._jobs.clear()
-            self._cancel_events.clear()

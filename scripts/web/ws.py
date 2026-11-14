@@ -48,9 +48,15 @@ class EventHub:
 
     def publish(self, event: dict[str, Any]) -> None:
         """Queue an event for every connected client (thread-safe)."""
-        if self._loop is None:
+        loop: asyncio.AbstractEventLoop | None = self._loop
+        if loop is None:
             return
-        self._loop.call_soon_threadsafe(self._dispatch, event)
+        try:
+            loop.call_soon_threadsafe(self._dispatch, event)
+        except RuntimeError:
+            # The loop is already closed (late job/log event during shutdown);
+            # there is no client left to deliver it to.
+            pass
 
     def _dispatch(self, event: dict[str, Any]) -> None:
         for queue in list(self._queues):
