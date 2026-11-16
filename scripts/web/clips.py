@@ -10,6 +10,7 @@ JobManager thread; progress is reported via the JobContext.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 from datetime import datetime
@@ -43,6 +44,21 @@ _REEL_RE: re.Pattern[str] = re.compile(
     r"^(?P<base>.+)_\d{8}-\d{6}(?:-\d+)?\.mkv$"
 )
 
+_REEL_STAMP_RE: re.Pattern[str] = re.compile(
+    r"_(?P<stamp>\d{8}-\d{6})(?:-(?P<suffix>\d+))?\.mkv$"
+)
+
+
+def _reel_version_key(path: Path) -> tuple[int, int]:
+    """Sort key from a reel's timestamp and numeric suffix (not the raw name)."""
+    match: re.Match[str] | None = _REEL_STAMP_RE.search(path.name)
+    if match is None:
+        return (0, 0)
+    return (
+        int(match.group("stamp").replace("-", "")),
+        int(match.group("suffix") or 0),
+    )
+
 _RE_ENCODE_ARGS: list[str] = [
     "-vf", "scale=1280:720,setsar=1",
     "-c:v", "libx264",
@@ -70,8 +86,10 @@ class BatchRequest(QuerySpec):
 
 
 def _sanitize(name: str) -> str:
-    """Replace characters that are awkward in file names."""
-    return name.replace(" ", "_").replace("/", "_")
+    """Replace characters that are unsafe in file names or URL path segments."""
+    for char in (" ", "/", "\\", ":", ","):
+        name = name.replace(char, "_")
+    return name
 
 
 def build_extract_cmd(
@@ -107,7 +125,7 @@ def build_extract_cmd(
         codec_map: dict[str, str] = codecs or {}
         vcodec: str = codec_map.get("video", "")
         acodec: str = codec_map.get("audio", "")
-        if vcodec == "h264" and acodec == "aac":
+        if vcodec == "h264" and acodec in ("", "aac"):
             cmd += ["-c", "copy", "-avoid_negative_ts", "1"]
             logging.debug(f"Using stream copy for {input_path.name}")
         else:
@@ -227,14 +245,26 @@ def matches_to_json(filtered: pd.DataFrame) -> list[dict[str, Any]]:
 
 
 def _unique_reel_path(clips_dir: Path, base: str) -> Path:
-    """Return a timestamped reel path that does not collide with an existing file."""
+    """Reserve a unique timestamped reel path (created atomically).
+
+    The placeholder file is created with ``O_CREAT | O_EXCL`` so two concurrent
+    jobs in the same second cannot pick the same name; ffmpeg later overwrites
+    it in place.
+    """
     stamp: str = datetime.now().strftime("%Y%m%d-%H%M%S")
-    candidate: Path = clips_dir / f"{base}_{stamp}.mkv"
-    suffix: int = 1
-    while candidate.exists():
-        candidate = clips_dir / f"{base}_{stamp}-{suffix}.mkv"
-        suffix += 1
-    return candidate
+    suffix: int = 0
+    while True:
+        name: str = (
+            f"{base}_{stamp}.mkv" if suffix == 0 else f"{base}_{stamp}-{suffix}.mkv"
+        )
+        candidate: Path = clips_dir / name
+        try:
+            fd: int = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            suffix += 1
+            continue
+        os.close(fd)
+        return candidate
 
 
 def _update_latest_pointer(clips_dir: Path, base: str, output: Path) -> str | None:
@@ -269,7 +299,7 @@ def list_reels() -> list[dict[str, Any]]:
 
     result: list[dict[str, Any]] = []
     for base, files in sorted(groups.items()):
-        files.sort(key=lambda p: p.name, reverse=True)
+        files.sort(key=_reel_version_key, reverse=True)
         latest_path: Path = clips_dir / f"{base}_latest.mkv"
         has_latest: bool = latest_path.exists()
         target: str = latest_path.resolve().name if has_latest else ""
@@ -322,67 +352,75 @@ def _build_reel(
     segment_files: list[Path] = []
     has_errors: bool = False
     total: int = len(filtered)
+    output_path: Path | None = None
+    succeeded: bool = False
+    codec_cache: dict[Path, dict[str, str]] = {}
 
-    for i, (index, row) in enumerate(filtered.iterrows()):
-        if ctx.cancelled:
-            shutil.rmtree(clip_dir, ignore_errors=True)
-            return None
+    try:
+        for i, (index, row) in enumerate(filtered.iterrows()):
+            if ctx.cancelled:
+                return None
 
-        origin_video_name: str = str(index).split(":")[0]
-        input_path: Path = taged_dir / origin_video_name
-        start_time: int = int(row[COL_START_TIME])
-        end_time: int = int(row[COL_END_TIME])
+            origin_video_name: str = str(index).split(":")[0]
+            input_path: Path = taged_dir / origin_video_name
+            start_time: int = int(row[COL_START_TIME])
+            end_time: int = int(row[COL_END_TIME])
 
-        ctx.report(
-            100.0 * (i + 1) / total,
-            f"Extracting clip {i + 1}/{total} from {origin_video_name}",
+            ctx.report(
+                100.0 * (i + 1) / total,
+                f"Extracting clip {i + 1}/{total} from {origin_video_name}",
+            )
+
+            if not input_path.is_file():
+                logging.warning(f"Source video not found: {input_path}")
+                has_errors = True
+                continue
+
+            segment_path: Path = clip_dir / f"segment_{i}.ts"
+            codecs: dict[str, str] | None = codec_cache.get(input_path)
+            if codecs is None:
+                codecs = GetVideoCodecs(input_path)
+                codec_cache[input_path] = codecs
+            cmd: list[str] = build_extract_cmd(
+                input_path, start_time, end_time, segment_path, use_stream_copy, codecs
+            )
+
+            result = run_ffmpeg(cmd, description=f"Extracting {origin_video_name}", cancel_event=ctx.cancel_event)
+            if not result.success or not segment_path.is_file():
+                has_errors = True
+                continue
+            segment_files.append(segment_path)
+
+        if not segment_files:
+            raise RuntimeError("No clips were successfully extracted.")
+
+        ctx.report(100, "Concatenating clips...")
+        base: str = (
+            f"{_sanitize(wrestler)}_{_sanitize(filter_type)}_{_sanitize(filter_item)}"
+        )
+        clips_dir.mkdir(parents=True, exist_ok=True)
+        output_path = _unique_reel_path(clips_dir, base)
+
+        list_file: Path = clip_dir / "mylist.txt"
+        list_file.write_text(
+            "".join(f"file '{seg.resolve()}'\n" for seg in segment_files)
         )
 
-        if not input_path.is_file():
-            logging.warning(f"Source video not found: {input_path}")
-            has_errors = True
-            continue
+        result = run_ffmpeg(build_concat_cmd(list_file, output_path), description="Concatenating clips", cancel_event=ctx.cancel_event)
 
-        segment_path: Path = clip_dir / f"segment_{i}.ts"
-        codecs: dict[str, str] = GetVideoCodecs(input_path)
-        cmd: list[str] = build_extract_cmd(
-            input_path, start_time, end_time, segment_path, use_stream_copy, codecs
-        )
+        if not result.success or not output_path.is_file():
+            raise RuntimeError(f"Concatenation failed: {result.message}")
 
-        result = run_ffmpeg(cmd, description=f"Extracting {origin_video_name}", cancel_event=ctx.cancel_event)
-        if not result.success or not segment_path.is_file():
-            has_errors = True
-            continue
-        segment_files.append(segment_path)
-
-    if not segment_files:
+        errors: list[str] = []
+        if has_errors:
+            errors.append("Some clips had errors and were skipped.")
+        latest: str | None = _update_latest_pointer(clips_dir, base, output_path)
+        succeeded = True
+        return (output_path.name, len(segment_files), errors, latest)
+    finally:
         shutil.rmtree(clip_dir, ignore_errors=True)
-        raise RuntimeError("No clips were successfully extracted.")
-
-    ctx.report(100, "Concatenating clips...")
-    base: str = (
-        f"{_sanitize(wrestler)}_{_sanitize(filter_type)}_{_sanitize(filter_item)}"
-    )
-    clips_dir.mkdir(parents=True, exist_ok=True)
-    output_path: Path = _unique_reel_path(clips_dir, base)
-
-    list_file: Path = clip_dir / "mylist.txt"
-    list_file.write_text(
-        "".join(f"file '{seg.resolve()}'\n" for seg in segment_files)
-    )
-
-    result = run_ffmpeg(build_concat_cmd(list_file, output_path), description="Concatenating clips", cancel_event=ctx.cancel_event)
-    shutil.rmtree(clip_dir, ignore_errors=True)
-
-    if not result.success or not output_path.is_file():
-        output_path.unlink(missing_ok=True)
-        raise RuntimeError(f"Concatenation failed: {result.message}")
-
-    errors: list[str] = []
-    if has_errors:
-        errors.append("Some clips had errors and were skipped.")
-    latest: str | None = _update_latest_pointer(clips_dir, base, output_path)
-    return (output_path.name, len(segment_files), errors, latest)
+        if output_path is not None and not succeeded:
+            output_path.unlink(missing_ok=True)
 
 
 def run_combine_clips_job(

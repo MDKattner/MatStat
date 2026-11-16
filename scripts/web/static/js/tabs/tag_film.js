@@ -15,6 +15,7 @@ import {
   fetchJson,
   filterList,
   formatClock,
+  loadConfig,
   pollJob,
   showToast,
   timeInput,
@@ -344,10 +345,7 @@ export function mountTagFilm(root) {
 
   async function loadConfigs() {
     try {
-      const { ok, body } = await fetchJson("/api/config");
-      if (!ok) {
-        throw new Error(`Config returned status ${body.status || "error"}`);
-      }
+      const body = await loadConfig();
       wrestlerNames = body.wrestlers || [];
       wrestlerList.setItems(wrestlerNames);
       wrestlerList.setTeams(body.teams || {});

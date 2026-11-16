@@ -167,6 +167,17 @@ class TestAppBoot:
             page.wait_for_timeout(100)
         assert errors == []
 
+    def test_search_wrestler_selector_uses_roster(
+        self, app_page: tuple[Any, list[str]]
+    ) -> None:
+        page, _errors = app_page
+        _open_tab(page, "search")
+        # The roster populates the selector even when the compiled database is
+        # still empty, matching Combine Clips.
+        items = page.locator("#tab-search .check-list li")
+        items.first.wait_for(state="attached")
+        assert items.count() > 1
+
 
 class TestDialogs:
     """Modal dialogs open and close without error."""

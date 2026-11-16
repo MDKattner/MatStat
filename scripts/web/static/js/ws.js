@@ -71,6 +71,15 @@ function open() {
  */
 export function onWs(type, handler) {
   (handlers[type] = handlers[type] || []).push(handler);
+  return () => offWs(type, handler);
+}
+
+/** Remove a previously registered handler. */
+export function offWs(type, handler) {
+  const list = handlers[type];
+  if (!list) return;
+  const index = list.indexOf(handler);
+  if (index !== -1) list.splice(index, 1);
 }
 
 /** Set a callback invoked with "online" | "connecting" | "offline". */

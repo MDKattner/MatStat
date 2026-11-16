@@ -242,9 +242,9 @@ def parse_compiled_rows(
 def swap_perspective(row: SequenceRow) -> SequenceRow:
     """Re-express one sequence from the opponent's perspective.
 
-    Mirrors ``SwapPerspectiveCSV``: flips attacking, swaps move/score lists,
-    reverses a colon-paired tie-up, negates net/adjusted points, and inverts
-    W/L. Origin, times, and match date are preserved.
+    Flips attacking, swaps move/score lists, reverses a colon-paired tie-up,
+    negates net/adjusted points, and inverts W/L. Origin, times, and match date
+    are preserved.
     """
     tie_pair: list[str] = row.tie_up.split(":")
     new_tie: str = ":".join(reversed(tie_pair)) if len(tie_pair) > 1 else row.tie_up
@@ -311,6 +311,23 @@ def init_db() -> None:
                     f"(expected {DB_SCHEMA_VERSION}); back up and remove "
                     f"{db_path} to rebuild it with Tabulate."
                 )
+
+
+def database_identity() -> tuple[tuple[str, int, int] | tuple[str, int], ...]:
+    """Return a cache key that changes whenever the compiled database changes.
+
+    WAL mode writes land in the ``-wal`` sidecar before a checkpoint, so the
+    main file's mtime alone is not a reliable invalidation signal.
+    """
+    parts: list[tuple[str, int, int] | tuple[str, int]] = []
+    for path in (db_path, Path(str(db_path) + "-wal")):
+        try:
+            stat = path.stat()
+        except OSError:
+            parts.append((str(path), 0))
+        else:
+            parts.append((str(path), stat.st_mtime_ns, stat.st_size))
+    return tuple(parts)
 
 
 def health() -> None:
@@ -414,6 +431,85 @@ def has_data() -> bool:
     return row is not None
 
 
+_SEQUENCE_COLUMNS: str = (
+    "s.origin, s.start_time, s.end_time, s.attacking, s.tie_up, "
+    "s.team_moves, s.opponent_moves, s.team_scores, s.opponent_scores, "
+    "s.net_points, s.adjusted_net_points, s.match_result, s.match_date"
+)
+
+
+def load_frames(names: Iterable[str] | None = None) -> dict[str, pd.DataFrame]:
+    """Load compiled frames for ``names`` (every wrestler when ``None``).
+
+    One read snapshot and one joined query load all requested sequences, so
+    callers that need several wrestlers avoid the old one-connection (and two
+    queries) per wrestler pattern. Wrestlers with no compiled rows still get an
+    empty frame, and names that do not exist are omitted.
+
+    Args:
+        names: The wrestler names to load, in output order. ``None`` loads
+            every compiled wrestler (excluding UNKNOWN), sorted by name.
+
+    Returns:
+        A dict mapping each requested and present name to its compiled frame.
+    """
+    ReloadScoringMap()
+    wanted: list[str] | None = None
+    if names is not None:
+        # De-duplicate while preserving the caller's order.
+        wanted = list(dict.fromkeys(str(name) for name in names))
+    requested: list[str] = []
+    with _connection() as connection:
+        connection.execute("BEGIN")
+        try:
+            if wanted is None:
+                requested = [
+                    str(row["name"])
+                    for row in connection.execute(
+                        "SELECT name FROM wrestlers WHERE name != ? ORDER BY name",
+                        ("UNKNOWN",),
+                    ).fetchall()
+                ]
+                rows = connection.execute(
+                    f"SELECT w.name AS wrestler_name, {_SEQUENCE_COLUMNS} "
+                    "FROM sequences s "
+                    "JOIN wrestlers w ON w.id = s.wrestler_id "
+                    "WHERE w.name != ? "
+                    "ORDER BY w.name, s.seq_order",
+                    ("UNKNOWN",),
+                ).fetchall()
+            else:
+                rows = []
+                if wanted:
+                    placeholders: str = ",".join("?" for _ in wanted)
+                    existing: set[str] = {
+                        str(row["name"])
+                        for row in connection.execute(
+                            f"SELECT name FROM wrestlers WHERE name IN ({placeholders})",
+                            tuple(wanted),
+                        ).fetchall()
+                    }
+                    requested = [name for name in wanted if name in existing]
+                    if requested:
+                        rows = connection.execute(
+                            f"SELECT w.name AS wrestler_name, {_SEQUENCE_COLUMNS} "
+                            "FROM sequences s "
+                            "JOIN wrestlers w ON w.id = s.wrestler_id "
+                            f"WHERE w.name IN ({placeholders}) "
+                            "ORDER BY w.name, s.seq_order",
+                            tuple(wanted),
+                        ).fetchall()
+        except Exception:
+            connection.execute("ROLLBACK")
+            raise
+        else:
+            connection.execute("COMMIT")
+    grouped: dict[str, list[sqlite3.Row]] = {name: [] for name in requested}
+    for row in rows:
+        grouped[str(row["wrestler_name"])].append(row)
+    return {name: _frame_from_rows(grouped[name]) for name in requested}
+
+
 def load_wrestler_frame(name: str) -> pd.DataFrame:
     """Load one wrestler's compiled sequences as a formatted DataFrame.
 
@@ -426,75 +522,17 @@ def load_wrestler_frame(name: str) -> pd.DataFrame:
     Raises:
         FileNotFoundError: If no compiled data exists for the wrestler.
     """
-    ReloadScoringMap()
-    with _connection() as connection:
-        connection.execute("BEGIN")
-        try:
-            wrestler = connection.execute(
-                "SELECT id FROM wrestlers WHERE name = ?", (name,)
-            ).fetchone()
-            if wrestler is None:
-                raise FileNotFoundError(
-                    f"No compiled data for {name}. Run Compile Stats first."
-                )
-            rows = connection.execute(
-                """
-                SELECT origin, start_time, end_time, attacking, tie_up,
-                       team_moves, opponent_moves, team_scores, opponent_scores,
-                       net_points, adjusted_net_points, match_result, match_date
-                FROM sequences
-                WHERE wrestler_id = ?
-                ORDER BY seq_order
-                """,
-                (int(wrestler["id"]),),
-            ).fetchall()
-        except Exception:
-            connection.execute("ROLLBACK")
-            raise
-        else:
-            connection.execute("COMMIT")
-    return _frame_from_rows(rows)
+    frames: dict[str, pd.DataFrame] = load_frames([name])
+    if name not in frames:
+        raise FileNotFoundError(
+            f"No compiled data for {name}. Run Compile Stats first."
+        )
+    return frames[name]
 
 
 def load_all_frames() -> dict[str, pd.DataFrame]:
     """Load every compiled wrestler, sorted by name, in one read snapshot."""
-    ReloadScoringMap()
-    frames: dict[str, pd.DataFrame] = {}
-    with _connection() as connection:
-        connection.execute("BEGIN")
-        try:
-            names = [
-                str(row["name"])
-                for row in connection.execute(
-                    "SELECT name FROM wrestlers WHERE name != ? ORDER BY name",
-                    ("UNKNOWN",),
-                ).fetchall()
-            ]
-            for name in names:
-                wrestler = connection.execute(
-                    "SELECT id FROM wrestlers WHERE name = ?", (name,)
-                ).fetchone()
-                if wrestler is None:
-                    continue
-                rows = connection.execute(
-                    """
-                    SELECT origin, start_time, end_time, attacking, tie_up,
-                           team_moves, opponent_moves, team_scores,
-                           opponent_scores, net_points, adjusted_net_points,
-                           match_result, match_date
-                    FROM sequences
-                    WHERE wrestler_id = ?
-                    ORDER BY seq_order
-                    """,
-                    (int(wrestler["id"]),),
-                ).fetchall()
-                frames[name] = _frame_from_rows(rows)
-        except Exception:
-            connection.execute("ROLLBACK")
-            raise
-        else:
-            connection.execute("COMMIT")
-    return frames
+    return load_frames()
 
 
 def _insert_rows(

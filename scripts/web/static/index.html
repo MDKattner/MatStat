@@ -154,8 +154,8 @@
 
   <div id="toast-root" class="toast-root" aria-live="polite"></div>
 
-  <script src="/static/vendor/hls.min.js"></script>
-  <script src="/static/vendor/plotly.min.js"></script>
+  <!-- hls.js and Plotly are loaded on demand by components.js so boot only
+       fetches the SPA shell; most pages never need either library. -->
   <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>

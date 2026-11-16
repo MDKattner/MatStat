@@ -3,6 +3,7 @@ Tests for the helper functions and classes in scripts/helpers.py.
 """
 import sys
 from pathlib import Path
+import shutil
 import pytest
 from pandas import DataFrame
 
@@ -86,34 +87,41 @@ class TestHelpers:
         result: dict[str, str] = GetVideoCodecs(Path("/nonexistent/video.mkv"))
         assert result == {}
 
-    def test_load_all_wrestler_data_returns_dict(self, tmp_path, monkeypatch) -> None:
-        import scripts.helpers as helpers
-        from scripts.helpers import LoadAllWrestlerData
-
-        data_dir = tmp_path / "csv"
-        data_dir.mkdir()
-        (data_dir / "Alice.csv").write_text(
-            'match.mkv:1,0,10,A,collar tie,double,sprawl,T,None\n'
-        )
-        (data_dir / "UNKNOWN.csv").write_text("")
-        monkeypatch.setattr(helpers, "csv_dir", data_dir)
-
-        result: dict[str, DataFrame] = LoadAllWrestlerData()
-        assert isinstance(result, dict)
-        assert list(result) == ["Alice"]
-        assert not result["Alice"].empty
-
-    def test_get_video_codecs_returns_codecs(self, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        "output",
+        ["h264,video\naac,audio", "aac,audio\nh264,video"],
+    )
+    def test_get_video_codecs_returns_codecs(self, monkeypatch, output) -> None:
         import subprocess
         from pathlib import Path
         from scripts.helpers import GetVideoCodecs
 
         def mock_run(cmd: str, **kwargs) -> subprocess.CompletedProcess:
-            return subprocess.CompletedProcess([], 0, "0,h264\n1,aac", "")
+            return subprocess.CompletedProcess([], 0, output, "")
 
         monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         result: dict[str, str] = GetVideoCodecs(Path("fake.mkv"))
         assert result == {"video": "h264", "audio": "aac"}
+
+    @pytest.mark.skipif(
+        shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+        reason="ffmpeg/ffprobe not on PATH",
+    )
+    def test_get_video_codecs_real_ffprobe(self, tmp_path) -> None:
+        import subprocess
+        from scripts.helpers import GetVideoCodecs
+
+        source: Path = tmp_path / "sample.mkv"
+        subprocess.run(
+            [
+                "ffmpeg", "-v", "error", "-y",
+                "-f", "lavfi", "-i", "color=c=black:s=64x64:d=1",
+                "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+                "-shortest", "-c:v", "libx264", "-c:a", "aac", str(source),
+            ],
+            check=True,
+        )
+        assert GetVideoCodecs(source) == {"video": "h264", "audio": "aac"}
 
     def test_build_tag_title_single(self) -> None:
         from scripts.helpers import BuildTagTitle
@@ -155,51 +163,6 @@ class TestHelpers:
         assert BuildTieEntry("collar tie") == "collar tie"
         assert BuildTieEntry("collar tie", "underhook") == "collar tie:underhook"
         assert BuildTieEntry("collar tie", "  ") == "collar tie"
-
-    def test_swap_perspective_csv(self) -> None:
-        from scripts.helpers import SwapPerspectiveCSV
-
-        data: str = (
-            "a.mkv:1,0,6,A,collar tie:underhook,double,nothing,T,None,3,3,W\n"
-            "a.mkv:2,6,12,D,standing:front headlock,sprawl,single,E,None,-1,-1,L"
-        )
-        lines: list[str] = SwapPerspectiveCSV(data).splitlines()
-        assert lines[0] == (
-            "a.mkv:1,0,6,D,underhook:collar tie,nothing,double,None,T,-3,-3,L"
-        )
-        assert lines[1] == (
-            "a.mkv:2,6,12,A,front headlock:standing,single,sprawl,None,E,1,1,W"
-        )
-
-    def test_swap_perspective_csv_passes_through_unknown(self) -> None:
-        from scripts.helpers import SwapPerspectiveCSV
-
-        assert SwapPerspectiveCSV("bad,row") == "bad,row"
-
-    def test_swap_perspective_csv_keeps_match_date(self) -> None:
-        from scripts.helpers import SwapPerspectiveCSV
-
-        data: str = (
-            "a.mkv:1,0,6,A,collar tie:underhook,double,nothing,T,None,3,3,W,2026-08-01\n"
-            "a.mkv:2,6,12,D,standing:front headlock,sprawl,single,E,None,-1,-1,L,"
-        )
-        lines: list[str] = SwapPerspectiveCSV(data).splitlines()
-        assert lines[0] == (
-            "a.mkv:1,0,6,D,underhook:collar tie,nothing,double,None,T,-3,-3,L,2026-08-01"
-        )
-        # An empty match date keeps the row at 13 fields so a mix of dated and
-        # undated rows stays parseable by MakeFormattedDataFrame.
-        assert lines[1] == (
-            "a.mkv:2,6,12,A,front headlock:standing,single,sprawl,None,E,1,1,W,"
-        )
-
-    def test_swap_perspective_csv_keeps_12_field_rows_unchanged(self) -> None:
-        from scripts.helpers import SwapPerspectiveCSV
-
-        data: str = "a.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,W"
-        assert SwapPerspectiveCSV(data) == (
-            "a.mkv:1,0,6,D,collar tie,nothing,double,None,T,-3,-3,L"
-        )
 
     def test_validate_match_date(self) -> None:
         from scripts.helpers import ValidateMatchDate

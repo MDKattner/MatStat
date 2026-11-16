@@ -173,14 +173,23 @@ def _existing_conflicts(wrestler_names: list[str]) -> list[MatchConflict]:
         Conflicts found in existing data; unreadable wrestlers are ignored here
         (their load errors are reported by the consumers).
     """
-    frames: dict[str, pd.DataFrame] = {}
-    for name in wrestler_names:
-        try:
-            frames[name] = storage.load_wrestler_frame(name)
-        except FileNotFoundError:
-            continue
-        except Exception as e:
-            logging.warning(f"Skipping conflict scan for '{name}': {e}")
+    frames: dict[str, pd.DataFrame]
+    try:
+        frames = storage.load_frames(wrestler_names)
+    except Exception as e:
+        # One unreadable wrestler should not block the conflict scan for the
+        # rest, so fall back to loading them individually.
+        logging.warning(f"Batch conflict scan failed ({e}); scanning individually")
+        frames = {}
+        for name in wrestler_names:
+            try:
+                frames[name] = storage.load_wrestler_frame(name)
+            except FileNotFoundError:
+                continue
+            except Exception as load_error:
+                logging.warning(
+                    f"Skipping conflict scan for '{name}': {load_error}"
+                )
     return ValidateMatchOutcomes(frames)
 
 

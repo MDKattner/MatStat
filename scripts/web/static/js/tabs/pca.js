@@ -13,6 +13,7 @@ import {
   ensurePreview,
   fetchJson,
   formatClock,
+  loadConfig,
   pollJob,
   showToast,
   videoPlayer,
@@ -341,8 +342,7 @@ export function mountPca(root) {
    */
   async function loadConfigs() {
     try {
-      const { ok, body } = await fetchJson("/api/config");
-      if (!ok) return;
+      const body = await loadConfig();
       teamSelect.replaceChildren();
       for (const name of Object.keys(body.teams || {})) {
         teamSelect.appendChild(el("option", { value: name, text: name }));

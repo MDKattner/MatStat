@@ -43,10 +43,10 @@ class QuerySpec(BaseModel):
     match_result: str = ""
     min_date: str = ""
     max_date: str = ""
-    min_points: int = -20
-    max_points: int = 20
-    min_raw_points: int = -20
-    max_raw_points: int = 20
+    min_points: int | None = None
+    max_points: int | None = None
+    min_raw_points: int | None = None
+    max_raw_points: int | None = None
     min_duration: int | None = None
     max_duration: int | None = None
     sort_by: str = ""
@@ -104,9 +104,11 @@ def apply_query(
         .opp_move_filter(spec.opp_move, exact=spec.move_match == "exact")
         .match_result_filter(spec.match_result)
         .date_range_filter(spec.min_date, spec.max_date)
-        .adjusted_net_points_filter(spec.min_points, spec.max_points)
-        .net_points_filter(spec.min_raw_points, spec.max_raw_points)
     )
+    if spec.min_points is not None or spec.max_points is not None:
+        qb.adjusted_net_points_filter(spec.min_points, spec.max_points)
+    if spec.min_raw_points is not None or spec.max_raw_points is not None:
+        qb.net_points_filter(spec.min_raw_points, spec.max_raw_points)
     if spec.min_duration is not None or spec.max_duration is not None:
         qb.duration_filter(spec.min_duration, spec.max_duration)
     sort_col: str | None = spec.sort_by.strip() or None

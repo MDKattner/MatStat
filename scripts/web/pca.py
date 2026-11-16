@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import threading
 from pathlib import Path
 from typing import Any, Literal
 
@@ -50,6 +51,7 @@ from scripts.helpers import (
     FirstPrincipalComponent,
     GenerateMoveMatrix,
     GetVideoCodecs,
+    cfg_dir,
     clips_dir,
     taged_dir,
     tmp_dir,
@@ -65,6 +67,26 @@ PcaLayout = Literal["sequences", "matches"]
 _MIN_OCCURRENCES: int = 3
 _MIN_OCCURRENCE_FRACTION: float = 0.05
 _STREAM_COPY_DEFAULT: bool = True
+
+# Figure responses are expensive (full matrix build + SVD) and the client
+# requests one per control change. Cache them against a database + roster
+# snapshot; a compile or roster edit changes the key and clears the cache.
+_PCA_CACHE_LOCK: threading.Lock = threading.Lock()
+_pca_cache: dict[tuple[str, str, str], dict[str, Any]] = {}
+_pca_cache_identity: tuple[Any, ...] | None = None
+
+
+def _figure_cache_identity() -> tuple[Any, ...]:
+    """Return a key that changes whenever the figure's inputs change."""
+    parts: list[Any] = list(storage.database_identity())
+    for path in (cfg_dir / "Wrestlers.json", cfg_dir / "Wrestlers.json.example"):
+        try:
+            stat = path.stat()
+        except OSError:
+            parts.append((str(path), 0))
+        else:
+            parts.append((str(path), stat.st_mtime_ns))
+    return tuple(parts)
 
 
 def _min_occurrences(n_rows: int) -> int:
@@ -167,11 +189,22 @@ def build_pca_figure(scope: PcaScope, name: str, layout: PcaLayout) -> dict[str,
         ValueError: If the scope has no sequence data or no moves survive the
             rare-move filter.
     """
+    cache_key: tuple[str, str, str] = (scope, name, layout)
+    identity: tuple[Any, ...] = _figure_cache_identity()
+    global _pca_cache_identity
+    with _PCA_CACHE_LOCK:
+        if _pca_cache_identity == identity:
+            cached: dict[str, Any] | None = _pca_cache.get(cache_key)
+            if cached is not None:
+                return dict(cached)
+
     df: pd.DataFrame = _load_scoped_data(scope, name)
     if df.empty:
         raise ValueError("No sequence data for the selected scope. Run Compile Stats first.")
 
-    videos: pd.Series = df.index.to_series().apply(lambda o: str(o).split(":")[0])
+    videos: pd.Series = pd.Series(
+        df.index.astype(str).str.split(":").str[0], index=df.index
+    )
 
     if layout == "matches":
         keys: pd.DataFrame = pd.DataFrame(
@@ -290,7 +323,7 @@ def build_pca_figure(scope: PcaScope, name: str, layout: PcaLayout) -> dict[str,
             "scaleratio": 1,
         },
     )
-    return {
+    result: dict[str, Any] = {
         "fig_json": fig.to_json(),
         "off_variance": float(off_ratio),
         "def_variance": float(def_ratio),
@@ -299,6 +332,12 @@ def build_pca_figure(scope: PcaScope, name: str, layout: PcaLayout) -> dict[str,
         "name": name,
         "layout": layout,
     }
+    with _PCA_CACHE_LOCK:
+        if identity != _pca_cache_identity:
+            _pca_cache.clear()
+            _pca_cache_identity = identity
+        _pca_cache[cache_key] = result
+    return dict(result)
 
 
 class PcaCompileItem(BaseModel):

@@ -161,6 +161,30 @@ class TestListTaggedVideos:
         assert videos[0]["name"] == "bad.mkv"
         assert videos[0]["sequences"] == []
 
+    def test_caches_unchanged_probes_and_invalidates_on_change(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        video = tmp_path / "taged" / "match.mkv"
+        video.write_bytes(b"old")
+        calls: list[Path] = []
+
+        def fake(path: Path) -> tuple[str, str, str]:
+            calls.append(Path(path))
+            return ("Alice", "", CSV_DATA)
+
+        monkeypatch.setattr(audit, "MakeNameAndCSV", fake)
+
+        first = audit.list_tagged_videos()
+        second = audit.list_tagged_videos()
+        assert first == second
+        assert len(calls) == 1
+
+        # A size change invalidates the cached entry.
+        video.write_bytes(b"new-content")
+        audit.list_tagged_videos()
+        assert len(calls) == 2
+
 
 class TestRunRetagJob:
     """Tests for audit.run_retag_job — the re-tag + recompile job body."""

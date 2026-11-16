@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -121,8 +122,59 @@ def _sequence_to_dict(chap: ChapterSequence) -> dict[str, Any]:
     }
 
 
+# Cached probe result per source identity, so the audit listing does not run
+# one ffprobe per video on every request. The key includes the file's size and
+# mtime, so any re-tag/edit invalidates the entry automatically. Entries whose
+# key is not seen during a scan are pruned, so the cache cannot grow without
+# bound as videos are added and removed.
+_probe_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
+_probe_lock: threading.Lock = threading.Lock()
+
+
+def _probe_identity(video_path: Path) -> tuple[str, int, int] | None:
+    """Return a cache key that changes whenever ``video_path`` is modified."""
+    try:
+        stat = video_path.stat()
+    except OSError:
+        return None
+    return (str(video_path.resolve()), stat.st_mtime_ns, stat.st_size)
+
+
+def _probe_video(video_path: Path) -> dict[str, Any]:
+    """Probe one tagged video and build its audit listing entry."""
+    name: str
+    match_date: str
+    csv_data: str
+    name, match_date, csv_data = MakeNameAndCSV(video_path)
+    wrestler: str
+    opponent: str | None
+    result: str
+    wrestler, opponent, result = ParseTaggedName(name)
+    sequences: list[dict[str, Any]] = []
+    for line in csv_data.splitlines():
+        chap: ChapterSequence = ChapterSequence.FromCSVRow(line)
+        if chap.start_time >= chap.end_time:
+            logging.warning(
+                f"Skipping malformed chapter in {video_path.name}: {line}"
+            )
+            continue
+        sequences.append(_sequence_to_dict(chap))
+    return {
+        "name": video_path.name,
+        "wrestler": wrestler,
+        "opponent": opponent or "",
+        "result": result,
+        "match_date": match_date,
+        "sequences": sequences,
+    }
+
+
 def list_tagged_videos() -> list[dict[str, Any]]:
     """List every tagged video with its embedded wrestler and sequences.
+
+    Probe results are cached per (path, mtime, size) so repeated listings
+    (e.g. every time the Audit tab is opened) do not re-run ffprobe for
+    unchanged files.
 
     Returns:
         A list of ``{"name", "wrestler", "opponent", "result", "match_date",
@@ -132,34 +184,26 @@ def list_tagged_videos() -> list[dict[str, Any]]:
     videos: list[dict[str, Any]] = []
     if not taged_dir.exists():
         return videos
+    seen: set[tuple[str, int, int]] = set()
     for video_path in sorted(taged_dir.iterdir()):
         if not video_path.is_file() or video_path.name.startswith("."):
             continue
-        name: str
-        match_date: str
-        csv_data: str
-        name, match_date, csv_data = MakeNameAndCSV(video_path)
-        wrestler: str
-        opponent: str | None
-        result: str
-        wrestler, opponent, result = ParseTaggedName(name)
-        sequences: list[dict[str, Any]] = []
-        for line in csv_data.splitlines():
-            chap: ChapterSequence = ChapterSequence.FromCSVRow(line)
-            if chap.start_time >= chap.end_time:
-                logging.warning(
-                    f"Skipping malformed chapter in {video_path.name}: {line}"
-                )
-                continue
-            sequences.append(_sequence_to_dict(chap))
-        videos.append({
-            "name": video_path.name,
-            "wrestler": wrestler,
-            "opponent": opponent or "",
-            "result": result,
-            "match_date": match_date,
-            "sequences": sequences,
-        })
+        identity: tuple[str, int, int] | None = _probe_identity(video_path)
+        if identity is None:
+            continue
+        seen.add(identity)
+        with _probe_lock:
+            entry: dict[str, Any] | None = _probe_cache.get(identity)
+        if entry is None:
+            entry = _probe_video(video_path)
+            with _probe_lock:
+                _probe_cache[identity] = entry
+        # Hand callers a copy so a mutation of the result cannot poison the
+        # cache for the next request.
+        videos.append({**entry, "sequences": [dict(seq) for seq in entry["sequences"]]})
+    with _probe_lock:
+        for stale_key in [key for key in _probe_cache if key not in seen]:
+            del _probe_cache[stale_key]
     return videos
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import faulthandler
+import gzip
 import logging
 import os
 import re
@@ -18,6 +19,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import MutableHeaders
 
 # helpers.py resolves cfg/vids/tmp/stats against the process cwd; pin it to the
 # repo root so config/video paths work regardless of how the server is launched.
@@ -382,6 +384,99 @@ async def _no_stale_cache(request: Request, call_next) -> Response:
     return response
 
 
+_GZIP_MIN_BYTES: int = 1024
+# Files above this size (e.g. the vendored plotly build) are served as-is: the
+# gzip saving does not justify buffering and compressing megabytes per request.
+_GZIP_MAX_BYTES: int = 512 * 1024
+_GZIP_CONTENT_TYPES: frozenset[str] = frozenset({
+    "application/javascript",
+    "application/json",
+    "image/svg+xml",
+    "text/css",
+    "text/csv",
+    "text/html",
+    "text/javascript",
+    "text/plain",
+})
+
+
+class _TextGzipMiddleware:
+    """Gzip compressible in-memory responses when the client accepts it.
+
+    Implemented as a raw ASGI middleware rather than a ``BaseHTTPMiddleware``
+    wrapper: the latter hands back a streaming proxy whose ``body`` attribute is
+    ``None``, so there is nothing to compress. Here the ``http.response.start``
+    and body messages are inspected directly.
+
+    Only text-shaped responses are touched. Video (HLS playlists/segments) and
+    file downloads are either already compressed or stream from disk, so
+    compressing them would burn CPU for no benefit.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        accept_encoding: bytes = dict(scope["headers"]).get(
+            b"accept-encoding", b""
+        ).lower()
+        if b"gzip" not in accept_encoding:
+            await self.app(scope, receive, send)
+            return
+
+        start: dict[str, Any] | None = None
+        buffered: list[bytes] = []
+        compress: bool = False
+
+        async def send_wrapper(message: dict[str, Any]) -> None:
+            nonlocal start, compress
+            if message["type"] == "http.response.start":
+                start = message
+                headers = MutableHeaders(scope=message)
+                content_type: str = (
+                    headers.get("content-type", "").split(";")[0].strip().lower()
+                )
+                declared: str = headers.get("content-length", "")
+                compress = (
+                    content_type in _GZIP_CONTENT_TYPES
+                    and "content-encoding" not in headers
+                    and 200 <= int(message["status"]) < 300
+                    and not (declared.isdigit() and int(declared) > _GZIP_MAX_BYTES)
+                )
+                if not compress:
+                    await send(message)
+                return
+            if message["type"] != "http.response.body":
+                await send(message)
+                return
+            if not compress:
+                await send(message)
+                return
+            buffered.append(message.get("body", b""))
+            if message.get("more_body"):
+                return
+            if start is None:  # pragma: no cover - ASGI always sends start first
+                return
+            payload: bytes = b"".join(buffered)
+            headers = MutableHeaders(scope=start)
+            if len(payload) >= _GZIP_MIN_BYTES:
+                payload = gzip.compress(payload, compresslevel=6)
+                headers["content-encoding"] = "gzip"
+                headers["content-length"] = str(len(payload))
+                vary: str = headers.get("vary", "")
+                if "accept-encoding" not in vary.lower():
+                    headers["vary"] = (
+                        f"{vary}, Accept-Encoding" if vary else "Accept-Encoding"
+                    )
+            await send(start)
+            await send({"type": "http.response.body", "body": payload})
+
+        await self.app(scope, receive, send_wrapper)
+
+
 @app.middleware("http")
 async def _auth_gate(request: Request, call_next) -> Response:
     """Require a valid session for every request except public endpoints.
@@ -452,6 +547,11 @@ async def _security_headers(request: Request, call_next) -> Response:
             "Strict-Transport-Security", f"max-age={_HSTS_MAX_AGE}"
         )
     return response
+
+
+# Registered last so the gzip wrapper is the outermost user middleware: it then
+# sees the final response headers (Cache-Control, security headers) and body.
+app.add_middleware(_TextGzipMiddleware)
 
 
 def _resolve_preview_source(dir_name: str, file_name: str) -> Path:
@@ -691,9 +791,18 @@ async def list_videos(dir_name: str) -> dict[str, list[str]]:
         return {"files": []}
     files: list[str] = sorted(
         p.name for p in directory.iterdir()
-        if p.is_file() and not p.name.startswith(".")
+        if p.is_file()
+        and not p.name.startswith(".")
+        and p.suffix.lower() in _ALLOWED_EXTENSIONS
     )
     return {"files": files}
+
+
+def _cancel_preview_job(source: Path) -> None:
+    """Cancel an in-flight HLS transcode for ``source`` before deleting it."""
+    job_id: str | None = transcode.in_flight_job(source)
+    if job_id is not None:
+        job_manager.cancel(job_id)
 
 
 @app.delete("/api/videos/{dir_name}/{file_name}")
@@ -715,6 +824,7 @@ async def delete_video(
     if not video_path.is_file():
         raise HTTPException(status_code=404, detail=f"Video not found: {file_name}")
 
+    _cancel_preview_job(video_path)
     transcode.purge_preview(video_path)
     try:
         video_path.unlink()
@@ -829,6 +939,15 @@ async def upload_videos(files: list[UploadFile] | None = File(default=None)) -> 
             continue
 
         dest: Path = _UPLOAD_DIR / file_name
+        try:
+            fd: int = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            os.close(fd)
+        except FileExistsError:
+            result["status"] = "conflict"
+            result["detail"] = f"File already exists: {file_name}"
+            results.append(result)
+            continue
+        existing.add(file_name.lower())
         error: str | None = await run_in_threadpool(
             _copy_upload, file, dest, _UPLOAD_MAX_BYTES
         )
@@ -841,7 +960,6 @@ async def upload_videos(files: list[UploadFile] | None = File(default=None)) -> 
             results.append(result)
             continue
 
-        existing.add(file_name.lower())
         logging.info(f"Uploaded video: {file_name}")
         result["status"] = "ok"
         results.append(result)
@@ -1129,6 +1247,7 @@ async def delete_clip(file_name: str) -> dict[str, Any]:
     clip_path: Path = clips_dir / file_name
     if not clip_path.is_file():
         raise HTTPException(status_code=404, detail=f"Clip not found: {file_name}")
+    _cancel_preview_job(clip_path)
     transcode.purge_preview(clip_path)
     try:
         clip_path.unlink()
@@ -1309,7 +1428,13 @@ async def preview_file(
     segment_path: Path = transcode.segments_dir(source) / name
     if not segment_path.is_file():
         raise HTTPException(status_code=404, detail=f"Segment not found: {name}")
-    return FileResponse(str(segment_path), media_type="video/mp2t")
+    return FileResponse(
+        str(segment_path),
+        media_type="video/mp2t",
+        # Segments are written once into a per-source-identity directory and
+        # never rewritten, so the browser may reuse them across playlist polls.
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @app.get("/api/jobs/{job_id}")

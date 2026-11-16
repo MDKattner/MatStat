@@ -63,13 +63,7 @@ def _load_frames(spec: QuerySpec) -> dict[str, pd.DataFrame]:
     names: list[str] = selected_wrestlers(spec)
     if not names:
         return storage.load_all_frames()
-    frames: dict[str, pd.DataFrame] = {}
-    for name in names:
-        try:
-            frames[name] = storage.load_wrestler_frame(name)
-        except FileNotFoundError:
-            continue
-    return frames
+    return storage.load_frames(names)
 
 
 def execute_search(query: QuerySpec) -> list[dict[str, Any]]:
@@ -87,19 +81,30 @@ def execute_search(query: QuerySpec) -> list[dict[str, Any]]:
 
     for wrestler_name, df in all_data.items():
         subset: pd.DataFrame = apply_query(df, query, wrestler_name)
-
-        for index, row in subset.iterrows():
+        if subset.empty:
+            continue
+        # Pull whole columns out once instead of building a Series per row via
+        # iterrows(), which dominates wide result sets.
+        origins: list[str] = [str(origin) for origin in subset.index]
+        starts: list[Any] = subset[COL_START_TIME].tolist()
+        ends: list[Any] = subset[COL_END_TIME].tolist()
+        attacking: list[Any] = subset[COL_ATTACKING].tolist()
+        tie_ups: list[Any] = subset[COL_TIE_UP].tolist()
+        team_moves: list[Any] = subset[COL_TEAM_MOVES].tolist()
+        opponent_moves: list[Any] = subset[COL_OPPONENT_MOVES].tolist()
+        points: list[Any] = subset[COL_ADJUSTED_NET_POINTS].tolist()
+        for i, origin in enumerate(origins):
             rows.append({
                 "wrestler": wrestler_name,
-                "origin": str(index),
-                "video": str(index).split(":")[0],
-                "start_time": int(row[COL_START_TIME]),
-                "end_time": int(row[COL_END_TIME]),
-                "attacking": "A" if bool(row[COL_ATTACKING]) else "D",
-                "tie_up": str(row[COL_TIE_UP]) or "",
-                "team_moves": _join_list(row[COL_TEAM_MOVES]),
-                "opponent_moves": _join_list(row[COL_OPPONENT_MOVES]),
-                "adjusted_net_points": int(row[COL_ADJUSTED_NET_POINTS]),
+                "origin": origin,
+                "video": origin.split(":")[0],
+                "start_time": int(starts[i]),
+                "end_time": int(ends[i]),
+                "attacking": "A" if bool(attacking[i]) else "D",
+                "tie_up": str(tie_ups[i]) or "",
+                "team_moves": _join_list(team_moves[i]),
+                "opponent_moves": _join_list(opponent_moves[i]),
+                "adjusted_net_points": int(points[i]),
             })
 
     return rows

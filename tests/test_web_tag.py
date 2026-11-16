@@ -251,6 +251,30 @@ class TestRunTagJob:
         assert source.exists()
         assert (tmp_path / "taged" / "clash.mkv").read_bytes() == b"existing"
 
+    def test_concurrent_output_collision_does_not_overwrite(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        _redirect_dirs(monkeypatch, tmp_path)
+        source: Path = _make_source(tmp_path, "race.mkv")
+        monkeypatch.setattr(tag, "GetVidDuration", lambda p: 60)
+
+        # Simulate another tag job publishing the same output while this one is
+        # still running. The loser must not replace the winner's file.
+        def racing_ffmpeg(cmd, description="", on_progress=None, cancel_event=None) -> FfmpegResult:
+            (tmp_path / "taged" / "race.mkv").write_bytes(b"winner")
+            Path(cmd[-1]).write_bytes(b"loser")
+            return FfmpegResult(success=True, message="ok")
+
+        monkeypatch.setattr(tag, "run_ffmpeg", racing_ffmpeg)
+
+        seqs: list[TagSequence] = [TagSequence(start_time=0, end_time=5)]
+        with pytest.raises(ValueError, match="already exists"):
+            tag.run_tag_job(FakeContext(), "race.mkv", "Alice", seqs)
+
+        assert (tmp_path / "taged" / "race.mkv").read_bytes() == b"winner"
+        assert source.exists()
+        assert not list((tmp_path / "tmp").glob("out-*.mkv"))
+
     def test_zero_duration_raises(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         _make_source(tmp_path, "zero.mkv")
