@@ -187,8 +187,10 @@ MatStat ships as a Nix flake package (`packages.default`, `apps.default`) for
 Linux and macOS, and a NixOS module (`nixosModules.default`) that runs a hardened
 systemd service, seeds the data tree, and can provision Caddy with automatic
 HTTPS. Linux is the CI-verified platform; the macOS package is declared but not
-yet tested in CI. There is no OCI image or PyPI package, and the app always runs
-as **one process** — do not add uvicorn workers.
+yet tested in CI. A `Dockerfile` builds the same package into a container for
+non-Nix hosts only; it is a deployment convenience, not a second distribution
+channel. There is no PyPI package, and the app always runs as **one process** —
+do not add uvicorn workers or run two containers against one data volume.
 
 ### NixOS module
 
@@ -244,9 +246,30 @@ sudo nix --extra-experimental-features 'nix-command flakes' \
 
 Then create the `matstat` service account and data tree, point
 `MATSTAT_ROOT`/`MATSTAT_SECURE_COOKIE`/`MATSTAT_FORWARDED_ALLOW_IPS` at it, and
-run `/var/lib/matstat-pkg/bin/matstat` under systemd. The full unit file,
-reverse-proxy configs, health probes, upgrades, backups, and troubleshooting are
-in the wiki:
+run `/var/lib/matstat-pkg/bin/matstat` under systemd.
+
+### Docker (non-Nix hosts only)
+
+The repository includes a minimal `Dockerfile` for hosts that do not have Nix:
+it builds the flake inside the official `nixos/nix` image, so the host only
+needs Docker or Podman. On NixOS use the module above; on other hosts with Nix,
+`nix build .#default` is the shorter path.
+
+```bash
+docker build -t matstat:0.2.2 .
+docker run -d --name matstat -p 127.0.0.1:8000:8000 \
+  -v matstat-data:/data \
+  -e MATSTAT_PASSWORD='a long passphrase' \
+  matstat:0.2.2
+```
+
+All state lives in the `/data` volume, authentication is on by default, and a
+real `cfg/Wrestlers.json` is never baked into the image. See
+[Deployment](https://github.com/MDKattner/MatStat/wiki/Deployment#run-as-a-docker-container)
+for the volume layout, upgrades, and reverse-proxy settings.
+
+The full unit file, reverse-proxy configs, health probes, upgrades, backups, and
+troubleshooting are in the wiki:
 
 | Topic | Page |
 | --- | --- |

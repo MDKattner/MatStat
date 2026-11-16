@@ -4,6 +4,19 @@ All notable changes to MatStat are recorded here. The version lives in
 [`VERSION`](VERSION); releases are tagged `vMAJOR.MINOR.PATCH`, and packaging
 changes bump the version in the same commit.
 
+## [0.2.2] - 2026-11-15
+
+### Added
+
+- A minimal `Dockerfile` builds the flake package inside the official
+  `nixos/nix` image, for non-Nix hosts that deploy with containers only. The
+  entrypoint seeds `/data` from the packaged defaults only when a file is
+  absent, keeps all config, media, stats, and logs in that volume, and
+  `.dockerignore` prevents a real `cfg/Wrestlers.json`, media, or stats from
+  being baked into the image. NixOS and Nix users should keep using the module
+  or `nix build`. Run instructions are in `README.md` and
+  `wiki/Deployment.md`.
+
 ## [0.2.1] - 2026-11-15
 
 ### Added

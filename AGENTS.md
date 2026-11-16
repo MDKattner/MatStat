@@ -34,7 +34,7 @@ matstat-stats Alice "Bob Smith"          # Move/initiation stats overview
 ```
 
 ## Deployment
-- **Supported paths**: `nixosModules.default` for servers (hardened systemd, data seeding, optional Caddy TLS), or `nix build .#default` plus your own service manager on non-NixOS hosts. There is no OCI image.
+- **Supported paths**: `nixosModules.default` for servers (hardened systemd, data seeding, optional Caddy TLS), or `nix build .#default` plus your own service manager on non-NixOS hosts. A repository `Dockerfile` exists **only for non-Nix hosts** that deploy with containers; it is not a flake output, so it must stay buildable from the copied `flake.nix`/`nix/`/`scripts/`/`cfg/`/`VERSION` set. NixOS and Nix users should use the module or the package.
 - **Docs to keep in sync**: the wiki is canonical for users and operators — `wiki/Deployment.md` (install, env vars, proxy), `wiki/Operations.md` (probes, jobs, backups), `wiki/Troubleshooting.md`, `wiki/API Reference.md`, and `wiki/Developer Guide.md` (architecture, packaging, compatibility policy) — plus the option descriptions in `nix/module.nix`, `VERSION`, and `CHANGELOG.md`. `README.md` is a quickstart that links to those pages. Update the relevant pages whenever you change flake outputs, launcher environment variables, module options, public probes, or the HTTP API.
 - **Git-tracked source**: the flake copies only tracked `scripts/` and `cfg/` files. Stage changes before `nix build`/`nix flake check`, and never stage real `cfg/Wrestlers.json` or media.
 - **Caddy firewall**: enabling the module's `virtualHost` does not open 80/443; set `services.caddy.openFirewall = true` (or open the ports explicitly).

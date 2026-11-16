@@ -1,0 +1,18 @@
+# Keep the build context limited to what `nix build .#default` needs, and never
+# bake personal data, media, stats, or build output into the image.
+.git
+.direnv
+.vscode
+result
+vids
+stats
+tmp
+wiki
+tests
+cfg/Wrestlers.json
+cfg/*.local.json
+cfg/*.bak
+**/__pycache__
+*.pyc
+*.pyo
+*.log
