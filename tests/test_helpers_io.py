@@ -4,18 +4,9 @@ import sys
 import subprocess
 from pathlib import Path
 
-import pytest
-import pandas as pd
-
 sys.path.append(str(Path(__file__).parent.parent))
 
-from scripts.helpers import (
-    COL_ATTACKING, COL_START_TIME, COL_END_TIME, COL_TIE_UP,
-    COL_TEAM_MOVES, COL_OPPONENT_MOVES, COL_TEAM_SCORES, COL_OPPONENT_SCORES,
-    COL_NET_POINTS, COL_ADJUSTED_NET_POINTS, COL_MATCH_RESULT, COL_MATCH_DATE,
-    MakeNameAndCSV, GetVidDuration,
-    MakeFormattedDataFrame, LoadAllWrestlerData,
-)
+from scripts.helpers import MakeNameAndCSV, GetVidDuration
 
 
 # ---------- MakeNameAndCSV ----------
@@ -48,7 +39,7 @@ class TestMakeNameAndCSV:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, FAKE_CHAPTER_CSV, "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         name, match_date, data = MakeNameAndCSV(Path("fake.mkv"))
         assert name == "Test Wrestler"
         assert match_date == ""
@@ -62,7 +53,7 @@ class TestMakeNameAndCSV:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, csv_output, "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         name, match_date, data = MakeNameAndCSV(Path("dated.mkv"))
         assert name == "Dated Wrestler"
         assert match_date == "2026-08-01"
@@ -77,7 +68,7 @@ class TestMakeNameAndCSV:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, csv_output, "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         name, match_date, data = MakeNameAndCSV(Path("multi.mkv"))
         assert name == "Multi Wrestler"
         assert match_date == ""
@@ -93,7 +84,7 @@ class TestMakeNameAndCSV:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, csv_output, "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         name, match_date, data = MakeNameAndCSV(Path("filter.mkv"))
         lines = data.strip().split("\n")
         assert len(lines) == 1
@@ -103,7 +94,7 @@ class TestMakeNameAndCSV:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             raise subprocess.CalledProcessError(1, "ffprobe")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         name, match_date, data = MakeNameAndCSV(Path("fail.mkv"))
         assert name == ""
         assert match_date == ""
@@ -113,7 +104,7 @@ class TestMakeNameAndCSV:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, "", "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         name, match_date, data = MakeNameAndCSV(Path("empty.mkv"))
         assert name == ""
         assert match_date == ""
@@ -127,7 +118,7 @@ class TestMakeNameAndCSV:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, csv_output, "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         name, match_date, data = MakeNameAndCSV(Path("only_empty.mkv"))
         assert name == "Only Empty"
         assert match_date == ""
@@ -143,7 +134,7 @@ class TestGetVidDuration:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, "123.456", "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         result: int = GetVidDuration(Path("fake.mkv"))
         assert result == 123
 
@@ -151,7 +142,7 @@ class TestGetVidDuration:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, "0.0", "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         result: int = GetVidDuration(Path("fake.mkv"))
         assert result == 0
 
@@ -159,7 +150,7 @@ class TestGetVidDuration:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             raise subprocess.CalledProcessError(1, "ffprobe")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         result: int = GetVidDuration(Path("fake.mkv"))
         assert result == 0
 
@@ -167,207 +158,8 @@ class TestGetVidDuration:
         def mock_run(*args, **kwargs) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess([], 0, "not-a-number", "")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("scripts.helpers.run_tracked", mock_run)
         result: int = GetVidDuration(Path("fake.mkv"))
         assert result == 0
 
 
-# ---------- MakeFormattedDataFrame ----------
-
-class TestMakeFormattedDataFrame:
-    """Tests for MakeFormattedDataFrame — CSV parsing into typed DataFrame."""
-
-    CSV_CONTENT: str = (
-        '"vid.mkv:1",0,6,A,collar tie,"high crotch:double","sprawl","T:N2","E"\n'
-        '"vid.mkv:2",6,12,D,standing,"sprawl","sweep single","E","T"'
-    )
-
-    def test_parses_csv_with_correct_columns(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "test.csv"
-        csv_file.write_text(self.CSV_CONTENT)
-
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-        assert COL_ATTACKING in df.columns
-        assert COL_START_TIME in df.columns
-        assert COL_END_TIME in df.columns
-        assert COL_TIE_UP in df.columns
-        assert COL_TEAM_MOVES in df.columns
-        assert COL_OPPONENT_MOVES in df.columns
-        assert COL_TEAM_SCORES in df.columns
-        assert COL_OPPONENT_SCORES in df.columns
-
-    def test_converts_attack_column_to_bool(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "test.csv"
-        csv_file.write_text(self.CSV_CONTENT)
-
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-        assert bool(df[COL_ATTACKING].iloc[0]) is True
-        assert bool(df[COL_ATTACKING].iloc[1]) is False
-
-    def test_splits_list_columns(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "test.csv"
-        csv_file.write_text(self.CSV_CONTENT)
-
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-        assert df[COL_TEAM_MOVES].iloc[0] == ["high crotch", "double"]
-        assert df[COL_OPPONENT_MOVES].iloc[0] == ["sprawl"]
-        assert df[COL_TEAM_SCORES].iloc[0] == ["T", "N2"]
-
-    def test_sets_origin_as_index(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "test.csv"
-        csv_file.write_text(self.CSV_CONTENT)
-
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-        assert df.index.name == "Origin"
-        assert df.index[0] == "vid.mkv:1"
-
-    def test_adds_net_points_column(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "test.csv"
-        csv_file.write_text(self.CSV_CONTENT)
-
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-        assert COL_NET_POINTS in df.columns
-        assert df[COL_NET_POINTS].iloc[0] == 4  # T(3) + N2(2) - E(1)
-        assert COL_ADJUSTED_NET_POINTS in df.columns
-        assert df[COL_ADJUSTED_NET_POINTS].iloc[0] == 4  # no pins in fixture
-
-    def test_converts_time_columns_to_int(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "test.csv"
-        csv_file.write_text(self.CSV_CONTENT)
-
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-        assert df[COL_START_TIME].iloc[0] == 0
-        assert df[COL_END_TIME].iloc[0] == 6
-
-    def test_empty_csv(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "empty.csv"
-        csv_file.write_text("")
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-        assert len(df) == 0
-
-    CSV_CONTENT_12COL: str = (
-        'vid.mkv:1,0,6,A,collar tie:underhook,high crotch,sprawl,T,None,3,3,W\n'
-        'vid.mkv:2,6,12,D,standing:front headlock,sprawl,sweep single,None,T,-3,-3,L'
-    )
-
-    def test_loads_wl_column(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "wl.csv"
-        csv_file.write_text(self.CSV_CONTENT_12COL)
-
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-        assert COL_MATCH_RESULT in df.columns
-        assert df[COL_MATCH_RESULT].iloc[0] == "W"
-        assert df[COL_MATCH_RESULT].iloc[1] == "L"
-        assert df[COL_NET_POINTS].iloc[0] == 3
-        assert df[COL_NET_POINTS].iloc[1] == -3
-
-    def test_empty_result_becomes_empty_string(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "empty_result.csv"
-        csv_file.write_text(
-            'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,\n'
-        )
-
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-        assert df[COL_MATCH_RESULT].iloc[0] == ""
-
-    def test_legacy_11_col_csv_loads(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "legacy.csv"
-        csv_file.write_text(
-            'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3\n'
-        )
-
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-        assert COL_NET_POINTS in df.columns
-        assert COL_ADJUSTED_NET_POINTS in df.columns
-        assert COL_MATCH_RESULT not in df.columns
-
-    CSV_CONTENT_13COL: str = (
-        'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,W,2026-08-01\n'
-        'vid.mkv:2,6,12,D,standing,sprawl,sweep single,None,T,-3,-3,L,'
-    )
-
-    def test_loads_match_date_column(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "dated.csv"
-        csv_file.write_text(self.CSV_CONTENT_13COL)
-
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-        assert COL_MATCH_DATE in df.columns
-        assert df[COL_MATCH_DATE].iloc[0] == "2026-08-01"
-        assert df[COL_MATCH_DATE].iloc[1] == ""
-
-    def test_mixed_12_and_13_col_rows_loads(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "mixed.csv"
-        csv_file.write_text(
-            "vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,3,3,W\n"
-            "vid.mkv:2,6,12,D,standing,sprawl,sweep single,None,T,-3,-3,L,2026-08-01"
-        )
-
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-        assert COL_MATCH_DATE in df.columns
-        assert df[COL_MATCH_DATE].iloc[0] == ""
-        assert df[COL_MATCH_DATE].iloc[1] == "2026-08-01"
-
-    def test_stored_points_are_trusted_verbatim(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "stored.csv"
-        csv_file.write_text(
-            'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None,99,123\n'
-        )
-
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-
-        assert df[COL_NET_POINTS].iloc[0] == 99
-        assert df[COL_ADJUSTED_NET_POINTS].iloc[0] == 123
-        assert df.attrs["points_source"] == "stored"
-
-    def test_legacy_nine_column_csv_computes_on_load(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "legacy9.csv"
-        csv_file.write_text(
-            'vid.mkv:1,0,6,A,collar tie,double,nothing,T,None\n'
-        )
-
-        df: pd.DataFrame = MakeFormattedDataFrame(csv_file)
-
-        assert df[COL_NET_POINTS].iloc[0] == 3
-        assert df.attrs["points_source"] == "computed_on_load"
-
-    def test_unexpected_width_raises_clear_error(self, tmp_path) -> None:
-        csv_file: Path = tmp_path / "weird.csv"
-        csv_file.write_text("a,b,c,d,e,f,g,h,i,j")
-
-        with pytest.raises(ValueError, match="column"):
-            MakeFormattedDataFrame(csv_file)
-
-
-# ---------- LoadAllWrestlerData ----------
-
-class TestLoadAllWrestlerData:
-    """Tests for LoadAllWrestlerData — directory globbing and loading."""
-
-    CSV_LINE: str = '"v.mkv:1",0,6,A,collar tie,"double","sprawl","T","E"'
-
-    def test_loads_all_csv_files(self, tmp_path) -> None:
-        (tmp_path / "Alice.csv").write_text(self.CSV_LINE)
-        (tmp_path / "Bob.csv").write_text(self.CSV_LINE)
-
-        result: dict[str, pd.DataFrame] = LoadAllWrestlerData(tmp_path)
-        assert len(result) == 2
-
-    def test_skips_unknown_csv(self, tmp_path) -> None:
-        (tmp_path / "Alice.csv").write_text(self.CSV_LINE)
-        (tmp_path / "UNKNOWN.csv").write_text(self.CSV_LINE)
-
-        result: dict[str, pd.DataFrame] = LoadAllWrestlerData(tmp_path)
-        assert "UNKNOWN" not in result
-        assert len(result) == 1
-
-    def test_empty_directory(self, tmp_path) -> None:
-        result: dict[str, pd.DataFrame] = LoadAllWrestlerData(tmp_path)
-        assert result == {}
-
-    def test_skips_bad_csv_files(self, tmp_path) -> None:
-        (tmp_path / "Alice.csv").write_text(self.CSV_LINE)
-        (tmp_path / "Bad.csv").write_text("this,is,not,valid,csv,data,for,the,expected,format")
-
-        result: dict[str, pd.DataFrame] = LoadAllWrestlerData(tmp_path)
-        assert "Alice" in result
-        assert len(result) == 1

@@ -173,14 +173,23 @@ def _existing_conflicts(wrestler_names: list[str]) -> list[MatchConflict]:
         Conflicts found in existing data; unreadable wrestlers are ignored here
         (their load errors are reported by the consumers).
     """
-    frames: dict[str, pd.DataFrame] = {}
-    for name in wrestler_names:
-        try:
-            frames[name] = storage.load_wrestler_frame(name)
-        except FileNotFoundError:
-            continue
-        except Exception as e:
-            logging.warning(f"Skipping conflict scan for '{name}': {e}")
+    frames: dict[str, pd.DataFrame]
+    try:
+        frames = storage.load_frames(wrestler_names)
+    except Exception as e:
+        # One unreadable wrestler should not block the conflict scan for the
+        # rest, so fall back to loading them individually.
+        logging.warning(f"Batch conflict scan failed ({e}); scanning individually")
+        frames = {}
+        for name in wrestler_names:
+            try:
+                frames[name] = storage.load_wrestler_frame(name)
+            except FileNotFoundError:
+                continue
+            except Exception as load_error:
+                logging.warning(
+                    f"Skipping conflict scan for '{name}': {load_error}"
+                )
     return ValidateMatchOutcomes(frames)
 
 
@@ -249,18 +258,23 @@ def run_compile_stats_job(
     videos_failed: int = 0
 
     total: int = len(video_paths)
+
+    def cancelled_result(scanned: int) -> dict[str, Any]:
+        """Result payload for a compile stopped by a shutdown request."""
+        return {
+            "videos_processed": videos_processed,
+            "videos_scanned": scanned,
+            "videos_failed": videos_failed,
+            "wrestlers": {},
+            "wrestlers_stale": [],
+            "errors": errors,
+            "warnings": warnings,
+            "cancelled": True,
+        }
+
     for i, vid_path in enumerate(video_paths):
         if ctx.cancelled:
-            return {
-                "videos_processed": videos_processed,
-                "videos_scanned": i,
-                "videos_failed": videos_failed,
-                "wrestlers": {},
-                "wrestlers_stale": [],
-                "errors": errors,
-                "warnings": warnings,
-                "cancelled": True,
-            }
+            return cancelled_result(i)
 
         name: str | None
         match_date: str
@@ -357,16 +371,7 @@ def run_compile_stats_job(
         )
 
     if ctx.cancelled:
-        return {
-            "videos_processed": videos_processed,
-            "videos_scanned": total,
-            "videos_failed": videos_failed,
-            "wrestlers": {},
-            "wrestlers_stale": [],
-            "errors": errors,
-            "warnings": warnings,
-            "cancelled": True,
-        }
+        return cancelled_result(total)
 
     conflicts: list[MatchConflict] = _existing_conflicts(wrestler_names)
     if conflicts and not force:
@@ -415,6 +420,11 @@ def run_compile_stats_job(
         "errors": errors,
         "warnings": warnings,
     }
+
+    # The transaction below is atomic and not interruptible, so stop before
+    # starting it: an abandoned compile leaves the previous data intact.
+    if ctx.cancelled:
+        return cancelled_result(total)
 
     try:
         db_errors: list[str] = storage.apply_compile(

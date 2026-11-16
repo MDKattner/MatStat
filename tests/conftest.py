@@ -52,6 +52,18 @@ def isolated_db(tmp_path, monkeypatch) -> Path:
     return db_path
 
 
+@pytest.fixture(autouse=True)
+def fast_shutdown(monkeypatch) -> None:
+    """Keep TestClient teardown short; bounded shutdown has its own tests.
+
+    The production grace is 10 s, which would otherwise be paid by any test
+    that leaves a job running when its TestClient exits.
+    """
+    from scripts.web import app as web_app
+
+    monkeypatch.setattr(web_app, "SHUTDOWN_GRACE_SECONDS", 0.2)
+
+
 def seed_wrestler(
     name: str,
     frame: pd.DataFrame,

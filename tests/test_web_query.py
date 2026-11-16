@@ -63,6 +63,17 @@ class TestQuerySpec:
         assert selected_wrestlers(QuerySpec(wrestlers=["All"])) == []
         assert selected_wrestlers(QuerySpec(wrestlers=[" Alice ", ""])) == ["Alice"]
 
+    def test_default_point_window_keeps_high_adjusted_rows(self) -> None:
+        seed_compiled_lines(
+            "Alice",
+            ["c.mkv:1,0,10,A,collar tie,double,sprawl,T:N5:PIN,None"],
+        )
+
+        filtered = clips.find_with_query(QuerySpec(wrestlers=["Alice"]), "Alice")
+
+        assert list(filtered.index) == ["c.mkv:1"]
+        assert int(filtered.iloc[0]["Adjusted Net Points"]) == 21
+
 
 class TestApplyQuery:
     """Tests for apply_query — the only filter implementation."""

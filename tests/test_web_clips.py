@@ -350,6 +350,26 @@ class TestListReels:
         assert [v["name"] for v in group["versions"]] == [newer.name, older.name]
         assert [v["current"] for v in group["versions"]] == [True, False]
 
+    def test_versions_sort_by_numeric_suffix(self, tmp_path, monkeypatch) -> None:
+        dirs: dict[str, Path] = _redirect_dirs(monkeypatch, tmp_path)
+        base: str = "Alice_Tie_collar_tie_20260101-120000"
+        nine: Path = dirs["clips"] / f"{base}-9.mkv"
+        ten: Path = dirs["clips"] / f"{base}-10.mkv"
+        nine.write_bytes(b"9")
+        ten.write_bytes(b"10")
+
+        groups: list[dict[str, Any]] = clips.list_reels()
+
+        assert [v["name"] for v in groups[0]["versions"]] == [ten.name, nine.name]
+
+    def test_unique_reel_path_reserves_the_name(self, tmp_path) -> None:
+        first: Path = clips._unique_reel_path(tmp_path, "Alice_reel")
+        second: Path = clips._unique_reel_path(tmp_path, "Alice_reel")
+
+        assert first.exists()
+        assert second != first
+        assert second.exists()
+
     def test_empty_or_missing_dir_returns_empty(self, tmp_path, monkeypatch) -> None:
         _redirect_dirs(monkeypatch, tmp_path)
         assert clips.list_reels() == []

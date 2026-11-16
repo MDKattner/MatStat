@@ -209,13 +209,19 @@ class TestRunTeamEvalJob:
         _write_csv(tmp_path, "Alice")
         _write_csv(tmp_path, "Broken", content=CSV_ROW)
 
-        real_load = team_eval.storage.load_wrestler_frame
+        real_load_frames = team_eval.storage.load_frames
 
         def fake_load(name: str):
             if name == "Broken":
                 raise ValueError("corrupt row")
-            return real_load(name)
+            return real_load_frames([name])[name]
 
+        # The batch loader fails as a whole when any frame is corrupt, which
+        # triggers the per-wrestler fallback that isolates the bad file.
+        def fake_load_frames(names=None):
+            raise ValueError("corrupt row")
+
+        monkeypatch.setattr(team_eval.storage, "load_frames", fake_load_frames)
         monkeypatch.setattr(team_eval.storage, "load_wrestler_frame", fake_load)
 
         result: dict[str, Any] = team_eval.run_team_eval_job(FakeContext())

@@ -11,6 +11,7 @@ import {
   ensurePreview,
   fetchJson,
   formatClock,
+  loadConfig,
   queryPanel,
   showToast,
   videoPlayer,
@@ -122,14 +123,20 @@ export function mountSearch(root) {
 
   async function loadOptions() {
     try {
-      const [wrestlerResp, configResp] = await Promise.all([
+      const [wrestlerResp, config] = await Promise.all([
         fetchJson("/api/search/wrestlers"),
-        fetchJson("/api/config"),
+        loadConfig().catch(() => ({})),
       ]);
       const names = wrestlerResp.ok ? wrestlerResp.body.items || [] : [];
-      const config = configResp.ok ? configResp.body : {};
+      // The roster is the canonical selectable list (the same source Combine
+      // Clips uses), so Search stays usable before the first compile. Compiled
+      // names not present in the roster are appended.
+      const roster = (config.wrestlers || []).filter(
+        (name) => name && name !== "UNKNOWN"
+      );
+      const selectable = Array.from(new Set([...roster, ...names]));
       panel.setItems({
-        wrestlers: names,
+        wrestlers: selectable,
         ties: config.ties || [],
         moves: config.moves || [],
         teams: config.teams || {},

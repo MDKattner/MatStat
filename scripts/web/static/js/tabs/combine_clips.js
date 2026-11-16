@@ -14,6 +14,7 @@ import {
   fetchJson,
   filterList,
   formatClock,
+  loadConfig,
   pollJob,
   queryPanel,
   showToast,
@@ -350,8 +351,7 @@ export function mountCombineClips(root) {
 
   async function loadConfigs() {
     try {
-      const { ok, body } = await fetchJson("/api/config");
-      const config = ok ? body : {};
+      const config = await loadConfig();
       state.ties = config.ties || [];
       state.moves = config.moves || [];
       panel.setItems({

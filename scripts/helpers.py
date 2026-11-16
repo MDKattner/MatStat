@@ -15,6 +15,8 @@ from typing import Any, Callable, Literal, overload
 import numpy as np
 import pandas as pd
 
+from scripts.processes import run_tracked
+
 
 # ---- Constants ----
 
@@ -612,11 +614,9 @@ def GetVidDuration(path_to_vid: Path) -> int:
     ]
     logging.debug(f"Executing ffprobe command for duration: {ffprobe_cmd}")
     try:
-        duration_str: str = subprocess.run(ffprobe_cmd,
-                                           capture_output=True,
-                                           text=True,
-                                           check=True
-                                           ).stdout.strip()
+        duration_str: str = run_tracked(
+            ffprobe_cmd, check=True, description="ffprobe duration"
+        ).stdout.strip()
         duration: int = int(float(duration_str))
         logging.info(f"Video duration for '{path_to_vid}': {duration} seconds")
         return duration
@@ -636,53 +636,31 @@ def GetVideoCodecs(path_to_vid: Path) -> dict[str, str]:
         (e.g. {'video': 'h264', 'audio': 'aac'}). Returns empty dict on failure.
     """
     result: dict[str, str] = {}
+    stream_types: frozenset[str] = frozenset({"video", "audio"})
     try:
         cmd: list[str] = [
             "ffprobe",
             "-v", "error",
-            "-show_entries", "stream=index,codec_name",
-            "-of", "csv=nw=1:nk=1",
+            "-show_entries", "stream=codec_type,codec_name",
+            "-of", "csv=p=0",
             str(path_to_vid),
         ]
-        output: str = subprocess.run(
-            cmd, capture_output=True, text=True, check=True
+        output: str = run_tracked(
+            cmd, check=True, description="ffprobe codecs"
         ).stdout.strip()
+        # ffprobe prints codec_name,codec_type (not the requested order), so
+        # identify the type by token rather than by position.
         for line in output.splitlines():
-            parts: list[str] = line.split(",")
-            if len(parts) == 2:
-                idx, codec = parts
-                if idx == "0":
-                    result["video"] = codec
-                elif idx == "1":
-                    result["audio"] = codec
+            fields: list[str] = [field.strip() for field in line.split(",")]
+            types: list[str] = [field for field in fields if field in stream_types]
+            if len(fields) != 2 or len(types) != 1:
+                continue
+            stream_type: str = types[0]
+            codec: str = fields[0] if fields[1] == stream_type else fields[1]
+            result.setdefault(stream_type, codec)
     except (subprocess.CalledProcessError, OSError) as e:
         logging.warning(f"GetVideoCodecs failed for '{path_to_vid}': {e}")
 
-    return result
-
-
-def LoadAllWrestlerData(data_dir: Path | None = None) -> dict[str, pd.DataFrame]:
-    """Load all wrestler CSV files into a dict of DataFrames.
-
-    Skips UNKNOWN.csv. Returns {wrestler_name: df} sorted alphabetically.
-
-    Args:
-        data_dir: Directory containing the CSV files. Defaults to csv_dir.
-
-    Returns:
-        A dict mapping wrestler names to their DataFrames.
-    """
-    if data_dir is None:
-        data_dir = csv_dir
-    result: dict[str, pd.DataFrame] = {}
-    for csv_path in sorted(data_dir.glob("*.csv")):
-        if csv_path.name == "UNKNOWN.csv":
-            continue
-        name: str = csv_path.stem
-        try:
-            result[name] = MakeFormattedDataFrame(csv_path)
-        except Exception as e:
-            logging.warning(f"Could not load data for '{name}': {e}")
     return result
 
 
@@ -716,11 +694,8 @@ def MakeNameAndCSV(path_to_vid: Path) -> tuple[str, str, str]:
         f"Executing ffprobe command for MakeNameAndCSV: {ffprobe_command}")
 
     try:
-        lines: list[str] = subprocess.run(
-            ffprobe_command,
-            capture_output=True,
-            text=True,
-            check=True
+        lines: list[str] = run_tracked(
+            ffprobe_command, check=True, description="ffprobe chapters"
         ).stdout.strip().splitlines()
     except subprocess.CalledProcessError as e:
         logging.error(f"MakeNameAndCSV ffprobe failed for '{path_to_vid}': {e}")
@@ -790,101 +765,6 @@ def ValidateMatchDate(match_date: str) -> str:
         except ValueError:
             raise ValueError(f"Invalid match date: {match_date}")
     return cleaned
-
-
-def MakeFormattedDataFrame(csv_path: Path) -> pd.DataFrame:
-    """Initialize a pandas DataFrame from a wrestler's CSV file.
-
-    Reads a CSV file, converts colon-delimited columns into lists, and sets
-    appropriate data types. Compiled CSVs carrying stored Net Points and
-    Adjusted Net Points columns (11+ columns) keep those values verbatim, so a
-    ruleset change never rewrites historical numbers on read. Legacy 9-column
-    CSVs have no stored points and are computed on load.
-
-    Args:
-        csv_path: The path to the CSV file to load.
-
-    Returns:
-        A pandas DataFrame with the parsed and structured data. Its ``attrs``
-        record ``points_source`` ("stored" or "computed_on_load").
-    """
-    logging.info(f"Loading CSV from '{csv_path}' into DataFrame.")
-    column_names: list[str] = [
-        COL_ORIGIN,
-        COL_START_TIME,
-        COL_END_TIME,
-        COL_ATTACKING,
-        COL_TIE_UP,
-        COL_TEAM_MOVES,
-        COL_OPPONENT_MOVES,
-        COL_TEAM_SCORES,
-        COL_OPPONENT_SCORES
-    ]
-    first_lines: list[str] = [
-        line for line in csv_path.read_text().splitlines() if line.strip()
-    ]
-    n_cols: int = max(
-        (line.count(",") + 1 for line in first_lines),
-        default=9,
-    )
-    if n_cols not in (9, 11, 12, 13):
-        raise ValueError(
-            f"Unsupported CSV width for '{csv_path}': {n_cols} columns "
-            f"(expected 9, 11, 12, or 13)"
-        )
-    if n_cols >= 11:
-        column_names = column_names + [COL_NET_POINTS, COL_ADJUSTED_NET_POINTS]
-    if n_cols >= 12:
-        column_names = column_names + [COL_MATCH_RESULT]
-    if n_cols >= 13:
-        column_names = column_names + [COL_MATCH_DATE]
-    df: pd.DataFrame = pd.read_csv(
-        csv_path,
-        header=None,
-        names=column_names,
-        index_col=COL_ORIGIN,
-        dtype={
-            COL_ORIGIN: str,
-            COL_START_TIME: "int16",
-            COL_END_TIME: "int16",
-            COL_ATTACKING: str,
-            COL_TIE_UP: str,
-            COL_TEAM_MOVES: str,
-            COL_OPPONENT_MOVES: str,
-            COL_TEAM_SCORES: str,
-            COL_OPPONENT_SCORES: str,
-        },
-    )
-    list_columns: list[str] = [COL_TEAM_MOVES, COL_OPPONENT_MOVES,
-                               COL_TEAM_SCORES, COL_OPPONENT_SCORES]
-    for col in list_columns:
-        df[col] = df[col].apply(
-            lambda value: str(value).split(":") if pd.notna(value) and value != "" else [])
-    df[COL_ATTACKING] = df[COL_ATTACKING] == "A"
-    if COL_MATCH_RESULT in df.columns:
-        df[COL_MATCH_RESULT] = df[COL_MATCH_RESULT].fillna("").astype(str)
-    if COL_MATCH_DATE in df.columns:
-        df[COL_MATCH_DATE] = df[COL_MATCH_DATE].fillna("").astype(str)
-    logging.info(
-        f"Successfully loaded DataFrame from '{csv_path}' with shape: {df.shape}")
-    ReloadScoringMap()
-    if COL_NET_POINTS in df.columns and COL_ADJUSTED_NET_POINTS in df.columns:
-        df[COL_NET_POINTS] = (
-            pd.to_numeric(df[COL_NET_POINTS], errors="coerce")
-            .fillna(0)
-            .astype("int16")
-        )
-        df[COL_ADJUSTED_NET_POINTS] = (
-            pd.to_numeric(df[COL_ADJUSTED_NET_POINTS], errors="coerce")
-            .fillna(0)
-            .astype("int16")
-        )
-        df.attrs["points_source"] = "stored"
-    else:
-        TabulateNetPoints(df)
-        TabulateAdjustedNetPoints(df)
-        df.attrs["points_source"] = "computed_on_load"
-    return df
 
 
 def BuildTagTitle(
@@ -976,49 +856,6 @@ def BuildTieEntry(your_tie: str, opp_tie: str | None = None) -> str:
     if opp_tie and opp_tie.strip():
         return f"{your_clean}:{opp_tie.strip()}"
     return your_clean
-
-
-def SwapPerspectiveCSV(csv_data: str) -> str:
-    """Rewrite a compiled wrestler CSV from the opponent's perspective.
-
-    Reverses the attacking flag, swaps the team/opponent move and score
-    columns, flips the colon-paired tie-up, negates the stored net/adjusted
-    points, and inverts the match-result column so the same rows describe the
-    opponent. Rows that do not match the 12-field compiled schema (or the
-    13-field schema with a match date) pass through unchanged. A 13-field row
-    keeps its width even when the match date is empty, so a mixed set of dated
-    and undated rows stays parseable.
-
-    Args:
-        csv_data: The multi-line compiled CSV string for a wrestler.
-
-    Returns:
-        The same CSV re-expressed from the opponent's perspective.
-    """
-    swapped: list[str] = []
-    for line in csv_data.splitlines():
-        parts: list[str] = line.split(",")
-        if len(parts) not in (12, 13):
-            swapped.append(line)
-            continue
-        (origin, start, end, attack, tie, team_moves, op_moves,
-         team_scores, op_scores, net, adjusted, result) = parts[:12]
-        match_date: str = parts[12] if len(parts) == 13 else ""
-        tie_pair: list[str] = tie.split(":")
-        new_tie: str = ":".join(reversed(tie_pair)) if len(tie_pair) > 1 else tie
-        new_net: str = str(-int(net)) if net else ""
-        new_adjusted: str = str(-int(adjusted)) if adjusted else ""
-        new_result: str = "L" if result == "W" else ("W" if result == "L" else result)
-        fields: list[str] = [
-            origin, start, end,
-            "D" if attack == "A" else "A",
-            new_tie, op_moves, team_moves, op_scores, team_scores,
-            new_net, new_adjusted, new_result,
-        ]
-        if len(parts) == 13:
-            fields.append(match_date)
-        swapped.append(",".join(fields))
-    return "\n".join(swapped)
 
 
 def CalculateNetPoints(row: pd.Series) -> np.int16:
@@ -1257,7 +1094,8 @@ def _MoveAttribution(
         move_column: The column containing moves to analyse.
 
     Returns:
-        A dict mapping each move to {"count", "net", "adjusted"}.
+        A dict mapping each move to {"count", "net", "adjusted", "team_pins",
+        "opp_pins"}.
     """
     out: dict[str, dict[str, float | int]] = {}
     for _, row in df_in.iterrows():
@@ -1269,11 +1107,25 @@ def _MoveAttribution(
         adjusted: float = float(row[COL_ADJUSTED_NET_POINTS])
         for move in moves:
             entry: dict[str, float | int] = out.setdefault(
-                move, {"count": 0, "net": 0.0, "adjusted": 0.0}
+                move,
+                {"count": 0, "net": 0.0, "adjusted": 0.0, "team_pins": 0, "opp_pins": 0},
             )
             entry["count"] = int(entry["count"]) + 1
             entry["net"] = float(entry["net"]) + net * weight
             entry["adjusted"] = float(entry["adjusted"]) + adjusted * weight
+        # Pin counts are per sequence (not per occurrence), and only sequences
+        # with a non-negative start time are counted, matching the previous
+        # ``apply(_MoveFilter) / query(start >= 0)`` implementation.
+        start_time: object = row[COL_START_TIME]
+        if bool(pd.notna(start_time) and int(start_time) >= 0):
+            team_pin: bool = _SequenceHasPin(row[COL_TEAM_SCORES])
+            opp_pin: bool = _SequenceHasPin(row[COL_OPPONENT_SCORES])
+            for move in set(moves):
+                entry = out[move]
+                if team_pin:
+                    entry["team_pins"] = int(entry["team_pins"]) + 1
+                if opp_pin:
+                    entry["opp_pins"] = int(entry["opp_pins"]) + 1
     return out
 
 
@@ -1307,9 +1159,6 @@ def _GenerateMoveDF(df_in: pd.DataFrame, move_column: str) -> pd.DataFrame:
     df_dict: dict[str, list[int | float]] = {}
 
     for (move, agg) in move_list:
-        move_frame: pd.DataFrame = df_in.apply(
-            _MoveFilter(move, move_column), axis=1, result_type='broadcast'
-        ).query(f"`{COL_START_TIME}` >= 0")
         count: int = int(agg["count"])
         net_pt_sum: float = float(agg["net"])
         adjusted_sum: float = float(agg["adjusted"])
@@ -1319,8 +1168,8 @@ def _GenerateMoveDF(df_in: pd.DataFrame, move_column: str) -> pd.DataFrame:
             adjusted_sum,
             net_pt_sum / count,
             adjusted_sum / count,
-            PinCount(move_frame, COL_TEAM_SCORES),
-            PinCount(move_frame, COL_OPPONENT_SCORES),
+            int(agg["team_pins"]),
+            int(agg["opp_pins"]),
         ]
     df_out: pd.DataFrame = pd.DataFrame.from_dict(df_dict, orient='index', columns=header)
     df_out.index.name = "Move"
@@ -1610,7 +1459,7 @@ def GenerateMoveMatrix(
 
     Args:
         df_in: The sequence DataFrame; ``df_in[move_column]`` holds lists of
-            move names (from MakeFormattedDataFrame).
+            move names as stored in the compiled frame.
         move_column: The column holding the move lists (COL_TEAM_MOVES or
             COL_OPPONENT_MOVES).
         min_occurrences: Minimum number of distinct rows (or groups) a move
@@ -1630,8 +1479,11 @@ def GenerateMoveMatrix(
     tmp: pd.DataFrame = df_in.reset_index(drop=True)
     exploded: pd.Series = tmp[move_column].explode().dropna()
     exploded = exploded[exploded != "nothing"]
+    # One dummy frame feeds both the presence/frequency filter and the counts;
+    # the old version encoded the same exploded series twice.
+    dummies: pd.DataFrame = pd.get_dummies(exploded)
     presence: pd.DataFrame = (
-        pd.get_dummies(exploded).groupby(level=0).max().reindex(index=unique_index, fill_value=0)
+        dummies.groupby(level=0).max().reindex(index=unique_index, fill_value=0)
     )
     if group_key is None:
         counts: pd.Series = presence.sum(axis=0)
@@ -1642,7 +1494,7 @@ def GenerateMoveMatrix(
         move for move, count in counts.items() if count >= min_occurrences
     )
     matrix: pd.DataFrame = (
-        pd.get_dummies(exploded)
+        dummies
         .groupby(level=0)
         .sum()
         .reindex(index=unique_index, fill_value=0)
@@ -1900,19 +1752,23 @@ class QueryBuilder:
         return self
 
     def net_points_filter(
-        self, min: int = -20, max: int = 20
+        self, min: int | None = None, max: int | None = None
     ) -> QueryBuilder:
-        """Filter by raw net points range (inclusive)."""
-        col: pd.Series = self._df[COL_NET_POINTS]
-        self._df = self._df[(col >= min) & (col <= max)]
+        """Filter by raw net points range (inclusive); ``None`` leaves a side open."""
+        if min is not None:
+            self._df = self._df[self._df[COL_NET_POINTS] >= min]
+        if max is not None:
+            self._df = self._df[self._df[COL_NET_POINTS] <= max]
         return self
 
     def adjusted_net_points_filter(
-        self, min: int = -20, max: int = 20
+        self, min: int | None = None, max: int | None = None
     ) -> QueryBuilder:
-        """Filter by adjusted net points range (inclusive)."""
-        col: pd.Series = self._df[COL_ADJUSTED_NET_POINTS]
-        self._df = self._df[(col >= min) & (col <= max)]
+        """Filter by adjusted net points range (inclusive); ``None`` leaves a side open."""
+        if min is not None:
+            self._df = self._df[self._df[COL_ADJUSTED_NET_POINTS] >= min]
+        if max is not None:
+            self._df = self._df[self._df[COL_ADJUSTED_NET_POINTS] <= max]
         return self
 
     # ---- sort + paginate ----

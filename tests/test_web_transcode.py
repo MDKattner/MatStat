@@ -216,6 +216,24 @@ class TestTranscodeHls:
         transcode.transcode_hls(source, "job1")
         assert captured["cmd"][captured["cmd"].index("-c") + 1] == "copy"
 
+    def test_stream_copy_allows_missing_audio(self, tmp_path, monkeypatch) -> None:
+        source: Path = tmp_path / "silent.mkv"
+        source.write_bytes(b"source")
+        monkeypatch.setattr(
+            transcode, "GetVideoCodecs", lambda p: {"video": "h264"}
+        )
+
+        assert transcode._supports_stream_copy(source) is True
+
+    def test_stream_copy_rejects_non_aac_audio(self, tmp_path, monkeypatch) -> None:
+        source: Path = tmp_path / "ac3.mkv"
+        source.write_bytes(b"source")
+        monkeypatch.setattr(
+            transcode, "GetVideoCodecs", lambda p: {"video": "h264", "audio": "ac3"}
+        )
+
+        assert transcode._supports_stream_copy(source) is False
+
     def test_uses_reencode_for_other_codecs(self, tmp_path, monkeypatch) -> None:
         _redirect_preview_dir(monkeypatch, tmp_path)
         source: Path = tmp_path / "match.mkv"

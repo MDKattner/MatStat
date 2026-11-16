@@ -160,17 +160,34 @@ def _format_numbers(ws: Worksheet, start_row: int = 2) -> None:
 
 
 def _unique_report_path(target_dir: Path) -> tuple[Path, str]:
-    """Return a unique timestamped report path and its generated-at text."""
+    """Reserve a unique timestamped report path and return its generated-at text.
+
+    The ``.xlsx`` name is created atomically (``O_CREAT | O_EXCL``) so two
+    concurrent report jobs in the same second cannot choose the same stem; the
+    writer later replaces the placeholder with ``os.replace``.
+    """
     stamp: str = datetime.now().strftime("%Y%m%d-%H%M%S")
     generated_at: str = (
         datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     )
-    candidate: Path = target_dir / f"{REPORT_BASE}_{stamp}.xlsx"
-    suffix: int = 1
-    while candidate.exists() or candidate.with_suffix(".json").exists():
-        candidate = target_dir / f"{REPORT_BASE}_{stamp}-{suffix}.xlsx"
-        suffix += 1
-    return candidate, generated_at
+    suffix: int = 0
+    while True:
+        name: str = (
+            f"{REPORT_BASE}_{stamp}.xlsx"
+            if suffix == 0
+            else f"{REPORT_BASE}_{stamp}-{suffix}.xlsx"
+        )
+        candidate: Path = target_dir / name
+        if candidate.with_suffix(".json").exists():
+            suffix += 1
+            continue
+        try:
+            fd: int = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            suffix += 1
+            continue
+        os.close(fd)
+        return candidate, generated_at
 
 
 def _update_latest_pointer(target_dir: Path, report: Path) -> str | None:
@@ -256,18 +273,6 @@ def _read_me_rows(
     return rows
 
 
-def _capture_points_source(frames: dict[str, pd.DataFrame]) -> str:
-    """Summarize whether the loaded frames used stored or computed points."""
-    sources: set[str] = {
-        str(frame.attrs.get("points_source", "unknown")) for frame in frames.values()
-    }
-    if sources == {"stored"}:
-        return "Stored values from the compiled database"
-    if sources == {"computed_on_load"}:
-        return "Computed on load (legacy 9-column CSVs)"
-    return "Mixed stored and computed values"
-
-
 def latest_report_info() -> dict[str, Any] | None:
     """Describe the current latest report for the freshness endpoint.
 
@@ -342,23 +347,33 @@ def run_team_eval_job(ctx: JobContext) -> dict[str, Any]:
         raise RuntimeError(f"Could not create report directory: {e}")
 
     frames: dict[str, pd.DataFrame] = {}
+    if ctx.cancelled:
+        return {
+            "output": "",
+            "latest": None,
+            "processed": processed,
+            "errors": errors,
+            "failed_sheets": failed_sheets,
+            "partial": False,
+            "cancelled": True,
+        }
+    try:
+        # One snapshot and one query for the whole roster; the old loop opened a
+        # connection per wrestler.
+        frames = storage.load_frames(wrestler_names)
+    except Exception as e:
+        # Fall back to per-wrestler loads so one unreadable wrestler only skips
+        # itself instead of aborting the whole report.
+        logging.warning(f"Batch load failed ({e}); loading wrestlers individually")
+        frames = {}
+        for sheet_name in wrestler_names:
+            try:
+                frames[sheet_name] = storage.load_wrestler_frame(sheet_name)
+            except Exception as load_error:
+                error_msg = f"Failed to process '{sheet_name}': {load_error}"
+                logging.error(error_msg)
+                errors.append(error_msg)
     for i, sheet_name in enumerate(wrestler_names):
-        if ctx.cancelled:
-            return {
-                "output": "",
-                "latest": None,
-                "processed": processed,
-                "errors": errors,
-                "failed_sheets": failed_sheets,
-                "partial": False,
-                "cancelled": True,
-            }
-        try:
-            frames[sheet_name] = storage.load_wrestler_frame(sheet_name)
-        except Exception as e:
-            error_msg: str = f"Failed to process '{sheet_name}': {e}"
-            logging.error(error_msg)
-            errors.append(error_msg)
         ctx.report(100.0 * (i + 1) / total, f"Loading {sheet_name}")
 
     if not frames:
@@ -405,7 +420,7 @@ def run_team_eval_job(ctx: JobContext) -> dict[str, Any]:
         ruleset_name=ruleset_name,
         ruleset_hash=ruleset_hash,
         pin_bonus=pin_bonus,
-        points_source=_capture_points_source(frames),
+        points_source="Stored values from the compiled database",
     )
 
     try:
@@ -456,6 +471,7 @@ def run_team_eval_job(ctx: JobContext) -> dict[str, Any]:
                 ws.sheet_properties.tabColor = _TAB_COLORS.get(name, "8E24AA")
     except Exception as e:
         tmp_path.unlink(missing_ok=True)
+        report_path.unlink(missing_ok=True)
         raise RuntimeError(f"Failed to create Excel report: {e}")
 
     partial: bool = bool(failed_sheets)
@@ -463,6 +479,7 @@ def run_team_eval_job(ctx: JobContext) -> dict[str, Any]:
         os.replace(tmp_path, report_path)
     except OSError as e:
         tmp_path.unlink(missing_ok=True)
+        report_path.unlink(missing_ok=True)
         raise RuntimeError(f"Failed to finalize Excel report: {e}")
 
     metadata: dict[str, Any] = {

@@ -210,6 +210,19 @@ def test_load_all_frames_returns_every_compiled_wrestler() -> None:
     assert list(frames["Alice"].index) == ["a.mkv:1"]
 
 
+def test_load_frames_preserves_requested_order_and_skips_missing() -> None:
+    storage.apply_compile(
+        {"Alice": [_row("a.mkv:1")], "Bob": [_row("b.mkv:1")]},
+        skip=set(),
+        manifest=_manifest(),
+    )
+
+    frames = storage.load_frames(["Bob", "Ghost", "Alice"])
+
+    assert list(frames) == ["Bob", "Alice"]
+    assert list(frames["Bob"].index) == ["b.mkv:1"]
+
+
 def test_load_wrestler_frame_missing_raises() -> None:
     with pytest.raises(FileNotFoundError, match="Compile Stats"):
         storage.load_wrestler_frame("Ghost")

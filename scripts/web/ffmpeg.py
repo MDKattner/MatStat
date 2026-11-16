@@ -7,6 +7,8 @@ import threading
 from dataclasses import dataclass
 from typing import Callable
 
+from scripts.processes import kill_process, register_process, unregister_process
+
 # Matches ffmpeg's stderr progress marker: time=00:01:23.45
 _TIME_RE: re.Pattern[str] = re.compile(r"time=(\d+):(\d+):(\d+)\.(\d+)")
 
@@ -76,7 +78,9 @@ def run_ffmpeg(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
+        start_new_session=True,
     )
+    register_process(proc)
 
     stderr_lines: list[str] = []
     stderr_lock: threading.Lock = threading.Lock()
@@ -95,17 +99,20 @@ def run_ffmpeg(
     reader: threading.Thread = threading.Thread(target=_read_stderr, daemon=True)
     reader.start()
 
-    while True:
-        try:
-            exit_code: int = proc.wait(timeout=0.2)
-            break
-        except subprocess.TimeoutExpired:
-            if cancel_event is not None and cancel_event.is_set():
-                logging.info(f"Cancelling ffmpeg: {description or 'unspecified'}")
-                proc.kill()
-                proc.wait()
-                reader.join(timeout=1.0)
-                raise JobCancelledError(description or "ffmpeg cancelled")
+    try:
+        while True:
+            try:
+                exit_code: int = proc.wait(timeout=0.2)
+                break
+            except subprocess.TimeoutExpired:
+                if cancel_event is not None and cancel_event.is_set():
+                    logging.info(f"Cancelling ffmpeg: {description or 'unspecified'}")
+                    kill_process(proc)
+                    proc.wait()
+                    reader.join(timeout=1.0)
+                    raise JobCancelledError(description or "ffmpeg cancelled")
+    finally:
+        unregister_process(proc)
 
     reader.join(timeout=3.0)
 

@@ -44,6 +44,27 @@ class TestHealthAndStatic:
         assert resp.status_code == 200
         assert "text/css" in resp.headers["content-type"]
 
+    def test_text_responses_gzip_when_accepted(self, client) -> None:
+        resp = client.get("/", headers={"Accept-Encoding": "gzip"})
+        assert resp.status_code == 200
+        assert resp.headers.get("content-encoding") == "gzip"
+        assert "MatStat" in resp.text
+
+    def test_text_responses_not_gzipped_without_accept(self, client) -> None:
+        resp = client.get("/", headers={"Accept-Encoding": "identity"})
+        assert resp.status_code == 200
+        assert "content-encoding" not in resp.headers
+
+    def test_head_keeps_get_content_length(self, client) -> None:
+        identity = {"Accept-Encoding": "identity"}
+        get = client.get("/static/css/app.css", headers=identity)
+        head = client.head(
+            "/static/css/app.css", headers={"Accept-Encoding": "gzip"}
+        )
+        assert head.status_code == 200
+        assert head.headers["content-length"] == get.headers["content-length"]
+        assert "content-encoding" not in head.headers
+
     def test_unknown_route_404(self, client) -> None:
         resp = client.get("/nope")
         assert resp.status_code == 404
@@ -171,6 +192,22 @@ class TestDeploymentHardening:
         )
         result = resp.json()["results"][0]
         assert result["status"] == "conflict"
+
+    def test_upload_same_name_twice_in_one_request_conflicts(
+        self, client, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(web_app, "_is_valid_video", lambda _path: True)
+        resp = client.post(
+            "/api/videos",
+            files=[
+                ("files", ("a.mkv", b"first", "video/x-matroska")),
+                ("files", ("a.mkv", b"second", "video/x-matroska")),
+            ],
+        )
+        body = resp.json()
+        assert [r["status"] for r in body["results"]] == ["ok", "conflict"]
+        assert body["uploaded"] == 1
+        assert (web_app._UPLOAD_DIR / "a.mkv").read_bytes() == b"first"
 
     def test_upload_caps_file_count(self, client, monkeypatch) -> None:
         monkeypatch.setattr(web_app, "_MAX_UPLOAD_FILES", 1)
@@ -327,6 +364,22 @@ class TestPreviewFlow:
         resp = client.get("/api/preview/taged/match.mkv/seg_00000.ts")
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "video/mp2t"
+        assert "immutable" in resp.headers["cache-control"]
+        assert resp.content == b"segment-data"
+
+    def test_segment_not_gzipped(self, client, tmp_path) -> None:
+        source: Path = tmp_path / "taged" / "match.mkv"
+        source.write_bytes(b"source")
+        segment: Path = transcode.segments_dir(source) / "seg_00000.ts"
+        segment.parent.mkdir(parents=True, exist_ok=True)
+        segment.write_bytes(b"segment-data")
+
+        resp = client.get(
+            "/api/preview/taged/match.mkv/seg_00000.ts",
+            headers={"Accept-Encoding": "gzip"},
+        )
+        assert resp.status_code == 200
+        assert "content-encoding" not in resp.headers
         assert resp.content == b"segment-data"
 
     def test_segment_invalid_name_400(self, client, tmp_path) -> None:

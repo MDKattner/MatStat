@@ -13,6 +13,7 @@ is no compiled data, no dated rows, or a bad rolling window.
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Literal
 
 import numpy as np
@@ -28,10 +29,11 @@ from scripts.helpers import (
 
 TrendMetric = Literal["net", "adjusted"]
 
-
-def _video_of(origin: str) -> str:
-    """Strip the chapter suffix from an Origin string ("v.mkv:3" -> "v.mkv")."""
-    return str(origin).split(":")[0]
+# Trend figures are cheap per request but the client reloads on every control
+# change; cache against the database snapshot.
+_TREND_CACHE_LOCK: threading.Lock = threading.Lock()
+_trend_cache: dict[tuple[str, str, int], dict[str, Any]] = {}
+_trend_cache_identity: tuple[Any, ...] | None = None
 
 
 def build_trend_figure(
@@ -64,6 +66,15 @@ def build_trend_figure(
     if window < 1:
         raise ValueError("Rolling window must be at least 1.")
 
+    cache_key: tuple[str, str, int] = (name, metric, window)
+    identity: tuple[Any, ...] = storage.database_identity()
+    global _trend_cache_identity
+    with _TREND_CACHE_LOCK:
+        if _trend_cache_identity == identity:
+            cached: dict[str, Any] | None = _trend_cache.get(cache_key)
+            if cached is not None:
+                return dict(cached)
+
     try:
         df: pd.DataFrame = storage.load_wrestler_frame(name)
     except FileNotFoundError:
@@ -81,7 +92,7 @@ def build_trend_figure(
 
     point_col: str = COL_ADJUSTED_NET_POINTS if metric == "adjusted" else COL_NET_POINTS
     matches: pd.DataFrame = (
-        dated.assign(video=dated.index.to_series().apply(_video_of))
+        dated.assign(video=dated.index.astype(str).str.split(":").str[0])
         .groupby([COL_MATCH_DATE, "video"], sort=False)[point_col]
         .sum()
         .reset_index()
@@ -153,7 +164,7 @@ def build_trend_figure(
         hovermode="closest",
         template="plotly_white",
     )
-    return {
+    result: dict[str, Any] = {
         "fig_json": fig.to_json(),
         "n_matches": n_matches,
         "skipped_rows": skipped,
@@ -161,3 +172,9 @@ def build_trend_figure(
         "metric": metric,
         "window": window,
     }
+    with _TREND_CACHE_LOCK:
+        if identity != _trend_cache_identity:
+            _trend_cache.clear()
+            _trend_cache_identity = identity
+        _trend_cache[cache_key] = result
+    return dict(result)

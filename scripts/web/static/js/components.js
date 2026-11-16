@@ -12,6 +12,8 @@
  *                   (VideoPreviewPanel + VideoPlayerControls).
  */
 
+import { onWs } from "./ws.js";
+
 export function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
@@ -183,25 +185,97 @@ export async function fetchJson(url, options) {
   return { ok: resp.ok, status: resp.status, body };
 }
 
+// Shared /api/config fetch. Every tab needs the same document, so boot used to
+// issue one identical request per tab; they now await this single promise.
+// `invalidateConfig()` drops the cache so "configs-updated" listeners re-fetch.
+let configPromise = null;
+
+export function loadConfig() {
+  if (configPromise) return configPromise;
+  configPromise = fetchJson("/api/config")
+    .then(({ ok, body }) => {
+      if (!ok) throw new Error(body.detail || "Could not load config.");
+      return body;
+    })
+    .catch((err) => {
+      configPromise = null;
+      throw err;
+    });
+  return configPromise;
+}
+
+export function invalidateConfig() {
+  configPromise = null;
+}
+
 /**
  * Poll a background job until it reaches a terminal state.
  * Resolves with the finished job; throws on failure/cancellation.
- * `onProgress(pct)` and `onStatus(message)` fire on each poll.
+ * `onProgress(pct)` and `onStatus(message)` fire on each update.
+ *
+ * Progress arrives over the shared WebSocket, with a slow (5s) HTTP poll as a
+ * fallback for a missed event or a dropped socket, so a long transcode no
+ * longer generates ~150 requests per minute.
  */
 export async function pollJob(jobId, { onProgress = () => {}, onStatus = () => {} } = {}) {
-  const MAX_POLLS = 1500;
-  for (let i = 0; i < MAX_POLLS; i++) {
-    await sleep(400);
-    const { ok, body } = await fetchJson(`/api/jobs/${jobId}`);
-    if (!ok) throw new Error("Job lost");
-    if (body.status === "done") return body;
-    if (body.status === "failed" || body.status === "cancelled") {
-      throw new Error(body.message || "Job failed");
-    }
-    if (typeof body.progress === "number") onProgress(body.progress);
-    if (body.message) onStatus(body.message);
-  }
-  throw new Error("Job timed out");
+  const FALLBACK_MS = 5000;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let fallbackTimer = null;
+    let unsubscribeProgress = null;
+    let unsubscribeFinished = null;
+
+    const cleanup = () => {
+      if (unsubscribeProgress) unsubscribeProgress();
+      if (unsubscribeFinished) unsubscribeFinished();
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+    };
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+    const apply = (body) => {
+      if (typeof body.progress === "number") onProgress(body.progress);
+      if (body.message) onStatus(body.message);
+      if (body.status === "done") settle(resolve, body);
+      else if (body.status === "failed" || body.status === "cancelled") {
+        settle(reject, new Error(body.message || "Job failed"));
+      }
+    };
+    const scheduleFallback = () => {
+      if (settled) return;
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      fallbackTimer = setTimeout(check, FALLBACK_MS);
+    };
+    const check = async () => {
+      if (settled) return;
+      try {
+        const { ok, body } = await fetchJson(`/api/jobs/${jobId}`);
+        if (!ok) {
+          settle(reject, new Error("Job lost"));
+          return;
+        }
+        apply(body);
+      } catch {
+        // Transient network failure; the fallback timer retries.
+      }
+      if (!settled) scheduleFallback();
+    };
+
+    unsubscribeProgress = onWs("job_progress", (event) => {
+      if (settled || event.id !== jobId) return;
+      if (typeof event.progress === "number") onProgress(event.progress);
+      if (event.message) onStatus(event.message);
+      scheduleFallback();
+    });
+    unsubscribeFinished = onWs("job_finished", (event) => {
+      if (event.id === jobId) check();
+    });
+
+    check();
+  });
 }
 
 /**
@@ -236,36 +310,86 @@ function parseClock(text) {
   return parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
 }
 
+const PLOTLY_VENDOR = "/static/vendor/plotly.min.js";
+const PLOTLY_CDN = "https://cdn.plot.ly/plotly-2.35.2.min.js";
+const HLS_VENDOR = "/static/vendor/hls.min.js";
+
 /**
- * Ensure the Plotly library is loaded, resolving with the Plotly object.
- *
- * Resolves immediately when window.Plotly is already present (the vendored
- * plotly.min.js referenced by index.html); otherwise injects the CDN build
- * into the document head and waits for it to load. Rejects after a 15s
- * timeout or if the CDN script fails to load.
+ * Inject a classic script tag and resolve once it has loaded.
+ * Rejects on error or after a 15s timeout.
  */
-export function ensurePlotly() {
-  if (window.Plotly) return Promise.resolve(window.Plotly);
+function loadScript(src) {
   return new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "https://cdn.plot.ly/plotly-2.35.2.min.js";
-    const onLoad = () => {
+    script.src = src;
+    const cleanup = () => {
       clearTimeout(timer);
-      resolve(window.Plotly);
-    };
-    const onError = () => {
-      clearTimeout(timer);
-      reject(new Error("Failed to load Plotly from the CDN."));
-    };
-    const timer = setTimeout(() => {
       script.removeEventListener("load", onLoad);
       script.removeEventListener("error", onError);
-      reject(new Error("Timed out waiting for Plotly to load."));
+    };
+    const onLoad = () => { cleanup(); resolve(); };
+    const onError = () => {
+      cleanup();
+      reject(new Error(`Failed to load script: ${src}`));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out loading script: ${src}`));
     }, 15000);
     script.addEventListener("load", onLoad);
     script.addEventListener("error", onError);
     document.head.appendChild(script);
   });
+}
+
+let plotlyPromise = null;
+
+/**
+ * Ensure the Plotly library is loaded, resolving with the Plotly object.
+ *
+ * Plotly is only needed by the PCA and Trends tabs, so it is no longer loaded
+ * eagerly at boot. The first plot request loads the vendored copy and falls
+ * back to the CDN if the file is missing.
+ */
+export function ensurePlotly() {
+  if (window.Plotly) return Promise.resolve(window.Plotly);
+  if (!plotlyPromise) {
+    plotlyPromise = (async () => {
+      try {
+        await loadScript(PLOTLY_VENDOR);
+      } catch {
+        await loadScript(PLOTLY_CDN);
+      }
+      if (!window.Plotly) throw new Error("Plotly failed to load.");
+      return window.Plotly;
+    })().catch((err) => {
+      plotlyPromise = null;
+      throw err;
+    });
+  }
+  return plotlyPromise;
+}
+
+let hlsPromise = null;
+
+/**
+ * Ensure hls.js is loaded (Chromium cannot play .m3u8 natively).
+ * Loaded on first preview so the ~500 KB library is not part of app boot.
+ */
+function ensureHls() {
+  if (window.Hls) return Promise.resolve(window.Hls);
+  if (!hlsPromise) {
+    hlsPromise = loadScript(HLS_VENDOR)
+      .then(() => {
+        if (!window.Hls) throw new Error("hls.js failed to load.");
+        return window.Hls;
+      })
+      .catch((err) => {
+        hlsPromise = null;
+        throw err;
+      });
+  }
+  return hlsPromise;
 }
 
 /**
@@ -339,17 +463,39 @@ export function checkList({ label = "", items = [], counts = false, onChange = (
   let entries = [];
   let teamMap = teams || {};
   let teamFilter = "";
+  let assignedMembers = new Set();
 
   const UNASSIGNED = "__unassigned__";
 
-  function inAnyTeam(item) {
+  function refreshAssigned() {
+    const assigned = new Set();
     for (const members of Object.values(teamMap)) {
-      if (members.includes(item)) return true;
+      for (const item of members) assigned.add(item);
     }
-    return false;
+    assignedMembers = assigned;
   }
 
+  function inAnyTeam(item) {
+    return assignedMembers.has(item);
+  }
+
+  function sameItems(current, next) {
+    if (current.length !== next.length) return false;
+    for (let i = 0; i < current.length; i++) {
+      if (current[i] !== next[i]) return false;
+    }
+    return true;
+  }
+
+  refreshAssigned();
+
   function rebuild(newItems) {
+    if (
+      entries.length === newItems.length &&
+      sameItems(entries.map((entry) => entry.item), newItems)
+    ) {
+      return;
+    }
     entries = newItems.map((item) => {
       const cb = el("input", { type: "checkbox", value: item });
       const labelEl = el("label", { class: "check-label", text: item });
@@ -453,7 +599,7 @@ export function checkList({ label = "", items = [], counts = false, onChange = (
     clear,
     setCount,
     setItems: rebuild,
-    setTeams(data) { teamMap = data || {}; renderTeamSelect(); },
+    setTeams(data) { teamMap = data || {}; refreshAssigned(); renderTeamSelect(); },
   };
 }
 
@@ -471,24 +617,47 @@ export function filterList({ label = "", items = [], placeholder = "Type to filt
   let disabled = false;
   let teamMap = teams || {};
   let teamFilter = "";
+  let assignedMembers = new Set();
 
   const UNASSIGNED = "__unassigned__";
 
-  function inAnyTeam(item) {
+  function refreshAssigned() {
+    const assigned = new Set();
     for (const members of Object.values(teamMap)) {
-      if (members.includes(item)) return true;
+      for (const item of members) assigned.add(item);
     }
-    return false;
+    assignedMembers = assigned;
+  }
+
+  function inAnyTeam(item) {
+    return assignedMembers.has(item);
+  }
+
+  function sameItems(current, next) {
+    if (current.length !== next.length) return false;
+    for (let i = 0; i < current.length; i++) {
+      if (current[i] !== next[i]) return false;
+    }
+    return true;
+  }
+
+  refreshAssigned();
+
+  function updateActive() {
+    for (const entry of entries) {
+      entry.btn.classList.toggle("active", entry.item === selectedValue);
+    }
   }
 
   function select(item) {
     if (disabled) return;
     selectedValue = item;
-    rebuild(itemValues);
+    updateActive();
     onChange(item);
   }
 
   function rebuild(newItems) {
+    if (sameItems(itemValues, newItems)) return;
     itemValues = [...newItems];
     entries = newItems.map((item) => {
       const attrs = {
@@ -560,11 +729,11 @@ export function filterList({ label = "", items = [], placeholder = "Type to filt
   return {
     node: box,
     get selected() { return selectedValue; },
-    setSelected(value) { selectedValue = value; rebuild(itemValues); },
-    clear() { selectedValue = ""; rebuild(itemValues); },
+    setSelected(value) { selectedValue = value; updateActive(); },
+    clear() { selectedValue = ""; updateActive(); },
     setItems: rebuild,
     setDisabled,
-    setTeams(data) { teamMap = data || {}; renderTeamSelect(); },
+    setTeams(data) { teamMap = data || {}; refreshAssigned(); renderTeamSelect(); },
   };
 }
 
@@ -608,6 +777,25 @@ export function videoPlayer({ onPosition = () => {} } = {}) {
     onPosition(Math.floor(video.currentTime * 1000));
   };
 
+  const mediaDuration = () => {
+    let total = Number.isFinite(video.duration) ? video.duration : 0;
+    // Progressive/live HLS may report Infinity or a lagging total until the
+    // playlist is complete; the seekable range is the best known length then.
+    const seekable = video.seekable;
+    if (seekable && seekable.length > 0) {
+      total = Math.max(total, seekable.end(seekable.length - 1));
+    }
+    return total;
+  };
+
+  const syncDuration = () => {
+    const next = mediaDuration();
+    if (next === duration) return;
+    duration = next;
+    slider.max = String(duration * 1000);
+    updateTime();
+  };
+
   playBtn.addEventListener("click", () => {
     if (video.paused) video.play(); else video.pause();
   });
@@ -615,12 +803,15 @@ export function videoPlayer({ onPosition = () => {} } = {}) {
   fwdBtn.addEventListener("click", () => { video.currentTime = Math.min(duration, video.currentTime + 5); });
   slider.addEventListener("input", () => { video.currentTime = parseInt(slider.value, 10) / 1000; });
 
+  // Duration is not final when metadata first loads: HLS appends segments (and
+  // only then a complete duration) over time, so keep the total in sync.
   video.addEventListener("loadedmetadata", () => {
-    duration = Number.isFinite(video.duration) ? video.duration : 0;
-    slider.max = String(duration * 1000);
-    updateTime();
+    syncDuration();
     seekIfReady();
   });
+  video.addEventListener("durationchange", syncDuration);
+  video.addEventListener("progress", syncDuration);
+  video.addEventListener("seeked", syncDuration);
   video.addEventListener("timeupdate", updateTime);
   video.addEventListener("play", () => { playBtn.textContent = "Pause"; });
   video.addEventListener("pause", () => { playBtn.textContent = "Play"; });
@@ -633,6 +824,10 @@ export function videoPlayer({ onPosition = () => {} } = {}) {
     load(sourceUrl, startTime = 0) {
       destroyHls();
       video.pause();
+      duration = 0;
+      slider.max = "0";
+      slider.value = "0";
+      timeLabel.textContent = "0:00 / 0:00";
       pendingStartTime = startTime;
       if (!/\.m3u8($|\?)/.test(sourceUrl)) {
         video.src = sourceUrl;
@@ -649,6 +844,12 @@ export function videoPlayer({ onPosition = () => {} } = {}) {
           showToast("Preview stream failed to start.", "error");
           return;
         }
+        try {
+          await ensureHls();
+        } catch {
+          // Fall back to native playback (Safari) below.
+        }
+        if (token !== loadToken) return;
         if (window.Hls && Hls.isSupported()) {
           const config = { synchronizeToLiveEdge: false };
           if (startTime > 0) config.startPosition = startTime;
@@ -720,16 +921,12 @@ export function queryPanel({
   const minPts = el("input", {
     class: "combo-input pts-input",
     type: "number",
-    value: "-20",
-    min: "-20",
-    max: "20",
+    placeholder: "No min",
   });
   const maxPts = el("input", {
     class: "combo-input pts-input",
     type: "number",
-    value: "20",
-    min: "-20",
-    max: "20",
+    placeholder: "No max",
   });
 
   // ---------- Status ----------
@@ -738,9 +935,11 @@ export function queryPanel({
 
   // ---------- Action buttons ----------
 
-  function pointsValue(input, fallback) {
-    const n = parseInt(input.value, 10);
-    return Number.isNaN(n) ? fallback : n;
+  function pointsValue(input) {
+    const raw = input.value.trim();
+    if (raw === "") return null;
+    const n = parseInt(raw, 10);
+    return Number.isNaN(n) ? null : n;
   }
 
   function buildQuery() {
@@ -750,8 +949,8 @@ export function queryPanel({
       tie_up: tie.selected,
       team_move: teamMove.selected,
       opp_move: oppMove.selected,
-      min_points: pointsValue(minPts, -20),
-      max_points: pointsValue(maxPts, 20),
+      min_points: pointsValue(minPts),
+      max_points: pointsValue(maxPts),
     };
   }
 

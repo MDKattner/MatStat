@@ -10,6 +10,7 @@ JobContext.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -162,6 +163,34 @@ def build_chapters(sequences: list[TagSequence], duration: int) -> list[ChapterS
     return chapters
 
 
+def _publish_output(tmp_output: Path, output_path: Path) -> None:
+    """Move a finished temp file into place without overwriting an existing tag.
+
+    ``Path.replace`` silently overwrites, so two tag jobs racing on the same
+    output name (for example ``match.mp4`` and ``match.mkv``, which both become
+    ``match.mkv``) could each pass the earlier ``exists`` check and the later
+    one would destroy the winner. A hard link fails atomically when the
+    destination exists, so the loser reports the usual collision instead.
+
+    Args:
+        tmp_output: The fully written temp file.
+        output_path: The final path in vids/taged/.
+
+    Raises:
+        ValueError: If another job published the output first.
+    """
+    try:
+        os.link(tmp_output, output_path)
+    except FileExistsError:
+        raise ValueError(
+            f"Tagged video already exists: {output_path.name} — "
+            "use the Auditing tab to re-tag it or delete it first"
+        )
+    finally:
+        # The link (when created) keeps the inode; the temp name is done.
+        tmp_output.unlink(missing_ok=True)
+
+
 def run_tag_job(
     ctx: JobContext,
     video: str,
@@ -253,7 +282,7 @@ def run_tag_job(
         tmp_output.unlink(missing_ok=True)
         raise RuntimeError(f"Tagging failed: {result.message}")
 
-    tmp_output.replace(output_path)
+    _publish_output(tmp_output, output_path)
     input_path.unlink(missing_ok=True)
 
     ctx.report(100, f"Tagged {output_name}")

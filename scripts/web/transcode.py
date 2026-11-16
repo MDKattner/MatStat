@@ -162,9 +162,12 @@ def build_hls_cmd(
 
 
 def _supports_stream_copy(source: Path) -> bool:
-    """True if a source's video+audio can be remuxed into TS verbatim."""
+    """True if a source's streams can be remuxed into TS verbatim."""
     codecs: dict[str, str] = GetVideoCodecs(source)
-    return codecs.get("video") == "h264" and codecs.get("audio") == "aac"
+    if codecs.get("video") != "h264":
+        return False
+    # A source with no audio is fine: build_hls_cmd maps audio optionally.
+    return codecs.get("audio", "") in ("", "aac")
 
 
 def prepare_hls(source: Path) -> Path:

@@ -6,7 +6,7 @@
  */
 
 import { connectWs, onWs, onWsStatus } from "./ws.js";
-import { confirmModal, el, fetchJson, promptForm, showModal, showToast } from "./components.js";
+import { confirmModal, el, fetchJson, invalidateConfig, promptForm, showModal, showToast } from "./components.js";
 import { mountAudit } from "./tabs/audit.js";
 import { mountCombineClips } from "./tabs/combine_clips.js";
 import { mountPca } from "./tabs/pca.js";
@@ -48,7 +48,37 @@ function initLogout() {
 
 // ---------- Tabs ----------
 
+// Each tab is mounted the first time it is shown. Mounting every tab at boot
+// ran ~10 startup requests and an ffprobe sweep of every tagged video even when
+// the user never opened those tabs; deferring keeps startup to the visible tab.
+const TAB_MOUNTS = {
+  "audit": () => mountAudit(document.getElementById("audit-root")),
+  "combine-clips": () => mountCombineClips(document.getElementById("combine-clips-root")),
+  "pca": () => mountPca(document.getElementById("pca-root")),
+  "search": () => mountSearch(document.getElementById("search-root")),
+  "tag-film": () => mountTagFilm(document.getElementById("tag-film-root")),
+  "team-eval": () => mountTeamEval(document.getElementById("team-eval-root")),
+  "trend": () => mountTrend(document.getElementById("trend-root")),
+};
+
+const mountedTabs = new Set();
+
+function ensureTabMounted(tabId) {
+  if (mountedTabs.has(tabId)) return;
+  const mount = TAB_MOUNTS[tabId];
+  if (!mount) return;
+  // Mark as mounted before calling mount so a mount that throws cannot retry
+  // on every tab switch (and spam the console).
+  mountedTabs.add(tabId);
+  try {
+    mount();
+  } catch (err) {
+    console.error(`mount ${tabId} failed:`, err);
+  }
+}
+
 function selectTab(tabId) {
+  ensureTabMounted(tabId);
   for (const btn of document.querySelectorAll(".tab-btn")) {
     btn.setAttribute("aria-selected", String(btn.dataset.tab === tabId));
   }
@@ -64,6 +94,8 @@ function initTabs() {
     const btn = event.target.closest(".tab-btn");
     if (btn) selectTab(btn.dataset.tab);
   });
+  const selected = document.querySelector('.tab-btn[aria-selected="true"]');
+  selectTab(selected ? selected.dataset.tab : "tag-film");
 }
 
 // ---------- Log dock ----------
@@ -535,6 +567,7 @@ function initConfigEditor() {
         config.teams = fresh.body.teams || {};
         renderAll();
       }
+      invalidateConfig();
       window.dispatchEvent(new CustomEvent("configs-updated"));
       return;
     }
@@ -543,6 +576,7 @@ function initConfigEditor() {
     config.teams = wr.body.teams || config.teams;
     dialog.close();
     showToast("Config saved.", "success");
+    invalidateConfig();
     window.dispatchEvent(new CustomEvent("configs-updated"));
   });
 
@@ -614,7 +648,6 @@ function boot() {
       console.error(`init ${name} failed:`, err);
     }
   };
-  safe("initTabs", initTabs);
   safe("initAuthRedirect", initAuthRedirect);
   safe("initLogout", initLogout);
   safe("initLogDock", initLogDock);
@@ -622,13 +655,9 @@ function boot() {
   safe("initAbout", initAbout);
   safe("initConfigEditor", initConfigEditor);
   safe("initRulesetBanner", initRulesetBanner);
-  safe("mountAudit", () => mountAudit(document.getElementById("audit-root")));
-  safe("mountCombineClips", () => mountCombineClips(document.getElementById("combine-clips-root")));
-  safe("mountPca", () => mountPca(document.getElementById("pca-root")));
-  safe("mountSearch", () => mountSearch(document.getElementById("search-root")));
-  safe("mountTagFilm", () => mountTagFilm(document.getElementById("tag-film-root")));
-  safe("mountTeamEval", () => mountTeamEval(document.getElementById("team-eval-root")));
-  safe("mountTrend", () => mountTrend(document.getElementById("trend-root")));
+  // Tabs are mounted last: initTabs selects (and mounts) the initially visible
+  // tab, so the auth-redirect fetch wrapper must be installed first.
+  safe("initTabs", initTabs);
   connectWs();
 }
 

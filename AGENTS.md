@@ -187,8 +187,9 @@ exercise the Caddy and auth paths.
 - **Constants**: Use `COL_*` constants and `EMPTY_SENTINEL` (never hardcode).
 
 ## Architecture & Patterns
-- **Async Tasks**: Use `JobManager.submit(kind, fn)`. Jobs run in thread pool.
-- **FFmpeg**: Use `run_ffmpeg(cmd, ...)` from `scripts.web.ffmpeg` (blocking, handles cancellation/logging).
+- **Async Tasks**: Use `JobManager.submit(kind, fn)`. Jobs run on daemon worker threads and must return when their `ctx.cancelled` checkpoint is set; shutdown abandons stragglers after `MATSTAT_SHUTDOWN_GRACE` (default 10 s) so stopping the server always returns.
+- **FFmpeg**: Use `run_ffmpeg(cmd, ...)` from `scripts.web.ffmpeg` (blocking, handles cancellation/logging). It registers the child process for shutdown via `scripts/processes.py`.
+- **Child Processes**: Short tool calls (`ffprobe`, `mkvmerge`, `mkvpropedit`) go through `run_tracked` from `scripts.processes`. Never call `subprocess` directly; children must be tracked so shutdown can kill their process groups.
 - **Video Preview**: HLS progressive streaming (`scripts.web.transcode`).
 - **Configs**: JSON in `cfg/` (never commit real wrestler PII). Loaders in `helpers.py` (e.g., `LoadAppConfig`).
 - **Compiled data**: SQLite at `stats/wrestler_data/matstat.db`, owned by `scripts/storage.py` (`wrestlers`, `sequences`, `compile_runs`). Use `storage.load_wrestler_frame` / `load_all_frames` for reads and `storage.apply_compile` for writes; never open the DB directly elsewhere.
