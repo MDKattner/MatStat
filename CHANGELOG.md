@@ -8,8 +8,9 @@ changes bump the version in the same commit.
 
 ### Added
 
-- A minimal `Dockerfile` builds the flake package inside the official
+- A minimal two-stage `Dockerfile` builds the flake package inside the official
   `nixos/nix` image, for non-Nix hosts that deploy with containers only. The
+  final image keeps only the runtime closure, not Nix's build inputs. The
   entrypoint seeds `/data` from the packaged defaults only when a file is
   absent, keeps all config, media, stats, and logs in that volume, and
   `.dockerignore` prevents a real `cfg/Wrestlers.json`, media, or stats from
