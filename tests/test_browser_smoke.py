@@ -191,6 +191,134 @@ class TestDialogs:
         page.locator("#about-dialog button[value='close']").click()
         dialog.wait_for(state="hidden")
 
+    def test_default_theme_follows_color_scheme(
+        self, app_page: tuple[Any, list[str]]
+    ) -> None:
+        page, errors = app_page
+        # No saved choice: the OS preference decides the Catppuccin variant.
+        page.emulate_media(color_scheme="light")
+        page.reload(wait_until="networkidle")
+        page.locator("#tag-film-root > *").first.wait_for(state="attached")
+        assert page.evaluate(
+            "document.documentElement.dataset.theme"
+        ) == "catppuccin-latte"
+        page.emulate_media(color_scheme="dark")
+        page.reload(wait_until="networkidle")
+        page.locator("#tag-film-root > *").first.wait_for(state="attached")
+        assert page.evaluate(
+            "document.documentElement.dataset.theme"
+        ) == "catppuccin-mocha"
+        assert page.evaluate("localStorage.getItem('matstat-theme')") is None
+        assert errors == []
+
+    def test_default_theme_follows_prefers_contrast(
+        self, app_page: tuple[Any, list[str]]
+    ) -> None:
+        page, errors = app_page
+        # No saved choice and a request for more contrast: the High Contrast
+        # theme matching the OS colour scheme wins.
+        page.emulate_media(color_scheme="dark", contrast="more")
+        page.reload(wait_until="networkidle")
+        page.locator("#tag-film-root > *").first.wait_for(state="attached")
+        assert page.evaluate(
+            "document.documentElement.dataset.theme"
+        ) == "high-contrast"
+        page.emulate_media(color_scheme="light", contrast="more")
+        page.reload(wait_until="networkidle")
+        page.locator("#tag-film-root > *").first.wait_for(state="attached")
+        assert page.evaluate(
+            "document.documentElement.dataset.theme"
+        ) == "high-contrast-light"
+        assert page.evaluate("localStorage.getItem('matstat-theme')") is None
+        assert errors == []
+
+    def test_prefers_contrast_reacts_without_reload(
+        self, app_page: tuple[Any, list[str]]
+    ) -> None:
+        page, errors = app_page
+        page.emulate_media(color_scheme="dark", contrast="no-preference")
+        page.reload(wait_until="networkidle")
+        page.locator("#tag-film-root > *").first.wait_for(state="attached")
+        assert page.evaluate(
+            "document.documentElement.dataset.theme"
+        ) == "catppuccin-mocha"
+        # Toggling "increase contrast" in the OS applies immediately.
+        page.emulate_media(color_scheme="dark", contrast="more")
+        page.wait_for_timeout(100)
+        assert page.evaluate(
+            "document.documentElement.dataset.theme"
+        ) == "high-contrast"
+        page.emulate_media(color_scheme="dark", contrast="no-preference")
+        page.wait_for_timeout(100)
+        assert page.evaluate(
+            "document.documentElement.dataset.theme"
+        ) == "catppuccin-mocha"
+        assert errors == []
+
+    def test_saved_theme_overrides_prefers_contrast(
+        self, app_page: tuple[Any, list[str]]
+    ) -> None:
+        page, errors = app_page
+        page.emulate_media(color_scheme="dark", contrast="more")
+        page.evaluate(
+            "localStorage.setItem('matstat-theme', 'nord')"
+        )
+        page.reload(wait_until="networkidle")
+        page.locator("#tag-film-root > *").first.wait_for(state="attached")
+        assert page.evaluate(
+            "document.documentElement.dataset.theme"
+        ) == "nord"
+        assert errors == []
+
+    def test_theme_selection_persists(
+        self, app_page: tuple[Any, list[str]]
+    ) -> None:
+        page, errors = app_page
+        page.emulate_media(color_scheme="dark")
+        page.locator("#settings-btn").click()
+        theme = page.locator("#cfg-theme")
+        theme.wait_for(state="visible")
+        assert theme.locator("option").count() >= 12
+        assert theme.input_value() == "catppuccin-mocha"
+        theme.select_option("dracula")
+        assert page.evaluate(
+            "document.documentElement.dataset.theme"
+        ) == "dracula"
+        assert page.evaluate("localStorage.getItem('matstat-theme')") == "dracula"
+        page.locator("#cfg-cancel").click()
+        page.reload(wait_until="networkidle")
+        page.locator("#tag-film-root > *").first.wait_for(state="attached")
+        assert page.evaluate(
+            "document.documentElement.dataset.theme"
+        ) == "dracula"
+        assert errors == []
+
+    def test_high_contrast_themes_are_offered(
+        self, app_page: tuple[Any, list[str]]
+    ) -> None:
+        page, errors = app_page
+        page.emulate_media(color_scheme="dark")
+        page.locator("#settings-btn").click()
+        theme = page.locator("#cfg-theme")
+        theme.wait_for(state="visible")
+        values: list[str] = theme.evaluate(
+            "select => [...select.options].map(option => option.value)"
+        )
+        assert "high-contrast" in values
+        assert "high-contrast-light" in values
+        for theme_id, scheme in (
+            ("high-contrast", "dark"),
+            ("high-contrast-light", "light"),
+        ):
+            theme.select_option(theme_id)
+            assert page.evaluate(
+                "document.documentElement.dataset.theme"
+            ) == theme_id
+            assert page.evaluate(
+                "getComputedStyle(document.documentElement).colorScheme"
+            ) == scheme
+        assert errors == []
+
     def test_delete_confirmation_dialog(
         self, app_page: tuple[Any, list[str]]
     ) -> None:

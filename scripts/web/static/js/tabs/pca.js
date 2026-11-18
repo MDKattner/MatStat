@@ -16,6 +16,7 @@ import {
   loadConfig,
   pollJob,
   showToast,
+  stylePlotLayout,
   videoPlayer,
 } from "../components.js";
 
@@ -243,7 +244,12 @@ export function mountPca(root) {
 
     try {
       const fig = JSON.parse(body.fig_json);
-      await Plotly.newPlot(plotEl, fig.data, fig.layout, { responsive: true });
+      await Plotly.newPlot(
+        plotEl,
+        fig.data,
+        stylePlotLayout(fig.layout),
+        { responsive: true }
+      );
     } catch (err) {
       showToast("Could not render the chart.", "error");
       setStatus("Could not render the chart.");
@@ -322,6 +328,11 @@ export function mountPca(root) {
     loadPlot();
   });
   loadPlotBtn.addEventListener("click", loadPlot);
+  // Re-render an open chart when the user switches theme, since Plotly embeds
+  // colours in SVG at draw time.
+  window.addEventListener("theme-changed", () => {
+    if (plotEl.data && plotEl.data.length > 0) loadPlot();
+  });
   compileBtn.addEventListener("click", compileReel);
 
   playReelBtn.addEventListener("click", async () => {

@@ -1,0 +1,285 @@
+/* User-selectable colour themes.
+ *
+ * The active theme is `data-theme` on <html> (set by static/js/theme-init.js
+ * before first paint and by static/js/themes.js afterwards).
+ *
+ * Until the user picks a theme the choice follows the operating system:
+ * Catppuccin Mocha for dark, Catppuccin Latte for light. So Catppuccin Mocha
+ * is the bare `:root` palette and the light preference overrides it.
+ *
+ * Every theme defines the same custom properties so app.css never needs to
+ * know which theme is active.
+ */
+
+:root,
+:root[data-theme="catppuccin-mocha"] {
+  color-scheme: dark;
+  --bg: #1e1e2e;
+  --bg-raised: #181825;
+  --bg-input: #11111b;
+  --border: #313244;
+  --text: #cdd6f4;
+  --text-dim: #a6adc8;
+  --accent: #89b4fa;
+  --accent-hover: #b4befe;
+  --accent-soft: rgba(137, 180, 250, 0.14);
+  --on-accent: #11111b;
+  --success: #a6e3a1;
+  --warning: #f9e2af;
+  --error: #f38ba8;
+  --on-success: #11111b;
+  --on-warning: #11111b;
+  --on-error: #11111b;
+}
+
+/* Catppuccin Latte is the default on a light desktop (and an explicit choice
+   below). Keep this copy in sync with `:root[data-theme="catppuccin-latte"]`. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+    --bg: #eff1f5;
+    --bg-raised: #e6e9ef;
+    --bg-input: #dce0e8;
+    --border: #ccd0da;
+    --text: #4c4f69;
+    --text-dim: #5c5f77;
+    --accent: #1e66f5;
+    --accent-hover: #7287fd;
+    --accent-soft: rgba(30, 102, 245, 0.12);
+    --on-accent: #eff1f5;
+    --success: #40a02b;
+    --warning: #df8e1d;
+    --error: #d20f39;
+    --on-success: #1e1e2e;
+    --on-warning: #1e1e2e;
+    --on-error: #eff1f5;
+  }
+}
+
+:root[data-theme="catppuccin-latte"] {
+  color-scheme: light;
+  --bg: #eff1f5;
+  --bg-raised: #e6e9ef;
+  --bg-input: #dce0e8;
+  --border: #ccd0da;
+  --text: #4c4f69;
+  --text-dim: #5c5f77;
+  --accent: #1e66f5;
+  --accent-hover: #7287fd;
+  --accent-soft: rgba(30, 102, 245, 0.12);
+  --on-accent: #eff1f5;
+  --success: #40a02b;
+  --warning: #df8e1d;
+  --error: #d20f39;
+  --on-success: #1e1e2e;
+  --on-warning: #1e1e2e;
+  --on-error: #eff1f5;
+}
+
+:root[data-theme="neofusion"] {
+  color-scheme: dark;
+  --bg: #070f1c;
+  --bg-raised: #0e1b2d;
+  --bg-input: #050a13;
+  --border: #2f516c;
+  --text: #e0d9c7;
+  --text-dim: #8fa3b8;
+  --accent: #5db2f8;
+  --accent-hover: #86dbf5;
+  --accent-soft: rgba(93, 178, 248, 0.14);
+  --on-accent: #050539;
+  --success: #5db2f8;
+  --warning: #d943a8;
+  --error: #ea6847;
+  --on-success: #050539;
+  --on-warning: #050539;
+  --on-error: #050539;
+}
+
+:root[data-theme="dracula"] {
+  color-scheme: dark;
+  --bg: #282a36;
+  --bg-raised: #21222c;
+  --bg-input: #191a21;
+  --border: #44475a;
+  --text: #f8f8f2;
+  --text-dim: #9ba3c9;
+  --accent: #bd93f9;
+  --accent-hover: #ff79c6;
+  --accent-soft: rgba(189, 147, 249, 0.14);
+  --on-accent: #191a21;
+  --success: #50fa7b;
+  --warning: #f1fa8c;
+  --error: #ff5555;
+  --on-success: #191a21;
+  --on-warning: #191a21;
+  --on-error: #191a21;
+}
+
+:root[data-theme="nord"] {
+  color-scheme: dark;
+  --bg: #2e3440;
+  --bg-raised: #3b4252;
+  --bg-input: #272c36;
+  --border: #4c566a;
+  --text: #eceff4;
+  --text-dim: #a9b3c4;
+  --accent: #88c0d0;
+  --accent-hover: #8fbcbb;
+  --accent-soft: rgba(136, 192, 208, 0.14);
+  --on-accent: #2e3440;
+  --success: #a3be8c;
+  --warning: #ebcb8b;
+  --error: #bf616a;
+  --on-success: #2e3440;
+  --on-warning: #2e3440;
+  --on-error: #2e3440;
+}
+
+:root[data-theme="gruvbox-dark"] {
+  color-scheme: dark;
+  --bg: #282828;
+  --bg-raised: #32302f;
+  --bg-input: #1d2021;
+  --border: #504945;
+  --text: #ebdbb2;
+  --text-dim: #a89984;
+  --accent: #83a598;
+  --accent-hover: #8ec07c;
+  --accent-soft: rgba(131, 165, 152, 0.14);
+  --on-accent: #1d2021;
+  --success: #b8bb26;
+  --warning: #fabd2f;
+  --error: #fb4934;
+  --on-success: #1d2021;
+  --on-warning: #1d2021;
+  --on-error: #1d2021;
+}
+
+:root[data-theme="tokyo-night"] {
+  color-scheme: dark;
+  --bg: #1a1b26;
+  --bg-raised: #16161e;
+  --bg-input: #13131a;
+  --border: #292e42;
+  --text: #c0caf5;
+  --text-dim: #9aa5ce;
+  --accent: #7aa2f7;
+  --accent-hover: #bb9af7;
+  --accent-soft: rgba(122, 162, 247, 0.14);
+  --on-accent: #1a1b26;
+  --success: #9ece6a;
+  --warning: #e0af68;
+  --error: #f7768e;
+  --on-success: #1a1b26;
+  --on-warning: #1a1b26;
+  --on-error: #1a1b26;
+}
+
+:root[data-theme="one-dark"] {
+  color-scheme: dark;
+  --bg: #282c34;
+  --bg-raised: #21252b;
+  --bg-input: #1b1f24;
+  --border: #3e4451;
+  --text: #abb2bf;
+  --text-dim: #9da5b4;
+  --accent: #61afef;
+  --accent-hover: #56b6c2;
+  --accent-soft: rgba(97, 175, 239, 0.14);
+  --on-accent: #1b1f24;
+  --success: #98c379;
+  --warning: #e5c07b;
+  --error: #e06c75;
+  --on-success: #1b1f24;
+  --on-warning: #1b1f24;
+  --on-error: #1b1f24;
+}
+
+:root[data-theme="solarized-dark"] {
+  color-scheme: dark;
+  --bg: #002b36;
+  --bg-raised: #073642;
+  --bg-input: #001f27;
+  --border: #586e75;
+  --text: #eee8d5;
+  --text-dim: #93a1a1;
+  --accent: #268bd2;
+  --accent-hover: #2aa198;
+  --accent-soft: rgba(38, 139, 210, 0.16);
+  --on-accent: #fdf6e3;
+  --success: #859900;
+  --warning: #b58900;
+  --error: #dc322f;
+  --on-success: #002b36;
+  --on-warning: #002b36;
+  --on-error: #fdf6e3;
+}
+
+:root[data-theme="github-dark"] {
+  color-scheme: dark;
+  --bg: #0d1117;
+  --bg-raised: #161b22;
+  --bg-input: #010409;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --text-dim: #8b949e;
+  --accent: #58a6ff;
+  --accent-hover: #79c0ff;
+  --accent-soft: rgba(88, 166, 255, 0.14);
+  --on-accent: #0d1117;
+  --success: #3fb950;
+  --warning: #d29922;
+  --error: #f85149;
+  --on-success: #0d1117;
+  --on-warning: #0d1117;
+  --on-error: #0d1117;
+}
+
+/* High Contrast (dark), modelled on VS Code's Default High Contrast theme:
+   pure black canvas, pure white text and borders, and no colour carrying
+   meaning on its own. Every pair below measures at least 8.6:1, well past the
+   WCAG AA minimum, so it also suits users who need more than the default
+   palettes offer. */
+:root[data-theme="high-contrast"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --bg-raised: #0a0a0a;
+  --bg-input: #000000;
+  --border: #ffffff;
+  --text: #ffffff;
+  --text-dim: #c8c8c8;
+  --accent: #4fc1ff;
+  --accent-hover: #9cdcfe;
+  --accent-soft: rgba(79, 193, 255, 0.22);
+  --on-accent: #000000;
+  --success: #4ade80;
+  --warning: #ffd166;
+  --error: #ff8080;
+  --on-success: #000000;
+  --on-warning: #000000;
+  --on-error: #000000;
+}
+
+/* High Contrast (light), modelled on VS Code's Light High Contrast theme:
+   white canvas, black text and borders, dark saturated accents. Every pair
+   measures at least 5.9:1. */
+:root[data-theme="high-contrast-light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-raised: #f2f2f2;
+  --bg-input: #ffffff;
+  --border: #000000;
+  --text: #000000;
+  --text-dim: #4a4a4a;
+  --accent: #0f4a85;
+  --accent-hover: #0b3a68;
+  --accent-soft: rgba(15, 74, 133, 0.12);
+  --on-accent: #ffffff;
+  --success: #096d48;
+  --warning: #8a5a00;
+  --error: #b5200d;
+  --on-success: #ffffff;
+  --on-warning: #ffffff;
+  --on-error: #ffffff;
+}

@@ -30,6 +30,7 @@ MatStat provides a FastAPI web app to tag wrestling matches, extract sequence da
 -   **Trends:** per-match net/adjusted points charted over the season with cumulative and rolling averages (matches with no recorded date are skipped and reported).
 -   Interactive PCA analysis: brush-select sequences or matches on an offense-vs-defense component scatter to preview them or compile them into a highlight reel.
 -   Configuration is done via JSON config files for wrestlers, moves, and scoring outcomes, editable through a built-in Config Editor (header gear button).
+-   **Per-browser themes:** twelve palettes including light and dark High Contrast variants, chosen in **Config Editor → Appearance**. With no saved choice the app follows the operating system's light/dark mode and its *increase contrast* setting, and the choice also applies to the login page.
 
 ## Data Pipeline
 
