@@ -4,7 +4,7 @@ All notable changes to MatStat are recorded here. The version lives in
 [`VERSION`](VERSION); releases are tagged `vMAJOR.MINOR.PATCH`, and packaging
 changes bump the version in the same commit.
 
-## [0.3.0] - 2026-11-18
+## [0.2.2] - 2026-11-18
 
 A user-interface and accessibility update. There are no API, configuration, or
 data-format changes; existing deployments upgrade in place.
