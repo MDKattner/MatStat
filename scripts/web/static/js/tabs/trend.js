@@ -6,7 +6,7 @@
  * a recorded match date are skipped and reported in the status line.
  */
 
-import { el, ensurePlotly, fetchJson, showToast } from "../components.js";
+import { el, ensurePlotly, fetchJson, showToast, stylePlotLayout } from "../components.js";
 
 /**
  * Mount the Trends tab into `root` (the #trend-root element).
@@ -104,7 +104,12 @@ export function mountTrend(root) {
 
     try {
       const fig = JSON.parse(body.fig_json);
-      Plotly.newPlot(plotEl, fig.data, fig.layout, { responsive: true });
+      Plotly.newPlot(
+        plotEl,
+        fig.data,
+        stylePlotLayout(fig.layout),
+        { responsive: true }
+      );
     } catch (err) {
       showToast("Could not render the chart.", "error");
       setStatus("Could not render the chart.");
@@ -130,6 +135,11 @@ export function mountTrend(root) {
   });
   windowInput.addEventListener("change", loadPlot);
   loadPlotBtn.addEventListener("click", loadPlot);
+  // Re-render an open chart when the user switches theme, since Plotly embeds
+  // colours in SVG at draw time.
+  window.addEventListener("theme-changed", () => {
+    if (plotEl.data && plotEl.data.length > 0) loadPlot();
+  });
 
   /**
    * Populate the wrestler select from the compiled-data listing.

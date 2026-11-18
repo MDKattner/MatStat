@@ -4,6 +4,71 @@ All notable changes to MatStat are recorded here. The version lives in
 [`VERSION`](VERSION); releases are tagged `vMAJOR.MINOR.PATCH`, and packaging
 changes bump the version in the same commit.
 
+## [0.3.0] - 2026-11-18
+
+A user-interface and accessibility update. There are no API, configuration, or
+data-format changes; existing deployments upgrade in place.
+
+### Added
+
+- **Twelve per-browser themes**, chosen in **Config Editor → Appearance**. The
+  list includes Catppuccin Mocha/Latte, Neofusion, Dracula, Nord, Gruvbox Dark,
+  Tokyo Night, One Dark, Solarized Dark, GitHub Dark, and two new High Contrast
+  entries. The choice is saved to `localStorage`, applies to the login page on
+  the same browser, and is never sent to the server.
+- **High Contrast (dark)** and **High Contrast (light)**, modelled on VS Code's
+  Default High Contrast themes: black or white canvas, hard borders, and
+  saturated accents. The dark palette keeps every text pair at or above 8.6:1
+  and the light palette at or above 5.9:1, well past WCAG AA.
+- **OS-driven defaults**, including accessibility settings. With no saved theme
+  the app follows the desktop: High Contrast when `prefers-contrast: more` is
+  set, otherwise Catppuccin Mocha or Latte by `prefers-color-scheme`. Both media
+  queries are watched live, so changing the OS setting applies without a reload;
+  an explicit theme choice always wins.
+- A pre-paint theme bootstrap on the login page, so it no longer flashes the old
+  hard-coded dark palette.
+
+### Changed
+
+- Palette tokens moved out of `app.css` into `css/themes.css`; `app.css` now
+  owns structure and theme-independent details only (`--radius-*`,
+  `--shadow-*`, `--hover`, `--stripe`, `accent-color`, `::selection`).
+- Elevation, hover, and striping derive from the active theme, with
+  `light-dark()` shadows and `color-mix()` tones, so light themes no longer
+  inherit dark-theme shadows.
+- Pattern Map and Trends charts are recoloured from the active theme and
+  re-render on a theme switch instead of staying in the backend's light
+  template.
+- Header About and Config Editor icons are inline SVG rather than text glyphs,
+  with consistent 32 px targets.
+- Toasts animate in, dialogs get a blurred backdrop, and pressed buttons move
+  by 1 px for tactile feedback.
+- The video panel now shows an explicit **Select a video to preview** overlay,
+  a spinner while buffering, and a readable error state instead of an empty
+  black frame.
+- Segmented controls, active list rows, the connection badge, and disabled
+  buttons use the theme's on-colours, so labels stay legible on filled
+  backgrounds in every palette.
+
+### Accessibility
+
+- `--on-accent`, `--on-success`, `--on-warning`, and `--on-error` tokens keep
+  text readable on filled controls in all themes, including the light ones.
+- A consistent `:focus-visible` outline (2 px accent, 2 px offset) on controls,
+  plus dedicated focus rings for text, time, and filter inputs.
+- Decorative SVG icons are `aria-hidden`; every icon-only button keeps its
+  accessible name.
+- Tabular numerals in timers, scores, and tables so values do not reflow.
+- `prefers-reduced-motion: reduce` disables the new transitions and animations.
+
+### Tests
+
+- `tests/test_theme_contrast.py` parses `themes.css` and enforces the High
+  Contrast targets (7:1 body text, 4.5:1 status and on-colour pairs).
+- `tests/test_browser_smoke.py` covers theme defaults, the High Contrast
+  entries, saved-theme persistence, live `prefers-contrast` changes, and that a
+  saved theme overrides the OS setting.
+
 ## [0.2.1] - 2026-11-15
 
 ### Added

@@ -1,17 +1,32 @@
+/* Palette custom properties live in themes.css so the user can switch themes.
+   This file only owns structure, typography, and theme-independent details.
+   Shared tokens keep spacing, radii, and elevation consistent across tabs. */
 :root {
-  --bg: #1e1e2e;
-  --bg-raised: #2a2a3c;
-  --bg-input: #17171f;
-  --border: #3b3b52;
-  --text: #d9d9e3;
-  --text-dim: #8f8fa8;
-  --accent: #4f8cff;
-  --accent-hover: #3d74d8;
-  --success: #4caf7d;
-  --warning: #d9a54c;
-  --error: #e05c5c;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  /* Derived from the active theme, so hover/stripe tones follow light/dark. */
+  --hover: color-mix(in srgb, var(--text) 8%, transparent);
+  --stripe: color-mix(in srgb, var(--text) 4%, transparent);
+  /* light-dark() follows the `color-scheme` each theme sets. */
+  --shadow-card: 0 1px 2px light-dark(rgba(15, 20, 40, 0.1), rgba(0, 0, 0, 0.3));
+  --shadow-pop: 0 10px 28px light-dark(rgba(15, 20, 40, 0.18), rgba(0, 0, 0, 0.45));
+  accent-color: var(--accent);
 }
+
+::selection {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* Keyboard focus is always visible; pointer interaction stays uncluttered. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+* { scrollbar-color: var(--border) var(--bg-input); }
 
 * { box-sizing: border-box; }
 
@@ -26,6 +41,8 @@ html, body {
   color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
+  /* Digits keep their width while timers, scores, and tables update. */
+  font-variant-numeric: tabular-nums;
 }
 
 #app {
@@ -69,9 +86,11 @@ html, body {
   font-size: 14px;
   cursor: pointer;
   white-space: nowrap;
+  transition: color 0.12s ease, background-color 0.12s ease,
+    border-color 0.16s ease;
 }
 
-.tab-btn:hover { color: var(--text); }
+.tab-btn:hover { color: var(--text); background: var(--hover); }
 
 .tab-btn[aria-selected="true"] {
   color: var(--text);
@@ -92,33 +111,45 @@ html, body {
   padding: 3px 8px;
   border-radius: 999px;
   background: var(--error);
-  color: #fff;
+  color: var(--on-error);
 }
 
-.conn-badge[data-state="online"] { background: var(--success); }
-.conn-badge[data-state="connecting"] { background: var(--warning); }
+.conn-badge[data-state="online"] {
+  background: var(--success);
+  color: var(--on-success);
+}
+
+.conn-badge[data-state="connecting"] {
+  background: var(--warning);
+  color: var(--on-warning);
+}
 
 .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   appearance: none;
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--text);
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
   cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
 }
 
-.icon-btn:hover { background: var(--bg-input); }
+.icon-btn:hover { background: var(--bg-input); border-color: var(--accent); }
+
+.icon-btn svg { width: 16px; height: 16px; display: block; }
 
 /* ---------- Ruleset provenance banner ---------- */
 
 .ruleset-banner {
   padding: 8px 16px;
   background: var(--warning);
-  color: #1e1e2e;
+  color: var(--on-warning);
   border-bottom: 1px solid var(--border);
   font-size: 13px;
   font-weight: 600;
@@ -160,9 +191,10 @@ html, body {
 
 .empty-item {
   color: var(--text-dim);
-  padding: 8px 12px;
+  padding: 18px 12px;
   list-style: none;
-  font-style: italic;
+  font-size: 13px;
+  text-align: center;
 }
 
 /* ---------- Status bar + log dock ---------- */
@@ -183,13 +215,14 @@ html, body {
   appearance: none;
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--text);
   padding: 3px 12px;
   cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
 }
 
-.log-toggle:hover { background: var(--bg-input); }
+.log-toggle:hover { background: var(--bg-input); border-color: var(--accent); }
 
 .log-dock {
   height: 200px;
@@ -233,27 +266,35 @@ html, body {
 
 .modal {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: var(--bg-raised);
   color: var(--text);
   max-width: 480px;
   padding: 20px;
+  box-shadow: var(--shadow-pop);
 }
 
-.modal::backdrop { background: rgba(0, 0, 0, 0.5); }
+.modal::backdrop {
+  background: light-dark(rgba(15, 20, 40, 0.35), rgba(0, 0, 0, 0.55));
+  backdrop-filter: blur(2px);
+}
 
 .btn {
   appearance: none;
   background: var(--accent);
   border: none;
-  border-radius: 6px;
-  color: #fff;
+  border-radius: var(--radius-sm);
+  color: var(--on-accent);
   padding: 8px 16px;
   font-size: 14px;
   cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease,
+    box-shadow 0.12s ease, transform 0.06s ease;
 }
 
 .btn:hover { background: var(--accent-hover); }
+
+.btn:active:not(:disabled) { transform: translateY(1px); }
 
 .toast-root {
   position: fixed;
@@ -269,10 +310,16 @@ html, body {
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 10px 14px;
   max-width: 360px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-pop);
+  animation: toast-in 0.16s ease-out;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
 }
 
 .toast[data-kind="error"] { border-left-color: var(--error); }
@@ -308,15 +355,26 @@ html, body {
   color: var(--text);
 }
 
-.btn-ghost:hover { background: var(--bg-input); }
+.btn-ghost:hover { background: var(--bg-input); border-color: var(--accent); }
 
-.btn.danger { color: #e5484d; border-color: #e5484d; }
-.btn.danger:hover { background: rgba(229, 72, 77, 0.12); }
+.btn.danger { color: var(--error); border-color: var(--error); }
+.btn.danger:hover {
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+}
 
+/* Disabled controls read as unavailable in every theme, including light ones
+   where a faded accent button used to leave near-white text on pale blue. */
 .btn:disabled {
-  opacity: 0.45;
+  background: var(--bg-input);
+  color: var(--text-dim);
+  box-shadow: inset 0 0 0 1px var(--border);
   cursor: not-allowed;
 }
+
+.btn:disabled:hover { background: var(--bg-input); }
+
+.btn-ghost:disabled,
+.btn-ghost:disabled:hover { background: transparent; }
 
 #tab-tag-film {
   height: 100%;
@@ -364,8 +422,9 @@ html, body {
   flex-direction: column;
   gap: 8px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: var(--bg-raised);
+  box-shadow: var(--shadow-card);
   padding: 12px;
   min-width: 0;
 }
@@ -382,42 +441,106 @@ fieldset.tag-card { margin: 0; }
 .video-card { flex: 2; min-width: 0; }
 .wrestler-card { flex: 1; min-width: 0; }
 
+/* The player frame is flush with the card edge and sized by a 16:9 video at
+   the full column width, so the picture lines up with the cards beneath it.
+   The grid still keeps it inside the tab's right column, never full page. */
 .player-card {
   flex: none;
-  aspect-ratio: 16 / 9;
-  min-height: 200px;
-  max-height: 45vh;
+  padding: 0;
+  overflow: hidden;
 }
 
 .video-panel {
-  flex: 1;
-  min-height: 0;
+  position: relative;
+  flex: none;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: #000;
   overflow: hidden;
 }
 
 .video-panel video {
-  flex: 1;
-  min-height: 0;
+  flex: none;
+  display: block;
   width: 100%;
-  height: 100%;
+  height: auto;
   aspect-ratio: 16 / 9;
   object-fit: contain;
   background: #000;
+}
+
+/* The frame is black in every theme, so the placeholder uses the same fixed
+   light palette as the controls instead of the theme's text colour. */
+.video-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  aspect-ratio: 16 / 9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  color: rgba(224, 217, 199, 0.6);
+  font-size: 13px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.video-overlay[data-state="ready"] { display: none; }
+
+.video-overlay svg { width: 40px; height: 40px; opacity: 0.45; }
+
+.video-overlay[data-state="error"] { color: #ea6847; }
+.video-overlay[data-state="error"] svg { opacity: 0.7; }
+
+/* A spinner replaces the icon while a preview is buffering. */
+.video-overlay[data-state="loading"] svg { display: none; }
+
+.video-overlay[data-state="loading"]::before {
+  content: "";
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 3px solid rgba(224, 217, 199, 0.2);
+  border-top-color: rgba(224, 217, 199, 0.85);
+  animation: video-spin 0.8s linear infinite;
+}
+
+@keyframes video-spin {
+  to { transform: rotate(360deg); }
 }
 
 .video-controls {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
+  gap: 6px;
+  padding: 6px 8px;
+  /* The video frame is black in every theme, so its controls use a fixed
+     light palette instead of inheriting a light theme's dark text. */
+  color: #e0d9c7;
 }
+
+.video-controls .btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.video-controls .btn-ghost {
+  color: #e0d9c7;
+  border-color: rgba(224, 217, 199, 0.35);
+}
+
+.video-controls .btn-ghost:hover {
+  background: rgba(224, 217, 199, 0.14);
+  border-color: rgba(224, 217, 199, 0.6);
+}
+
+.video-controls .time-label { color: #e0d9c7; }
 
 .pos-slider {
   flex: 1;
@@ -464,27 +587,30 @@ fieldset.tag-card { margin: 0; }
   min-width: 0;
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--text);
   padding: 7px 10px;
   font-size: 14px;
+  transition: border-color 0.12s ease;
 }
 
 .filter-input {
   min-width: 0;
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--text);
   padding: 7px 10px;
   font-size: 14px;
+  transition: border-color 0.12s ease;
 }
 
-.combo-input:focus,
-.time-input:focus,
-.filter-input:focus {
-  outline: none;
+.combo-input:focus-visible,
+.time-input:focus-visible,
+.filter-input:focus-visible {
   border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .file-input {
@@ -498,14 +624,14 @@ fieldset.tag-card { margin: 0; }
   margin-bottom: 8px;
   flex-wrap: wrap;
   border: 1px dashed var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 8px;
   transition: border-color 0.15s, background 0.15s;
 }
 
 .upload-row.dragover {
   border-color: var(--accent);
-  background: rgba(79, 140, 255, 0.08);
+  background: var(--accent-soft);
 }
 
 .drop-hint {
@@ -535,7 +661,7 @@ fieldset.tag-card { margin: 0; }
   max-height: 240px;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--bg-input);
 }
 
@@ -546,7 +672,10 @@ fieldset.tag-card { margin: 0; }
   gap: 8px;
   padding: 5px 10px;
   border-bottom: 1px solid var(--border);
+  transition: background-color 0.1s ease;
 }
+
+.check-item:hover { background: var(--hover); }
 
 .check-item:last-child { border-bottom: none; }
 
@@ -563,7 +692,7 @@ fieldset.tag-card { margin: 0; }
   width: 52px;
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--text);
   padding: 3px 6px;
 }
@@ -604,10 +733,11 @@ fieldset.tag-card { margin: 0; }
   font-size: 13px;
   cursor: pointer;
   border-radius: 4px;
+  transition: background-color 0.1s ease, color 0.1s ease;
 }
 
-.video-item:hover { background: var(--bg-raised); }
-.video-item.active { background: var(--accent); color: #fff; }
+.video-item:hover { background: var(--accent-soft); }
+.video-item.active { background: var(--accent); color: var(--on-accent); }
 .video-item:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .progress {
@@ -643,7 +773,16 @@ fieldset.tag-card { margin: 0; }
   border-bottom: 1px solid var(--border);
 }
 
+.seq-item:nth-child(even) { background: var(--stripe); }
+
 .seq-item:last-child { border-bottom: none; }
+
+/* Review & Fix marks the sequence currently loaded into the editor. */
+.seq-item.active {
+  background: var(--accent-soft);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 
 .result-item {
   display: flex;
@@ -653,7 +792,12 @@ fieldset.tag-card { margin: 0; }
   list-style: none;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
+  transition: background-color 0.1s ease;
 }
+
+.result-item:nth-child(even) { background: var(--stripe); }
+
+.result-item:hover { background: var(--accent-soft); }
 
 .result-item:last-child { border-bottom: none; }
 
@@ -662,7 +806,7 @@ fieldset.tag-card { margin: 0; }
 .chapter-preview {
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 12px;
   font-family: var(--mono);
   font-size: 12px;
@@ -743,7 +887,7 @@ details.tag-card summary:hover { color: var(--text); }
 .seg-toggle {
   display: flex;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
@@ -756,19 +900,32 @@ details.tag-card summary:hover { color: var(--text); }
   padding: 6px 10px;
   font-size: 13px;
   cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
 }
 
 .seg-option + .seg-option { border-left: 1px solid var(--border); }
 
-.seg-option:hover { background: var(--bg-input); }
+.seg-option:hover { background: var(--accent-soft); }
 
-.seg-option.active { background: var(--accent); color: #fff; }
+.seg-option.active { background: var(--accent); color: var(--on-accent); }
 
 /* ---------- Config Editor ---------- */
 
 .config-modal {
   max-width: 780px;
   width: min(92vw, 780px);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+
+/* Keep Save/Cancel reachable while the (now taller) modal scrolls. */
+.config-modal .dialog-actions {
+  position: sticky;
+  bottom: 0;
+  margin-top: 0;
+  padding: 10px 0 2px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-raised);
 }
 
 .config-editor-grid {
@@ -783,7 +940,7 @@ details.tag-card summary:hover { color: var(--text); }
   flex-direction: column;
   gap: 6px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 10px;
   background: var(--bg-input);
   min-width: 0;
@@ -808,7 +965,11 @@ details.tag-card summary:hover { color: var(--text); }
   cursor: pointer;
 }
 
-.cfg-entry.active { background: var(--accent); color: #fff; }
+.cfg-entry:hover { background: var(--accent-soft); }
+
+.cfg-entry.active { background: var(--accent); color: var(--on-accent); }
+
+.cfg-entry.active:hover { background: var(--accent); }
 
 /* ---------- Compile Stats ---------- */
 
@@ -832,13 +993,13 @@ details.tag-card summary:hover { color: var(--text); }
   max-height: 280px;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .error-display {
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 12px;
   font-family: var(--mono);
   font-size: 12px;
@@ -856,16 +1017,15 @@ details.tag-card summary:hover { color: var(--text); }
   min-height: 220px;
 }
 
-/* The Pattern Map keeps a square plotting window so the two principal
-   components share one visual scale. The `58vh` cap stops the square from
-   growing taller than the pane on wide displays. */
-#tab-pca .tag-film-grid {
-  grid-template-columns: minmax(280px, min(38%, 58vh)) minmax(0, 1fr);
-}
-
+/* Pattern Map shares the standard two-column grid so its video player is the
+   same size as in every other tab. The square plot keeps one visual scale for
+   both principal components; the `58vh` width cap stops the square from growing
+   taller than the pane on wide displays, leaving the extra column width unused. */
 #tab-pca .plot-card {
   flex: none;
+  align-self: center;
   aspect-ratio: 1 / 1;
+  width: min(100%, 58vh);
   min-height: 0;
 }
 
@@ -921,9 +1081,6 @@ details.tag-card summary:hover { color: var(--text); }
   }
   #tab-tag-film { height: auto; }
   .tag-film-grid { grid-template-columns: 1fr; }
-  /* The PCA square column rule is id-scoped, so reset it here when the two
-     columns stack; the plot card stays square from its aspect-ratio. */
-  #tab-pca .tag-film-grid { grid-template-columns: 1fr; }
   .tag-left, .tag-right {
     height: auto;
     overflow: visible;
@@ -943,7 +1100,18 @@ details.tag-card summary:hover { color: var(--text); }
   .selection-row { flex-direction: column; }
   .video-card { flex: none; }
   .wrestler-card { flex: none; }
-  .player-card { flex: none; max-height: none; }
-  .video-panel { flex: none; min-height: 200px; }
+  .player-card { flex: none; }
   .query-grid { grid-template-columns: 1fr; }
+}
+
+/* Users who ask their OS to reduce motion get instant state changes, including
+   the preview spinner. The transitions above are all short and decorative. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

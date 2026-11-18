@@ -14,6 +14,7 @@ import { mountSearch } from "./tabs/search.js";
 import { mountTagFilm } from "./tabs/tag_film.js";
 import { mountTeamEval } from "./tabs/team_eval.js";
 import { mountTrend } from "./tabs/trend.js";
+import { THEMES, applyTheme, currentTheme, initTheme } from "./themes.js";
 
 const MAX_LOG_LINES = 5000;
 
@@ -363,6 +364,19 @@ function initConfigEditor() {
   const activeRulesetSelect = document.getElementById("cfg-active-ruleset");
   const outcomesList = document.getElementById("cfg-outcomes");
   const pinPointsInput = document.getElementById("cfg-pin-points");
+  const themeSelect = document.getElementById("cfg-theme");
+
+  // Appearance is a per-browser preference, so it applies immediately and is
+  // never part of the config PUT below.
+  for (const theme of THEMES) {
+    themeSelect.appendChild(el("option", { value: theme.id, text: theme.label }));
+  }
+  themeSelect.value = currentTheme();
+  themeSelect.addEventListener("change", () => applyTheme(themeSelect.value));
+  // Follow the OS default (or another tab) while the dialog is open.
+  window.addEventListener("theme-changed", (event) => {
+    themeSelect.value = event.detail;
+  });
 
   let config = {
     active_ruleset: "",
@@ -595,6 +609,7 @@ function initConfigEditor() {
       teams: body.teams || {},
     };
     renderAll();
+    themeSelect.value = currentTheme();
     dialog.showModal();
   });
 }
@@ -648,6 +663,7 @@ function boot() {
       console.error(`init ${name} failed:`, err);
     }
   };
+  safe("initTheme", initTheme);
   safe("initAuthRedirect", initAuthRedirect);
   safe("initLogout", initLogout);
   safe("initLogDock", initLogDock);

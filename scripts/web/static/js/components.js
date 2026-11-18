@@ -14,6 +14,29 @@
 
 import { onWs } from "./ws.js";
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/**
+ * Build a single-path stroke icon (24×24 grid) so UI glyphs match the type
+ * weight instead of relying on platform emoji/entity rendering.
+ */
+function svgIcon(path, { size = 24, strokeWidth = 1.6 } = {}) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", String(strokeWidth));
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  svg.setAttribute("aria-hidden", "true");
+  const shape = document.createElementNS(SVG_NS, "path");
+  shape.setAttribute("d", path);
+  svg.appendChild(shape);
+  return svg;
+}
+
 export function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
@@ -368,6 +391,58 @@ export function ensurePlotly() {
     });
   }
   return plotlyPromise;
+}
+
+/**
+ * Recolour a Plotly layout for the active theme. The backend builds charts with
+ * the light template, so paper/plot backgrounds, fonts, grid lines, and the
+ * trace colourway are overridden here from the CSS custom properties.
+ */
+export function stylePlotLayout(layout = {}) {
+  const styles = getComputedStyle(document.documentElement);
+  const cssVar = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
+  const text = cssVar("--text", "#e0d9c7");
+  const dim = cssVar("--text-dim", "#8fa3b8");
+  const grid = cssVar("--border", "#2f516c");
+  const accent = cssVar("--accent", "#5db2f8");
+  const accentHover = cssVar("--accent-hover", "#86dbf5");
+  const error = cssVar("--error", "#ea6847");
+  const warning = cssVar("--warning", "#d943a8");
+  const success = cssVar("--success", "#5db2f8");
+
+  const themedAxis = (axis) => {
+    if (!axis) return axis;
+    const title = axis.title;
+    const themedTitle = title && typeof title === "object"
+      ? { ...title, font: { ...(title.font || {}), color: text } }
+      : title;
+    return {
+      ...axis,
+      gridcolor: grid,
+      zerolinecolor: grid,
+      linecolor: grid,
+      tickcolor: grid,
+      tickfont: { ...(axis.tickfont || {}), color: dim },
+      title: themedTitle,
+    };
+  };
+
+  return {
+    ...layout,
+    paper_bgcolor: "rgba(0, 0, 0, 0)",
+    plot_bgcolor: "rgba(0, 0, 0, 0)",
+    font: { ...(layout.font || {}), color: text },
+    title: layout.title
+      ? { ...layout.title, font: { ...((layout.title || {}).font || {}), color: text } }
+      : layout.title,
+    colorway: [accent, error, success, warning, accentHover, dim],
+    xaxis: themedAxis(layout.xaxis),
+    yaxis: themedAxis(layout.yaxis),
+    legend: {
+      ...(layout.legend || {}),
+      font: { ...((layout.legend || {}).font || {}), color: text },
+    },
+  };
 }
 
 let hlsPromise = null;
@@ -749,6 +824,24 @@ export function videoPlayer({ onPosition = () => {} } = {}) {
   const slider = el("input", { type: "range", min: "0", max: "0", value: "0", class: "pos-slider" });
   const timeLabel = el("span", { class: "time-label", text: "0:00 / 0:00" });
 
+  // Placeholder painted over the (always black) frame: an empty player used to
+  // be a large void with only the control strip at the bottom.
+  const overlayLabel = el("span", { text: "Select a video to preview" });
+  const overlay = el("div", { class: "video-overlay", "data-state": "empty" }, [
+    svgIcon("M3 5h18v14H3zM10 9.5l5 2.5-5 2.5z"),
+    overlayLabel,
+  ]);
+
+  /**
+   * Tell the overlay what the player is doing. `ready` hides it so the video
+   * shows through; every other state keeps a short explanation in the frame.
+   */
+  const setOverlay = (state, text = "") => {
+    overlay.dataset.state = state;
+    overlay.hidden = state === "ready";
+    if (text) overlayLabel.textContent = text;
+  };
+
   let duration = 0;
   let hls = null;
   let pendingStartTime = 0;
@@ -808,16 +901,21 @@ export function videoPlayer({ onPosition = () => {} } = {}) {
   video.addEventListener("loadedmetadata", () => {
     syncDuration();
     seekIfReady();
+    setOverlay("ready");
   });
+  video.addEventListener("canplay", () => setOverlay("ready"));
   video.addEventListener("durationchange", syncDuration);
   video.addEventListener("progress", syncDuration);
   video.addEventListener("seeked", syncDuration);
   video.addEventListener("timeupdate", updateTime);
   video.addEventListener("play", () => { playBtn.textContent = "Pause"; });
   video.addEventListener("pause", () => { playBtn.textContent = "Play"; });
+  video.addEventListener("error", () => {
+    setOverlay("error", "Preview failed to load.");
+  });
 
   const controls = el("div", { class: "video-controls" }, [playBtn, backBtn, fwdBtn, slider, timeLabel]);
-  const box = el("div", { class: "video-panel" }, [video, controls]);
+  const box = el("div", { class: "video-panel" }, [video, overlay, controls]);
 
   return {
     node: box,
@@ -829,6 +927,7 @@ export function videoPlayer({ onPosition = () => {} } = {}) {
       slider.value = "0";
       timeLabel.textContent = "0:00 / 0:00";
       pendingStartTime = startTime;
+      setOverlay("loading", "Loading preview\u2026");
       if (!/\.m3u8($|\?)/.test(sourceUrl)) {
         video.src = sourceUrl;
         video.load();
@@ -841,6 +940,7 @@ export function videoPlayer({ onPosition = () => {} } = {}) {
         const playable = await waitForPlayable(sourceUrl);
         if (token !== loadToken) return;
         if (!playable) {
+          setOverlay("error", "Preview stream failed to start.");
           showToast("Preview stream failed to start.", "error");
           return;
         }
@@ -860,6 +960,7 @@ export function videoPlayer({ onPosition = () => {} } = {}) {
           hls.on(Hls.Events.ERROR, (_event, data) => {
             if (data && data.fatal) {
               console.error("HLS error", data);
+              setOverlay("error", "Video stream failed to load.");
               showToast("Video stream failed to load.", "error");
               destroyHls();
             }
